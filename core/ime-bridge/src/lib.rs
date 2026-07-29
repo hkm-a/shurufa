@@ -32,8 +32,9 @@ pub struct Engine {
     _strings: Vec<CString>,
 }
 
-// librime 内部自带线程同步；指针表进程级唯一。
+// librime 内部自带线程同步（会话表有锁保护）；指针表进程级唯一。
 unsafe impl Send for Engine {}
+unsafe impl Sync for Engine {}
 
 pub struct Session<'e> {
     engine: &'e Engine,

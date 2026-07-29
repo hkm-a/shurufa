@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core/ime-bridge"]
+members = ["core/ime-bridge", "platforms/windows"]
 
 [workspace.package]
 edition = "2021"
