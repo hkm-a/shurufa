@@ -11,11 +11,19 @@
 scripts/register-dev.cmd
 ```
 
+脚本会把 `shurufa_tsf.dll`、`rime.dll` 与 `schemas/` 部署到
+`%ProgramData%\shurufa` 并授予 AppContainer 进程读取权限
+（Win11 的输入切换器 TextInputHost.exe 运行在 AppContainer 中，
+读不了用户目录下的 DLL——直接从仓库注册会导致切换失败、
+输入法从列表消失）。
+
 预期：弹窗提示 DllRegisterServer 成功；`设置 → 时间和语言 → 语言和区域 →
 中文（简体，中国） → 语言选项 → 键盘` 中出现「Shurufa 拼音」。
 
-> 注意：注册的是 debug 构建的绝对路径，重新构建无需重新注册；
-> 移动仓库目录后必须先反注册再注册。
+> 注意：
+> - **每次重新构建后必须重跑本脚本**刷新部署副本。
+> - 注册后建议注销重登一次，清掉旧注册在各进程中的残留映射。
+> - 排障日志在 `%TEMP%\shurufa-tsf.log`（每个宿主进程各自的 TEMP 下）。
 
 ## 2. 功能验收矩阵
 

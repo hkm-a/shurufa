@@ -1,6 +1,13 @@
 @echo off
-rem 开发期反注册：从系统移除 TSF 文本服务（需管理员权限运行）
+rem Unregister the TSF IME and remove the deployed copy. Run as Administrator.
 setlocal
-set DLL=%~dp0..\target\debug\shurufa_tsf.dll
-regsvr32 /u "%DLL%"
+set DEST=%ProgramData%\shurufa
+
+if exist "%DEST%\shurufa_tsf.dll" (
+    regsvr32 /u "%DEST%\shurufa_tsf.dll"
+) else (
+    regsvr32 /u "%~dp0..\target\debug\shurufa_tsf.dll"
+)
+rem The DLL may stay mapped in running apps; deletion can fail until sign-out.
+rd /s /q "%DEST%" 2>nul
 endlocal

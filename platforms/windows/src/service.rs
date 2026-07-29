@@ -8,7 +8,7 @@ use std::cell::RefCell;
 
 use windows::core::{implement, Interface, Ref, Result, BOOL, GUID};
 use windows_core::IUnknownImpl;
-use windows::Win32::Foundation::{E_FAIL, LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
     ITfContextComposition, ITfInsertAtSelection, ITfKeyEventSink, ITfKeyEventSink_Impl,
@@ -55,6 +55,24 @@ impl TextService {
 }
 
 impl Inner {
+    /// 懒建引擎会话：激活阶段绝不碰引擎，宿主加载失败的代价必须最小化；
+    /// 引擎不可用时输入法退化为按键直通。
+    fn ensure_session(&mut self) -> Option<&Session<'static>> {
+        if self.session.is_none() {
+            match crate::engine() {
+                Ok(engine) => match engine.create_session() {
+                    Ok(s) => self.session = Some(s),
+                    Err(e) => {
+                        crate::debug_log(&format!("创建引擎会话失败：{e}"));
+                        return None;
+                    }
+                },
+                Err(_) => return None,
+            }
+        }
+        self.session.as_ref()
+    }
+
     /// 喂键给引擎并同步文档/候选窗；返回该键是否被输入法吃掉。
     fn handle_key(
         &mut self,
@@ -71,9 +89,10 @@ impl Inner {
         let Some(keysym) = keys::vk_to_keysym(wparam.0 as u32, shift) else {
             return false;
         };
-        let Some(session) = self.session.as_ref() else {
+        if self.ensure_session().is_none() {
             return false;
-        };
+        }
+        let session = self.session.as_ref().expect("ensure_session 已保证存在");
 
         let eaten = session.process_key(keysym, modifiers);
 
@@ -208,13 +227,11 @@ unsafe fn composition_anchor(
 
 impl ITfTextInputProcessor_Impl for TextService_Impl {
     fn Activate(&self, ptim: Ref<'_, ITfThreadMgr>, tid: u32) -> Result<()> {
+        crate::debug_log("Activate");
         let thread_mgr = ptim.ok()?.clone();
 
-        // 建立引擎会话（首次激活会触发部署，可能耗时数十秒）
-        let engine = crate::engine().map_err(windows::core::Error::from_hresult)?;
-        let session = engine.create_session().map_err(|_| E_FAIL)?;
-
-        // 挂接键盘事件 sink
+        // 只挂接键盘 sink。引擎初始化推迟到首个按键：激活路径上的任何
+        // 失败都会让 TSF 禁用本输入法，代价过高。
         let key_sink: ITfKeyEventSink = self.to_interface();
         let keystroke_mgr: ITfKeystrokeMgr = thread_mgr.cast()?;
         unsafe { keystroke_mgr.AdviseKeyEventSink(tid, &key_sink, true)? };
@@ -222,7 +239,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
         let mut inner = self.inner.borrow_mut();
         inner.thread_mgr = Some(thread_mgr);
         inner.client_id = tid;
-        inner.session = Some(session);
+        inner.session = None;
         Ok(())
     }
 

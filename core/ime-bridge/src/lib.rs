@@ -72,11 +72,13 @@ impl Engine {
         let log_dir = to_cstring("");
 
         unsafe {
-            let api = ffi::rime_get_api();
-            if api.is_null() {
-                ENGINE_ALIVE.store(false, Ordering::SeqCst);
-                return Err("rime_get_api 返回空指针".into());
-            }
+            let api = match ffi::get_api() {
+                Ok(api) => api,
+                Err(e) => {
+                    ENGINE_ALIVE.store(false, Ordering::SeqCst);
+                    return Err(e);
+                }
+            };
             let api_ref = &*api;
 
             let mut traits = MaybeUninit::<ffi::RimeTraits>::zeroed().assume_init();

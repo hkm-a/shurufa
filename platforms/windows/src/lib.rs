@@ -67,9 +67,29 @@ fn user_config_root() -> PathBuf {
 /// 进程级共享的 librime 引擎；首次调用触发初始化与部署。
 pub fn engine() -> Result<&'static Engine, HRESULT> {
     let result = ENGINE.get_or_init(|| {
-        Engine::init(&shared_data_dir(), &user_config_root().join("rime"))
+        let shared = shared_data_dir();
+        debug_log(&format!("引擎初始化：shared={}", shared.display()));
+        let r = Engine::init(&shared, &user_config_root().join("rime"));
+        if let Err(e) = &r {
+            debug_log(&format!("引擎初始化失败：{e}"));
+        }
+        r
     });
     result.as_ref().map_err(|_| E_FAIL)
+}
+
+/// 轻量排障日志：写入 %TEMP%\shurufa-tsf.log（AppContainer 有各自的
+/// TEMP，均可写）。失败静默——日志不能反过来影响输入法。
+pub fn debug_log(msg: &str) {
+    use std::io::Write;
+    let path = std::env::temp_dir().join("shurufa-tsf.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "[{ts}] [pid {}] {msg}", std::process::id());
+    }
 }
 
 #[no_mangle]
