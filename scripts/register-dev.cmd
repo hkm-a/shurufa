@@ -22,7 +22,21 @@ if not exist "%SRC%\third_party\librime\dist\lib\rime.dll" (
 if not exist "%DEST%" mkdir "%DEST%"
 copy /y "%SRC%\target\debug\shurufa_tsf.dll" "%DEST%\" >nul || goto :copyfail
 copy /y "%SRC%\third_party\librime\dist\lib\rime.dll" "%DEST%\" >nul || goto :copyfail
+copy /y "%SRC%\third_party\librime\dist\bin\rime_deployer.exe" "%DEST%\" >nul || goto :copyfail
 xcopy /e /i /y "%SRC%\schemas" "%DEST%\schemas" >nul || goto :copyfail
+
+rem Precompile dictionaries so the in-host engine never spends tens of
+rem seconds compiling on the first keystroke (that freeze once got the
+rem IME kicked out of the keyboard list by the input service).
+echo Precompiling dictionaries, this may take a while...
+pushd "%DEST%"
+rime_deployer.exe --build "%DEST%\schemas" "%DEST%\schemas" "%DEST%\schemas\build" >nul 2>&1
+popd
+if not exist "%DEST%\schemas\build\luna_pinyin.table.bin" (
+    echo [error] dictionary precompile failed
+    pause
+    exit /b 1
+)
 
 rem Grant read+execute to ALL APPLICATION PACKAGES (SID S-1-15-2-1)
 icacls "%DEST%" /grant *S-1-15-2-1:(OI)(CI)(RX) /t >nul

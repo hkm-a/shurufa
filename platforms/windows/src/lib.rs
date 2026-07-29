@@ -64,31 +64,68 @@ fn user_config_root() -> PathBuf {
         .join("shurufa")
 }
 
-/// 进程级共享的 librime 引擎；首次调用触发初始化与部署。
-pub fn engine() -> Result<&'static Engine, HRESULT> {
-    let result = ENGINE.get_or_init(|| {
-        let shared = shared_data_dir();
-        debug_log(&format!("引擎初始化：shared={}", shared.display()));
-        let r = Engine::init(&shared, &user_config_root().join("rime"));
-        if let Err(e) = &r {
-            debug_log(&format!("引擎初始化失败：{e}"));
-        }
-        r
-    });
-    result.as_ref().map_err(|_| E_FAIL)
+/// 引擎就绪状态：TSF 回调绝不允许被引擎初始化阻塞。
+pub enum EngineState {
+    Ready(&'static Engine),
+    /// 后台初始化进行中，按键应直通
+    Pending,
+    Failed,
+}
+
+static ENGINE_INIT_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 非阻塞获取引擎：首次调用启动后台初始化线程（含词典部署，
+/// 可能耗时），完成前返回 Pending。曾冻结系统输入进程导致输入法
+/// 被系统从键盘列表移除，因此禁止在 TSF 回调线程上同步初始化。
+pub fn try_engine() -> EngineState {
+    if let Some(result) = ENGINE.get() {
+        return match result {
+            Ok(engine) => EngineState::Ready(engine),
+            Err(_) => EngineState::Failed,
+        };
+    }
+    if !ENGINE_INIT_STARTED.swap(true, Ordering::SeqCst) {
+        std::thread::spawn(|| {
+            ENGINE.get_or_init(|| {
+                let shared = shared_data_dir();
+                debug_log(&format!("引擎后台初始化开始：shared={}", shared.display()));
+                let started = std::time::Instant::now();
+                let r = Engine::init(&shared, &user_config_root().join("rime"));
+                match &r {
+                    Ok(_) => debug_log(&format!(
+                        "引擎就绪，耗时 {} ms",
+                        started.elapsed().as_millis()
+                    )),
+                    Err(e) => debug_log(&format!("引擎初始化失败：{e}")),
+                }
+                r
+            });
+        });
+    }
+    EngineState::Pending
 }
 
 /// 轻量排障日志：写入 %TEMP%\shurufa-tsf.log（AppContainer 有各自的
 /// TEMP，均可写）。失败静默——日志不能反过来影响输入法。
+/// 整行一次性写出，避免多进程并发追加时互相穿插。
 pub fn debug_log(msg: &str) {
     use std::io::Write;
+    static EXE_NAME: OnceLock<String> = OnceLock::new();
+    let exe = EXE_NAME.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "?".into())
+    });
     let path = std::env::temp_dir().join("shurufa-tsf.log");
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let _ = writeln!(f, "[{ts}] [pid {}] {msg}", std::process::id());
+        let line = format!("[{ts}] [{exe}:{}] {msg}\n", std::process::id());
+        let _ = f.write_all(line.as_bytes());
     }
 }
 

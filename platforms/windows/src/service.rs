@@ -32,6 +32,8 @@ pub struct Inner {
     ui: CandidateUi,
     /// OnTestKeyDown 已处理的键及其结论，供紧随其后的 OnKeyDown 复用
     pending_key: Option<(u32, bool)>,
+    /// 仅用于排障日志：本进程是否已收到过按键
+    saw_first_key: bool,
 }
 
 #[implement(ITfTextInputProcessorEx, ITfKeyEventSink, ITfCompositionSink)]
@@ -49,25 +51,30 @@ impl TextService {
                 composition: None,
                 ui: CandidateUi::new(),
                 pending_key: None,
+                saw_first_key: false,
             }),
         }
     }
 }
 
 impl Inner {
-    /// 懒建引擎会话：激活阶段绝不碰引擎，宿主加载失败的代价必须最小化；
-    /// 引擎不可用时输入法退化为按键直通。
+    /// 懒建引擎会话：激活阶段绝不碰引擎；初始化在后台线程进行，
+    /// 就绪前返回 None，按键直通（临时表现为英文直输）。
     fn ensure_session(&mut self) -> Option<&Session<'static>> {
         if self.session.is_none() {
-            match crate::engine() {
-                Ok(engine) => match engine.create_session() {
-                    Ok(s) => self.session = Some(s),
+            match crate::try_engine() {
+                crate::EngineState::Ready(engine) => match engine.create_session() {
+                    Ok(s) => {
+                        crate::debug_log("引擎会话已建立");
+                        self.session = Some(s);
+                    }
                     Err(e) => {
                         crate::debug_log(&format!("创建引擎会话失败：{e}"));
                         return None;
                     }
                 },
-                Err(_) => return None,
+                crate::EngineState::Pending => return None,
+                crate::EngineState::Failed => return None,
             }
         }
         self.session.as_ref()
@@ -280,6 +287,10 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         let context = pic.ok()?;
         let sink: ITfCompositionSink = self.to_interface();
         let mut inner = self.inner.borrow_mut();
+        if !inner.saw_first_key {
+            inner.saw_first_key = true;
+            crate::debug_log(&format!("首个按键到达（vk=0x{:X}）", wparam.0));
+        }
         let eaten = inner.handle_key(&sink, context, wparam);
         // 记录结论：应用随后会调用 OnKeyDown，不能重复喂引擎
         inner.pending_key = Some((wparam.0 as u32, eaten));

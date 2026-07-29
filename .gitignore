@@ -3,3 +3,6 @@
 
 # 预编译 librime 由 docs/architecture.md 记载的 release 地址获取，不入库
 /third_party/
+
+# rime_deployer 预编译产物（注册脚本部署期生成）
+/schemas/build/
