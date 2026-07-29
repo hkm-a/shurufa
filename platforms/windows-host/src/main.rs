@@ -116,6 +116,20 @@ fn main() {
                 _ => println!("条目不存在"),
             }
         }
+        "install-autostart" => match install_autostart() {
+            Ok(cmd) => println!("已写入开机自启（HKCU Run）：{cmd}"),
+            Err(e) => {
+                eprintln!("写入自启失败：{e}");
+                std::process::exit(1);
+            }
+        },
+        "uninstall-autostart" => match uninstall_autostart() {
+            Ok(()) => println!("已移除开机自启"),
+            Err(e) => {
+                eprintln!("移除自启失败：{e}");
+                std::process::exit(1);
+            }
+        },
         "clear" => {
             let n = open_store().clear_unpinned().unwrap_or(0);
             println!("已清空 {n} 条未置顶记录");
@@ -140,6 +154,27 @@ fn main() {
             );
         }
     }
+}
+
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VALUE: &str = "shurufa-host";
+
+/// 开机自启：当前用户 Run 键指向本 exe 的 run 子命令。
+/// 登录时控制台会闪现一瞬，随即被 hide_own_console 隐藏。
+fn install_autostart() -> Result<String, Box<dyn std::error::Error>> {
+    let exe = std::env::current_exe()?;
+    let cmd = format!("\"{}\" run", exe.display());
+    windows_registry::CURRENT_USER
+        .create(RUN_KEY)?
+        .set_string(RUN_VALUE, &cmd)?;
+    Ok(cmd)
+}
+
+fn uninstall_autostart() -> Result<(), Box<dyn std::error::Error>> {
+    windows_registry::CURRENT_USER
+        .create(RUN_KEY)?
+        .remove_value(RUN_VALUE)?;
+    Ok(())
 }
 
 /// 隐藏本进程独占的控制台窗口（start/双击启动时系统新建的那个）。
