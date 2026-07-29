@@ -4,7 +4,7 @@ rem Copies the DLLs and schema data to %ProgramData%\shurufa so that
 rem AppContainer (immersive) processes such as TextInputHost.exe can
 rem load them; DLLs under the user profile are NOT readable there.
 rem Re-run this script after every rebuild to refresh the deployed copy.
-setlocal
+setlocal enabledelayedexpansion
 set SRC=%~dp0..
 set DEST=%ProgramData%\shurufa
 
@@ -20,6 +20,18 @@ if not exist "%SRC%\third_party\librime\dist\lib\rime.dll" (
 )
 
 if not exist "%DEST%" mkdir "%DEST%"
+
+rem Loaded DLLs and memory-mapped dictionaries cannot be overwritten,
+rem but they CAN be renamed. Move live files out of the way first and
+rem sweep leftovers from previous runs (best effort; locked ones stay).
+del /q "%DEST%\*.stale" 2>nul
+del /q "%DEST%\schemas\build\*.stale" 2>nul
+if exist "%DEST%\shurufa_tsf.dll" ren "%DEST%\shurufa_tsf.dll" "shurufa_tsf.dll.!RANDOM!.stale" 2>nul
+if exist "%DEST%\rime.dll" ren "%DEST%\rime.dll" "rime.dll.!RANDOM!.stale" 2>nul
+if exist "%DEST%\schemas\build" (
+    for %%f in ("%DEST%\schemas\build\*") do ren "%%f" "%%~nxf.!RANDOM!.stale" 2>nul
+)
+
 copy /y "%SRC%\target\debug\shurufa_tsf.dll" "%DEST%\" >nul || goto :copyfail
 copy /y "%SRC%\third_party\librime\dist\lib\rime.dll" "%DEST%\" >nul || goto :copyfail
 copy /y "%SRC%\third_party\librime\dist\bin\rime_deployer.exe" "%DEST%\" >nul || goto :copyfail
@@ -42,6 +54,9 @@ rem Grant read+execute to ALL APPLICATION PACKAGES (SID S-1-15-2-1)
 icacls "%DEST%" /grant *S-1-15-2-1:(OI)(CI)(RX) /t >nul
 
 regsvr32 "%DEST%\shurufa_tsf.dll"
+echo.
+echo Done. If the keyboard is missing from the list, re-add it in:
+echo   Settings - Language - Chinese (Simplified) - Keyboards - Add "Shurufa Pinyin"
 pause
 endlocal
 exit /b 0
