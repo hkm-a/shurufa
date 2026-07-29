@@ -63,15 +63,19 @@ thread_local! {
 
 /// 注册全局热键；首选 Ctrl+Shift+V（对齐微信输入法习惯），
 /// 被占用时回落 Alt+V。返回实际生效的描述。
-pub fn register_hotkey(hwnd: HWND) -> &'static str {
+/// 线程级注册（hwnd=None）：WM_HOTKEY 直接进线程队列，由消息循环
+/// 截获，不依赖窗口消息投递路径。
+pub fn register_hotkey() -> &'static str {
     unsafe {
-        if RegisterHotKey(Some(hwnd), HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x56).is_ok() {
+        let which = if RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x56).is_ok() {
             "Ctrl+Shift+V"
-        } else if RegisterHotKey(Some(hwnd), HOTKEY_ID, MOD_ALT, 0x56).is_ok() {
+        } else if RegisterHotKey(None, HOTKEY_ID, MOD_ALT, 0x56).is_ok() {
             "Alt+V"
         } else {
             "（热键注册失败，面板不可用）"
-        }
+        };
+        crate::log_line(&format!("热键注册结果：{which}"));
+        which
     }
 }
 
@@ -79,8 +83,10 @@ pub fn register_hotkey(hwnd: HWND) -> &'static str {
 pub fn show(entries: Vec<ClipEntry>) {
     let target = unsafe { GetForegroundWindow() };
     let Some(hwnd) = ensure_window() else {
+        crate::log_line("面板窗口创建失败");
         return;
     };
+    crate::log_line(&format!("面板弹出，条目数 {}", entries.len()));
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
 
     let row_count = entries.len().max(1) as i32;
@@ -138,6 +144,7 @@ fn commit(index: usize) {
         return;
     };
     hide();
+    crate::log_line(&format!("选择条目 id={}", entry.id));
 
     let store = crate::open_store();
     match crate::paste::copy_entry_to_clipboard(&store, &entry) {

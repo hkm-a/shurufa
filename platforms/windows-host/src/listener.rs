@@ -80,11 +80,20 @@ pub fn run(store: ClipboardStore) -> Result<()> {
             captured: 0,
         });
         AddClipboardFormatListener(hwnd)?;
-        let hotkey = crate::panel::register_hotkey(hwnd);
+        let hotkey = crate::panel::register_hotkey();
         println!("历史面板热键：{hotkey}");
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            // 线程级热键的 WM_HOTKEY 不属于任何窗口，须在循环内截获
+            if msg.message == WM_HOTKEY && msg.wParam.0 as i32 == crate::panel::HOTKEY_ID {
+                #[allow(static_mut_refs)]
+                if let Some(state) = STATE.as_ref() {
+                    let entries = state.store.list(9, 0).unwrap_or_default();
+                    crate::panel::show(entries);
+                }
+                continue;
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -102,14 +111,6 @@ unsafe extern "system" fn wnd_proc(
         #[allow(static_mut_refs)]
         if let Some(state) = STATE.as_mut() {
             state.on_clipboard_update(hwnd);
-        }
-        return LRESULT(0);
-    }
-    if msg == WM_HOTKEY && wparam.0 as i32 == crate::panel::HOTKEY_ID {
-        #[allow(static_mut_refs)]
-        if let Some(state) = STATE.as_ref() {
-            let entries = state.store.list(9, 0).unwrap_or_default();
-            crate::panel::show(entries);
         }
         return LRESULT(0);
     }

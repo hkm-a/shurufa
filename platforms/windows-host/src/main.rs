@@ -10,6 +10,21 @@ mod paste;
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore, RetentionPolicy};
 use std::path::PathBuf;
 
+/// 文件日志：常驻进程以最小化/无窗口方式运行，控制台输出不可见，
+/// 排障信息统一落 %TEMP%\shurufa-host.log，失败静默。
+pub fn log_line(msg: &str) {
+    use std::io::Write;
+    let path = std::env::temp_dir().join("shurufa-host.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = f.write_all(format!("[{ts}] {msg}
+").as_bytes());
+    }
+}
+
 fn db_path() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -36,6 +51,7 @@ fn main() {
         "run" => {
             let store = open_store();
             println!("剪贴板监听已启动，历史库：{}", db_path().display());
+            log_line(&format!("守护进程启动，历史库：{}", db_path().display()));
             if let Err(e) = listener::run(store) {
                 eprintln!("监听进程异常退出：{e}");
                 std::process::exit(1);
