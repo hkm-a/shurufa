@@ -6,3 +6,5 @@
 
 # rime_deployer 预编译产物（注册脚本部署期生成）
 /schemas/build/
+/schemas/user.yaml
+/schemas/installation.yaml
