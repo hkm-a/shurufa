@@ -15,7 +15,7 @@ use windows::Win32::Graphics::Gdi::{
     HFONT, HGDIOBJ, PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, MoveWindow, RegisterClassW,
     SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN,
@@ -28,14 +28,14 @@ use ime_bridge::Context;
 const CLASS_NAME: PCWSTR = w!("ShurufaCandidateWindow");
 
 // 96 DPI 下的基准尺寸，运行期按窗口实际 DPI 缩放
-const BASE_ROW_HEIGHT: i32 = 34;
-const BASE_PREEDIT_HEIGHT: i32 = 24;
-const BASE_PADDING: i32 = 10;
-const BASE_ITEM_GAP: i32 = 18;
-const BASE_LABEL_GAP: i32 = 5;
-const BASE_HL_PAD: i32 = 6;
-const BASE_FONT_HEIGHT: i32 = 21;
-const BASE_PREEDIT_FONT_HEIGHT: i32 = 16;
+const BASE_ROW_HEIGHT: i32 = 40;
+const BASE_PREEDIT_HEIGHT: i32 = 26;
+const BASE_PADDING: i32 = 12;
+const BASE_ITEM_GAP: i32 = 22;
+const BASE_LABEL_GAP: i32 = 6;
+const BASE_HL_PAD: i32 = 7;
+const BASE_FONT_HEIGHT: i32 = 26;
+const BASE_PREEDIT_FONT_HEIGHT: i32 = 18;
 const BASE_MIN_WIDTH: i32 = 96;
 
 // 配色（COLORREF 为 0x00BBGGRR）
@@ -159,7 +159,8 @@ impl CandidateUi {
         let Some(hwnd) = self.ensure_window() else {
             return;
         };
-        let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+        // 部分宿主（DPI 虚拟化）对弹窗返回 96 兜底值，取系统 DPI 兜底
+        let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
         let padding = scale(BASE_PADDING, dpi);
         let item_gap = scale(BASE_ITEM_GAP, dpi);
         let label_gap = scale(BASE_LABEL_GAP, dpi);

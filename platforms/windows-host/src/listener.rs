@@ -41,6 +41,10 @@ struct ListenerState {
     store: ClipboardStore,
     last_sequence: u32,
     captured: u64,
+    /// 最近一次入库：(条目 id, 规范化内容, 时刻)。
+    /// 资源管理器等来源一次复制会连续多次更新剪贴板（先文本路径
+    /// 再文件对象），短时间窗内内容一致时合并为一条。
+    last_insert: Option<(i64, String, std::time::Instant)>,
 }
 
 // 消息窗口回调无法携带参数，监听进程单实例，用静态槽转交状态
@@ -78,6 +82,7 @@ pub fn run(store: ClipboardStore) -> Result<()> {
             store,
             last_sequence: GetClipboardSequenceNumber(),
             captured: 0,
+            last_insert: None,
         });
         AddClipboardFormatListener(hwnd)?;
         let hotkey = crate::panel::register_hotkey();
@@ -132,13 +137,32 @@ impl ListenerState {
         }
 
         if let Some(capture) = read_clipboard(hwnd) {
+            // 同一次复制的多重更新：与上一条内容一致且间隔极短时，
+            // 删除旧条目改存新条目（文件对象优先于纯文本路径）
+            let normalized = match &capture {
+                Capture::Files(paths) => paths.join("
+"),
+                Capture::Text(text) => text.clone(),
+                Capture::Image(_) => String::new(),
+            };
+            if !normalized.is_empty() {
+                if let Some((last_id, last_norm, at)) = &self.last_insert {
+                    if *last_norm == normalized && at.elapsed().as_millis() < 1500 {
+                        let _ = self.store.delete(*last_id);
+                    }
+                }
+            }
+
             let result = match &capture {
                 Capture::Files(paths) => self.store.insert_files(paths, &source),
                 Capture::Text(text) => self.store.insert_text(text, &source),
                 Capture::Image(bmp) => self.store.insert_image(bmp, &source),
             };
             match result {
-                Ok(Some(_)) => {
+                Ok(Some(id)) => {
+                    if !normalized.is_empty() {
+                        self.last_insert = Some((id, normalized, std::time::Instant::now()));
+                    }
                     self.captured += 1;
                     if self.captured % RETENTION_INTERVAL == 0 {
                         let _ = self.store.apply_retention(&RetentionPolicy::default());

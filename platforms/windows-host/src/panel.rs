@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Gdi::{
     TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
     KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, VIRTUAL_KEY, VK_CONTROL, VK_DOWN,
@@ -87,7 +87,7 @@ pub fn show(entries: Vec<ClipEntry>) {
         return;
     };
     crate::log_line(&format!("面板弹出，条目数 {}", entries.len()));
-    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+    let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
 
     let row_count = entries.len().max(1) as i32;
     let width = scale(BASE_WIDTH, dpi);

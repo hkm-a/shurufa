@@ -54,6 +54,13 @@ fn main() {
                 log_line(&format!("PANIC：{info}"));
             }));
             hide_own_console();
+            // 高分屏下面板按真实 DPI 布局渲染，而非被系统位图拉伸
+            unsafe {
+                use windows::Win32::UI::HiDpi::{
+                    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                };
+                let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            }
             let store = open_store();
             println!("剪贴板监听已启动，历史库：{}", db_path().display());
             log_line(&format!("守护进程启动，历史库：{}", db_path().display()));
