@@ -43,4 +43,14 @@ fn pinyin_input_produces_candidates_and_commit() {
 
     // 上屏后上下文应清空
     assert!(session.context().candidates.is_empty(), "上屏后候选未清空");
+
+    // 默认方案必须输出简体：吗（简）在候选中，嗎（繁）不应是首选
+    assert!(session.simulate("ma"), "键序列未被引擎接受");
+    let ctx = session.context();
+    assert!(
+        ctx.candidates.iter().any(|c| c.text == "吗"),
+        "默认方案候选未出现简体「吗」，当前候选：{:?}",
+        ctx.candidates.iter().take(5).map(|c| &c.text).collect::<Vec<_>>()
+    );
+    session.simulate("{Escape}");
 }

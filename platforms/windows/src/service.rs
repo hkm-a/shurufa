@@ -106,6 +106,10 @@ impl Inner {
         // 引擎可能产生上屏文本（如空格确认候选、顶字上屏）
         let commit = session.commit();
         let ctx_snapshot = session.context();
+        crate::debug_log(&format!(
+            "键 vk=0x{:X} keysym=0x{:X} eaten={} commit={:?} preedit={:?}",
+            wparam.0, keysym, eaten, commit, ctx_snapshot.preedit
+        ));
 
         let has_preedit = !ctx_snapshot.preedit.is_empty();
         let client_id = self.client_id;
@@ -113,7 +117,7 @@ impl Inner {
         // 文档更新必须进入编辑会话
         let composition_slot = &mut self.composition;
         let ui = &mut self.ui;
-        let _ = edit_session(client_id, context, |ec| {
+        let edit_result = edit_session(client_id, context, |ec| {
             unsafe {
                 // 1. 上屏文本：结束组合并以最终文本落盘
                 if let Some(text) = commit.as_deref() {
@@ -151,6 +155,9 @@ impl Inner {
                 Ok(())
             }
         });
+        if let Err(e) = &edit_result {
+            crate::debug_log(&format!("编辑会话失败：{e:?}"));
+        }
 
         eaten
     }
