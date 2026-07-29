@@ -1,0 +1,3 @@
+# Android 交叉编译：链接器指向 NDK 28 的 clang 包装脚本（minSdk 23）
+[target.aarch64-linux-android]
+linker = "C:\\Users\\hkm\\AppData\\Local\\Android\\Sdk\\ndk\\28.0.13004108\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\aarch64-linux-android23-clang.cmd"

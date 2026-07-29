@@ -1,0 +1,30 @@
+# Rime default settings (Android)
+# encoding: utf-8
+
+config_version: '0.50'
+
+schema_list:
+  - schema: pinyin_simp
+
+switcher:
+  caption: 〔方案选单〕
+  hotkeys:
+    - Control+grave
+  save_options:
+    - full_shape
+    - ascii_punct
+    - simplification
+
+menu:
+  page_size: 6
+
+punctuator:
+  import_preset: punctuation
+
+key_binder:
+  import_preset: key_bindings
+
+recognizer:
+  patterns:
+    email: "^[A-Za-z][-_.0-9A-Za-z]*@.*$"
+    url: "^(www[.]|https?:|ftp[.:]|mailto:|file:).*$"

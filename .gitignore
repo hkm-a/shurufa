@@ -8,3 +8,11 @@
 /schemas/build/
 /schemas/user.yaml
 /schemas/installation.yaml
+
+# Android 构建产物与本机配置
+/platforms/android/local.properties
+/platforms/android/.gradle/
+/platforms/android/build/
+/platforms/android/app/build/
+/platforms/android/app/src/main/jniLibs/
+/prebuilt-tree.json
