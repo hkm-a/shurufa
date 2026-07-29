@@ -4,6 +4,7 @@
 //! 查询与管理，供验收与后续 UI 面板复用。
 
 mod listener;
+mod paste;
 
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore, RetentionPolicy};
 use std::path::PathBuf;
@@ -68,6 +69,24 @@ fn main() {
             let ok = open_store().delete(id as i64).unwrap_or(false);
             println!("{}", if ok { "已删除" } else { "条目不存在" });
         }
+        "copy" => {
+            let Some(id) = parse_arg(&args, 1) else {
+                eprintln!("用法：shurufa-host copy <id>");
+                std::process::exit(2);
+            };
+            let store = open_store();
+            match store.get(id as i64) {
+                Ok(Some(entry)) => match paste::copy_entry_to_clipboard(&entry) {
+                    Ok(true) => println!("已写回剪贴板"),
+                    Ok(false) => println!("该类型暂不支持写回（图片待 M5）"),
+                    Err(e) => {
+                        eprintln!("写回失败：{e}");
+                        std::process::exit(1);
+                    }
+                },
+                _ => println!("条目不存在"),
+            }
+        }
         "clear" => {
             let n = open_store().clear_unpinned().unwrap_or(0);
             println!("已清空 {n} 条未置顶记录");
@@ -85,6 +104,7 @@ fn main() {
                  \x20 list [N]        最近 N 条历史（默认 20）\n\
                  \x20 search <关键词>  搜索文本与文件名\n\
                  \x20 pin/unpin <id>  置顶/取消置顶\n\
+                 \x20 copy <id>       把条目写回剪贴板\n\
                  \x20 delete <id>     删除单条\n\
                  \x20 clear           清空未置顶记录\n\
                  \x20 retention       立即执行留存清理"
