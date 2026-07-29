@@ -24,10 +24,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
-    GetSystemMetrics, GetWindowThreadProcessId, MoveWindow, RegisterClassW, SetForegroundWindow,
-    ShowWindow, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE,
-    SW_SHOWNA, WM_KEYDOWN, WM_KILLFOCUS, WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW, MoveWindow, RegisterClassW,
+    SetForegroundWindow, ShowWindow, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO, IDC_ARROW,
+    SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_KEYDOWN, WM_KILLFOCUS, WM_PAINT,
+    WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 /// 面板一次展示的最大条目数（与数字键 1-9 对应）
@@ -241,6 +241,8 @@ fn ensure_window() -> Option<HWND> {
                     hInstance: hinstance.into(),
                     lpszClassName: class_name,
                     hbrBackground: HBRUSH::default(),
+                    // 不设光标会导致悬停时一直显示忙碌转圈
+                    hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
                     ..Default::default()
                 };
                 RegisterClassW(&class);
