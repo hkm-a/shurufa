@@ -1,17 +1,18 @@
-//! 候选窗：GDI 绘制的置顶弹窗，显示预编辑串与编号候选。
+//! 候选窗：GDI 绘制的置顶弹窗，横向排列编号候选（主流输入法布局）。
 //!
 //! 窗口在宿主应用的 UI 线程内创建（TSF 单元线程模型），
 //! 不抢焦点（WS_EX_NOACTIVATE），随组合文本位置移动，
-//! 所有尺寸按窗口 DPI 缩放。
+//! 宽度按候选文本实测宽度自适应，所有尺寸按窗口 DPI 缩放。
 
 use std::cell::RefCell;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-    InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
-    FW_NORMAL, HBRUSH, HDC, HFONT, HGDIOBJ, PAINTSTRUCT, TRANSPARENT,
+    GetDC, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, SelectObject, SetBkMode,
+    SetTextColor, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HBRUSH, HDC,
+    HFONT, HGDIOBJ, PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -27,23 +28,36 @@ use ime_bridge::Context;
 const CLASS_NAME: PCWSTR = w!("ShurufaCandidateWindow");
 
 // 96 DPI 下的基准尺寸，运行期按窗口实际 DPI 缩放
-const BASE_LINE_HEIGHT: i32 = 36;
+const BASE_ROW_HEIGHT: i32 = 34;
+const BASE_PREEDIT_HEIGHT: i32 = 24;
 const BASE_PADDING: i32 = 10;
-const BASE_WIDTH: i32 = 300;
-const BASE_FONT_HEIGHT: i32 = 22;
-const BASE_PREEDIT_FONT_HEIGHT: i32 = 17;
+const BASE_ITEM_GAP: i32 = 18;
+const BASE_LABEL_GAP: i32 = 5;
+const BASE_HL_PAD: i32 = 6;
+const BASE_FONT_HEIGHT: i32 = 21;
+const BASE_PREEDIT_FONT_HEIGHT: i32 = 16;
+const BASE_MIN_WIDTH: i32 = 96;
 
 // 配色（COLORREF 为 0x00BBGGRR）
 const COLOR_BG: u32 = 0x00FA_FAFA;
-const COLOR_HIGHLIGHT_BG: u32 = 0x00F5_E6D8; // 选中行淡蓝底
+const COLOR_HIGHLIGHT_BG: u32 = 0x00F5_E6D8;
 const COLOR_TEXT: u32 = 0x0020_2020;
 const COLOR_PREEDIT: u32 = 0x0088_8888;
-const COLOR_LABEL: u32 = 0x00B0_6030; // 序号用重点色
+const COLOR_LABEL: u32 = 0x00B0_6030;
+
+/// 单个候选的横向布局槽位（坐标为窗口客户区像素）
+struct Item {
+    label: String,
+    text: String,
+    x: i32,
+    label_w: i32,
+    text_w: i32,
+    highlighted: bool,
+}
 
 struct PaintData {
     preedit: String,
-    /// (序号起始文本, 候选文本, 是否选中)
-    rows: Vec<(String, String, bool)>,
+    items: Vec<Item>,
     dpi: u32,
 }
 
@@ -51,7 +65,7 @@ struct PaintData {
 thread_local! {
     static PAINT_DATA: RefCell<PaintData> = RefCell::new(PaintData {
         preedit: String::new(),
-        rows: Vec::new(),
+        items: Vec::new(),
         dpi: 96,
     });
     static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) };
@@ -59,6 +73,35 @@ thread_local! {
 
 fn scale(base: i32, dpi: u32) -> i32 {
     (base * dpi as i32 + 48) / 96
+}
+
+unsafe fn make_font(height: i32) -> HFONT {
+    CreateFontW(
+        -height, // 负值表示字符高度（em），排版更稳定
+        0,
+        0,
+        0,
+        FW_NORMAL.0 as i32,
+        0,
+        0,
+        0,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        w!("Microsoft YaHei UI"),
+    )
+}
+
+unsafe fn text_width(hdc: HDC, text: &str) -> i32 {
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    if wide.is_empty() {
+        return 0;
+    }
+    let mut size = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &wide, &mut size);
+    size.cx
 }
 
 pub struct CandidateUi {
@@ -98,8 +141,8 @@ impl CandidateUi {
                 WS_POPUP,
                 0,
                 0,
-                BASE_WIDTH,
-                BASE_LINE_HEIGHT,
+                BASE_MIN_WIDTH,
+                BASE_ROW_HEIGHT,
                 None,
                 None,
                 Some(hinstance.into()),
@@ -117,25 +160,62 @@ impl CandidateUi {
             return;
         };
         let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
-        let rows: Vec<(String, String, bool)> = ctx
-            .candidates
-            .iter()
-            .enumerate()
-            .take(9)
-            .map(|(i, c)| (format!("{}", i + 1), c.text.clone(), i == ctx.highlighted))
-            .collect();
-        let row_count = rows.len() as i32;
+        let padding = scale(BASE_PADDING, dpi);
+        let item_gap = scale(BASE_ITEM_GAP, dpi);
+        let label_gap = scale(BASE_LABEL_GAP, dpi);
+
+        // 用与绘制一致的字体实测文本宽度，横向布槽
+        let (items, preedit_w) = unsafe {
+            let hdc = GetDC(Some(hwnd));
+            let cand_font = make_font(scale(BASE_FONT_HEIGHT, dpi));
+            let preedit_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
+
+            let old = SelectObject(hdc, HGDIOBJ(cand_font.0));
+            let mut x = padding;
+            let items: Vec<Item> = ctx
+                .candidates
+                .iter()
+                .enumerate()
+                .take(9)
+                .map(|(i, c)| {
+                    let label = format!("{}.", i + 1);
+                    let label_w = text_width(hdc, &label);
+                    let text_w = text_width(hdc, &c.text);
+                    let item = Item {
+                        label,
+                        text: c.text.clone(),
+                        x,
+                        label_w,
+                        text_w,
+                        highlighted: i == ctx.highlighted,
+                    };
+                    x += label_w + label_gap + text_w + item_gap;
+                    item
+                })
+                .collect();
+
+            SelectObject(hdc, HGDIOBJ(preedit_font.0));
+            let preedit_w = text_width(hdc, &ctx.preedit);
+
+            SelectObject(hdc, old);
+            let _ = DeleteObject(HGDIOBJ(cand_font.0));
+            let _ = DeleteObject(HGDIOBJ(preedit_font.0));
+            ReleaseDC(Some(hwnd), hdc);
+            (items, preedit_w)
+        };
+
+        let items_end = items
+            .last()
+            .map(|it| it.x + it.label_w + label_gap + it.text_w)
+            .unwrap_or(padding);
+        let width = (items_end.max(padding + preedit_w) + padding).max(scale(BASE_MIN_WIDTH, dpi));
+        let height = scale(BASE_PREEDIT_HEIGHT, dpi) + scale(BASE_ROW_HEIGHT, dpi) + padding * 2;
+
         PAINT_DATA.with_borrow_mut(|data| {
             data.preedit = ctx.preedit.clone();
-            data.rows = rows;
+            data.items = items;
             data.dpi = dpi;
         });
-
-        let line_h = scale(BASE_LINE_HEIGHT, dpi);
-        let preedit_h = scale(BASE_LINE_HEIGHT * 3 / 4, dpi);
-        let padding = scale(BASE_PADDING, dpi);
-        let width = scale(BASE_WIDTH, dpi);
-        let height = preedit_h + row_count * line_h + padding * 2;
 
         unsafe {
             let (mut x, mut y) = match anchor {
@@ -195,93 +275,86 @@ unsafe extern "system" fn wnd_proc(
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-unsafe fn make_font(height: i32, weight: i32) -> HFONT {
-    CreateFontW(
-        -height, // 负值表示字符高度（em），排版更稳定
-        0,
-        0,
-        0,
-        weight,
-        0,
-        0,
-        0,
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        w!("Microsoft YaHei UI"),
-    )
-}
-
 unsafe fn paint(hdc: HDC, rc: &RECT) {
     PAINT_DATA.with_borrow(|data| {
         let dpi = data.dpi;
-        let line_h = scale(BASE_LINE_HEIGHT, dpi);
-        let preedit_h = scale(BASE_LINE_HEIGHT * 3 / 4, dpi);
         let padding = scale(BASE_PADDING, dpi);
-        let width = scale(BASE_WIDTH, dpi);
+        let label_gap = scale(BASE_LABEL_GAP, dpi);
+        let hl_pad = scale(BASE_HL_PAD, dpi);
+        let preedit_h = scale(BASE_PREEDIT_HEIGHT, dpi);
+        let row_h = scale(BASE_ROW_HEIGHT, dpi);
 
         let bg = CreateSolidBrush(COLORREF(COLOR_BG));
         FillRect(hdc, rc, bg);
         let _ = DeleteObject(HGDIOBJ(bg.0));
         SetBkMode(hdc, TRANSPARENT);
 
-        // 预编辑串（小号灰字）
-        let preedit_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi), FW_NORMAL.0 as i32);
+        // 预编辑串（小号灰字，第一行）
+        let preedit_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
         let old_font = SelectObject(hdc, HGDIOBJ(preedit_font.0));
         SetTextColor(hdc, COLORREF(COLOR_PREEDIT));
-        let mut utf16: Vec<u16> = data.preedit.encode_utf16().collect();
-        let mut rect = RECT {
-            left: padding,
-            top: padding,
-            right: width - padding,
-            bottom: padding + preedit_h,
-        };
-        DrawTextW(hdc, &mut utf16, &mut rect, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        draw_line(
+            hdc,
+            &data.preedit,
+            padding,
+            padding,
+            rc.right - padding,
+            preedit_h,
+        );
 
-        // 候选行（大号字，选中行整行高亮）
-        let cand_font = make_font(scale(BASE_FONT_HEIGHT, dpi), FW_NORMAL.0 as i32);
+        // 候选行（第二行横排）
+        let cand_font = make_font(scale(BASE_FONT_HEIGHT, dpi));
         SelectObject(hdc, HGDIOBJ(cand_font.0));
-        for (i, (label, text, highlighted)) in data.rows.iter().enumerate() {
-            let top = padding + preedit_h + i as i32 * line_h;
-            if *highlighted {
+        let row_top = padding + preedit_h;
+        for item in &data.items {
+            let item_end = item.x + item.label_w + label_gap + item.text_w;
+            if item.highlighted {
                 let hl = CreateSolidBrush(COLORREF(COLOR_HIGHLIGHT_BG));
-                let row_rect = RECT {
-                    left: scale(4, dpi),
-                    top,
-                    right: width - scale(4, dpi),
-                    bottom: top + line_h,
+                let hl_rect = RECT {
+                    left: item.x - hl_pad,
+                    top: row_top,
+                    right: item_end + hl_pad,
+                    bottom: row_top + row_h,
                 };
-                FillRect(hdc, &row_rect, hl);
+                FillRect(hdc, &hl_rect, hl);
                 let _ = DeleteObject(HGDIOBJ(hl.0));
             }
 
-            // 序号
             SetTextColor(hdc, COLORREF(COLOR_LABEL));
-            let mut label_utf16: Vec<u16> = format!("{label}.").encode_utf16().collect();
-            let mut label_rect = RECT {
-                left: padding,
-                top,
-                right: padding + scale(26, dpi),
-                bottom: top + line_h,
-            };
-            DrawTextW(hdc, &mut label_utf16, &mut label_rect, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+            draw_line(hdc, &item.label, item.x, row_top, item.x + item.label_w, row_h);
 
-            // 候选文本
             SetTextColor(hdc, COLORREF(COLOR_TEXT));
-            let mut text_utf16: Vec<u16> = text.encode_utf16().collect();
-            let mut text_rect = RECT {
-                left: padding + scale(32, dpi),
-                top,
-                right: width - padding,
-                bottom: top + line_h,
-            };
-            DrawTextW(hdc, &mut text_utf16, &mut text_rect, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+            draw_line(
+                hdc,
+                &item.text,
+                item.x + item.label_w + label_gap,
+                row_top,
+                item_end,
+                row_h,
+            );
         }
 
         SelectObject(hdc, old_font);
         let _ = DeleteObject(HGDIOBJ(cand_font.0));
         let _ = DeleteObject(HGDIOBJ(preedit_font.0));
     });
+}
+
+unsafe fn draw_line(hdc: HDC, text: &str, left: i32, top: i32, right: i32, height: i32) {
+    if text.is_empty() {
+        return;
+    }
+    let mut utf16: Vec<u16> = text.encode_utf16().collect();
+    let mut rect = RECT {
+        left,
+        top,
+        right,
+        bottom: top + height,
+    };
+    DrawTextW(
+        hdc,
+        &mut utf16,
+        &mut rect,
+        DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_VCENTER,
+    );
 }
