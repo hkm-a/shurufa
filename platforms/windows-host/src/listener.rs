@@ -22,7 +22,7 @@ use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowThreadProcessId,
     RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_CLIPBOARDUPDATE, WNDCLASSW,
+    WM_CLIPBOARDUPDATE, WM_HOTKEY, WNDCLASSW,
 };
 
 /// 敏感来源进程名（小写）：其复制内容不入历史
@@ -80,6 +80,8 @@ pub fn run(store: ClipboardStore) -> Result<()> {
             captured: 0,
         });
         AddClipboardFormatListener(hwnd)?;
+        let hotkey = crate::panel::register_hotkey(hwnd);
+        println!("历史面板热键：{hotkey}");
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -100,6 +102,14 @@ unsafe extern "system" fn wnd_proc(
         #[allow(static_mut_refs)]
         if let Some(state) = STATE.as_mut() {
             state.on_clipboard_update(hwnd);
+        }
+        return LRESULT(0);
+    }
+    if msg == WM_HOTKEY && wparam.0 as i32 == crate::panel::HOTKEY_ID {
+        #[allow(static_mut_refs)]
+        if let Some(state) = STATE.as_ref() {
+            let entries = state.store.list(9, 0).unwrap_or_default();
+            crate::panel::show(entries);
         }
         return LRESULT(0);
     }

@@ -4,6 +4,7 @@
 //! 查询与管理，供验收与后续 UI 面板复用。
 
 mod listener;
+mod panel;
 mod paste;
 
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore, RetentionPolicy};
@@ -76,9 +77,9 @@ fn main() {
             };
             let store = open_store();
             match store.get(id as i64) {
-                Ok(Some(entry)) => match paste::copy_entry_to_clipboard(&entry) {
+                Ok(Some(entry)) => match paste::copy_entry_to_clipboard(&store, &entry) {
                     Ok(true) => println!("已写回剪贴板"),
-                    Ok(false) => println!("该类型暂不支持写回（图片待 M5）"),
+                    Ok(false) => println!("条目数据缺失，无法写回"),
                     Err(e) => {
                         eprintln!("写回失败：{e}");
                         std::process::exit(1);
