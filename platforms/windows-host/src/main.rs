@@ -49,6 +49,11 @@ fn main() {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     match cmd {
         "run" => {
+            // 崩溃必须留痕：面板/监听均为回调驱动，控制台通常不可见
+            std::panic::set_hook(Box::new(|info| {
+                log_line(&format!("PANIC：{info}"));
+            }));
+            hide_own_console();
             let store = open_store();
             println!("剪贴板监听已启动，历史库：{}", db_path().display());
             log_line(&format!("守护进程启动，历史库：{}", db_path().display()));
@@ -126,6 +131,22 @@ fn main() {
                  \x20 clear           清空未置顶记录\n\
                  \x20 retention       立即执行留存清理"
             );
+        }
+    }
+}
+
+/// 隐藏本进程独占的控制台窗口（start/双击启动时系统新建的那个）。
+/// 从已有终端手动运行时控制台由 shell 共享，不隐藏。
+fn hide_own_console() {
+    use windows::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    unsafe {
+        let mut pids = [0u32; 2];
+        if GetConsoleProcessList(&mut pids) == 1 {
+            let hwnd = GetConsoleWindow();
+            if !hwnd.is_invalid() {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
         }
     }
 }

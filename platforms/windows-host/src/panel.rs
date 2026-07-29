@@ -123,13 +123,15 @@ pub fn show(entries: Vec<ClipEntry>) {
 }
 
 fn hide() {
-    PANEL.with_borrow_mut(|slot| {
-        if let Some(state) = slot.take() {
-            unsafe {
-                let _ = ShowWindow(state.hwnd, SW_HIDE);
-            }
+    // 先取出状态并结束借用，再调 ShowWindow：隐藏持焦点的窗口会
+    // 同步派发 WM_KILLFOCUS，回调里会再次进入 hide()，借用期间
+    // 重入会触发 RefCell 双重借用 panic 并拖垮整个进程。
+    let hwnd = PANEL.with_borrow_mut(|slot| slot.take().map(|s| s.hwnd));
+    if let Some(hwnd) = hwnd {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
         }
-    });
+    }
 }
 
 /// 确认选择：写回剪贴板 → 归还前台 → 模拟 Ctrl+V。
@@ -463,6 +465,11 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
 }
 
 unsafe fn draw_line(hdc: HDC, text: &str, x: i32, y: i32, w: i32, h: i32) {
+    // 空串必须跳过：空 Vec 的悬垂指针传入 DrawTextW 会在 user32
+    // 内触发访问违例（0xc0000005），整个进程随之崩溃
+    if text.is_empty() {
+        return;
+    }
     let mut utf16: Vec<u16> = text.encode_utf16().collect();
     let mut rect = RECT {
         left: x,
