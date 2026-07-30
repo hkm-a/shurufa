@@ -796,6 +796,7 @@ dependencies = [
 name = "shurufa-rimejni"
 version = "0.1.0"
 dependencies = [
+ "clipboard-store",
  "ime-bridge",
  "jni",
  "sync-core",

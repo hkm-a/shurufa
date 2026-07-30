@@ -13,6 +13,7 @@ use jni::JNIEnv;
 
 use ime_bridge::{Engine, Session};
 
+mod clip_jni;
 mod sync_jni;
 
 static ENGINE: OnceLock<Result<Engine, String>> = OnceLock::new();

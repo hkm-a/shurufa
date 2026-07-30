@@ -1,5 +1,6 @@
 package com.shurufa.ime
 
+import android.content.ClipboardManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.inputmethodservice.InputMethodService
@@ -11,6 +12,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import java.io.File
 import kotlin.concurrent.thread
@@ -53,16 +55,20 @@ class ShurufaImeService : InputMethodService() {
     private var syncBar: TextView? = null
     private var pendingSyncText: String? = null
     private val syncPoll = Handler(Looper.getMainLooper())
+    /// 剪贴板历史面板（覆盖按键区）与去重用的最近系统剪贴板文本
+    private var historyPanel: LinearLayout? = null
+    private var lastClipboardText: String? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureEngine()
-        // 同步服务启动含身份生成与端口绑定，放后台线程避免阻塞主线程
+        // 同步与历史库初始化含 I/O，放后台线程避免阻塞主线程
         thread(name = "sync-start") {
             try {
+                ClipStore.ensureInit(applicationContext)
                 SyncBridge.ensureStarted(applicationContext)
             } catch (e: Throwable) {
-                android.util.Log.e("shurufa", "同步启动失败", e)
+                android.util.Log.e("shurufa", "同步/历史初始化失败", e)
             }
         }
     }
@@ -138,22 +144,124 @@ class ShurufaImeService : InputMethodService() {
         }
         root.addView(syncBar)
 
+        // 候选栏行：左侧剪贴板按钮 + 可横向滚动的候选列表
+        val topRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(44f)
+            )
+        }
+        val clipButton = TextView(this).apply {
+            text = "⊞"
+            gravity = Gravity.CENTER
+            textSize = 20f
+            setTextColor(COLOR_CAND_HL)
+            setBackgroundColor(COLOR_KEY_FUNC)
+            setPadding(dp(14f), 0, dp(14f), 0)
+            setOnClickListener { toggleHistory() }
+        }
+        topRow.addView(
+            clipButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        )
         candidateBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
         val scroll = HorizontalScrollView(this).apply {
             addView(candidateBar)
             isHorizontalScrollBarEnabled = false
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(44f)
-            )
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
         }
-        root.addView(scroll)
+        topRow.addView(scroll)
+        root.addView(topRow)
 
         keyArea = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(keyArea)
         rebuildKeys()
+
+        // 历史面板：默认隐藏，展开时盖住按键区
+        historyPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        root.addView(historyPanel)
         return root
+    }
+
+    // ---------- 剪贴板历史面板 ----------
+
+    private fun toggleHistory() {
+        val panel = historyPanel ?: return
+        if (panel.visibility == View.VISIBLE) {
+            panel.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+        } else {
+            populateHistory(panel)
+            panel.visibility = View.VISIBLE
+            keyArea.visibility = View.GONE
+        }
+    }
+
+    private fun populateHistory(panel: LinearLayout) {
+        panel.removeAllViews()
+        panel.addView(TextView(this).apply {
+            text = "剪贴板历史（点击上屏，再点 ⊞ 返回）"
+            textSize = 12f
+            setTextColor(COLOR_PREEDIT)
+            setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
+        })
+        val entries = try {
+            ClipStore.list(30)
+        } catch (e: Throwable) {
+            emptyList()
+        }
+        if (entries.isEmpty()) {
+            panel.addView(TextView(this).apply {
+                text = "（暂无历史）"
+                setTextColor(COLOR_PREEDIT)
+                setPadding(dp(12f), dp(16f), dp(12f), dp(16f))
+            })
+            return
+        }
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        for (entry in entries) {
+            list.addView(TextView(this).apply {
+                text = entry.text.replace('\n', ' ').take(48)
+                textSize = 16f
+                setTextColor(COLOR_TEXT)
+                setPadding(dp(14f), dp(12f), dp(14f), dp(12f))
+                setOnClickListener {
+                    currentInputConnection?.commitText(entry.text, 1)
+                    toggleHistory()
+                }
+            })
+        }
+        panel.addView(ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(210f)
+            )
+            addView(list)
+        })
+    }
+
+    /// 键盘弹出时读系统剪贴板：新内容入本地历史并推送电脑（手机→电脑）。
+    /// 输入法在前台，读取合法；安卓 12+ 会有一次系统提示，属正常。
+    private fun captureSystemClipboard() {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        val clip = cm.primaryClip ?: return
+        if (clip.itemCount == 0) return
+        val text = clip.getItemAt(0).coerceToText(this)?.toString()
+        if (text.isNullOrBlank() || text == lastClipboardText) return
+        lastClipboardText = text
+        try {
+            ClipStore.insert(text, "本机")
+            SyncBridge.nativeSendClip(text)
+        } catch (e: Throwable) {
+            android.util.Log.e("shurufa", "剪贴板同步失败", e)
+        }
     }
 
     /// 依据 symbolMode 重建按键区：字母页含常驻数字行，符号页含标点表。
@@ -387,6 +495,10 @@ class ShurufaImeService : InputMethodService() {
         }
         langKey?.text = langLabel()
         updateCandidates("", emptyList(), 0)
+        // 历史面板复位到键盘态
+        historyPanel?.visibility = View.GONE
+        keyArea.visibility = View.VISIBLE
+        captureSystemClipboard()
         startSyncPolling()
     }
 
@@ -413,6 +525,7 @@ class ShurufaImeService : InputMethodService() {
                     val from = parts.getOrNull(0).orEmpty()
                     val text = parts.drop(1).joinToString("\u0001")
                     if (text.isNotEmpty()) {
+                        ClipStore.insert(text, "同步·$from")
                         pendingSyncText = text
                         val preview = text.replace('\n', ' ').take(30)
                         syncBar?.text = "来自 $from：$preview（点此上屏）"
