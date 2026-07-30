@@ -123,3 +123,29 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeReset(
         s.simulate("{Escape}");
     }
 }
+
+/// 切换中英文（ascii_mode）；返回切换后是否为英文直输。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeToggleAscii(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    let session = SESSION.lock().expect("会话锁不可恢复");
+    match session.as_ref() {
+        Some(s) => s.toggle_ascii() as jboolean,
+        None => 0,
+    }
+}
+
+/// 查询当前是否处于英文直输模式。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeIsAscii(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    let session = SESSION.lock().expect("会话锁不可恢复");
+    match session.as_ref() {
+        Some(s) => s.get_option("ascii_mode") as jboolean,
+        None => 0,
+    }
+}

@@ -21,4 +21,9 @@ object RimeBridge {
     external fun nativeContext(): String
 
     external fun nativeReset()
+
+    /** 切换中英文（ascii_mode），返回切换后是否为英文直输。 */
+    external fun nativeToggleAscii(): Boolean
+
+    external fun nativeIsAscii(): Boolean
 }

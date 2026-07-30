@@ -140,6 +140,27 @@ impl Session<'_> {
         unsafe { (self.engine.api().process_key)(self.id, keycode, mask) != 0 }
     }
 
+    /// 读取布尔开关（如 "ascii_mode"、"simplification"）。
+    pub fn get_option(&self, option: &str) -> bool {
+        let opt = to_cstring(option);
+        unsafe { (self.engine.api().get_option)(self.id, opt.as_ptr()) != 0 }
+    }
+
+    /// 设置布尔开关。
+    pub fn set_option(&self, option: &str, value: bool) {
+        let opt = to_cstring(option);
+        unsafe {
+            (self.engine.api().set_option)(self.id, opt.as_ptr(), value as ffi::Bool);
+        }
+    }
+
+    /// 切换中英文（ascii_mode）；返回切换后是否为英文直输模式。
+    pub fn toggle_ascii(&self) -> bool {
+        let now = !self.get_option("ascii_mode");
+        self.set_option("ascii_mode", now);
+        now
+    }
+
     /// 读取当前输入上下文（预编辑串与候选列表）。
     pub fn context(&self) -> Context {
         let api = self.engine.api();

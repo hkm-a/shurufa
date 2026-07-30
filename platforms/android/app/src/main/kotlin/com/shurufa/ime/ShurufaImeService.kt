@@ -41,6 +41,12 @@ class ShurufaImeService : InputMethodService() {
 
     private lateinit var candidateBar: LinearLayout
     private lateinit var preeditView: TextView
+    /// 键盘按键区容器；切换字母页/符号页时只重建这一部分
+    private lateinit var keyArea: LinearLayout
+    /// 中英文标记键，切换后更新键帽
+    private var langKey: TextView? = null
+    /// 当前是否显示符号页
+    private var symbolMode = false
 
     override fun onCreate() {
         super.onCreate()
@@ -115,17 +121,59 @@ class ShurufaImeService : InputMethodService() {
         }
         root.addView(scroll)
 
-        listOf("qwertyuiop", "asdfghjkl", "zxcvbnm").forEachIndexed { index, row ->
-            root.addView(buildLetterRow(row, withBackspace = index == 2))
-        }
-        root.addView(buildBottomRow())
+        keyArea = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(keyArea)
+        rebuildKeys()
         return root
+    }
+
+    /// 依据 symbolMode 重建按键区：字母页含常驻数字行，符号页含标点表。
+    private fun rebuildKeys() {
+        if (!::keyArea.isInitialized) return
+        keyArea.removeAllViews()
+        langKey = null
+        if (symbolMode) {
+            buildSymbolPage()
+        } else {
+            buildLetterPage()
+        }
+    }
+
+    private fun buildLetterPage() {
+        // 常驻数字行：有组合时选词，无组合时上屏数字（复用 onLetter 的直通逻辑）
+        val numberRow = rowLayout()
+        "1234567890".forEach { c ->
+            numberRow.addView(key(c.toString(), 1f) { onLetter(c) })
+        }
+        keyArea.addView(numberRow)
+
+        listOf("qwertyuiop", "asdfghjkl", "zxcvbnm").forEachIndexed { index, row ->
+            keyArea.addView(buildLetterRow(row, withBackspace = index == 2))
+        }
+        keyArea.addView(buildBottomRow())
+    }
+
+    private fun buildSymbolPage() {
+        // 常用中文标点与符号，点击直接上屏（组合中先确认首选）
+        listOf(
+            "，。？！；：",
+            "“”‘’（）",
+            "、~·@#￥",
+            "%&*—…/",
+        ).forEach { line ->
+            val row = rowLayout()
+            line.forEach { c ->
+                row.addView(key(c.toString(), 1f) { onPunct(c.toString()) })
+            }
+            keyArea.addView(row)
+        }
+        keyArea.addView(buildBottomRow())
     }
 
     private fun rowLayout(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, dp(52f)
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(50f)
         )
     }
 
@@ -166,13 +214,33 @@ class ShurufaImeService : InputMethodService() {
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
     }
 
+    /// 底部功能行：符号页切换、中英切换、逗号、空格、句号、回车。
     private fun buildBottomRow(): LinearLayout {
         val row = rowLayout()
-        row.addView(key("，", 1.2f, functional = true) { onPunct("，") })
-        row.addView(key("空格", 4f) { onSpace() })
-        row.addView(key("。", 1.2f, functional = true) { onPunct("。") })
-        row.addView(key("回车", 1.6f, functional = true) { onEnter() })
+        val symbolLabel = if (symbolMode) "返回" else "符"
+        row.addView(key(symbolLabel, 1.4f, functional = true) {
+            symbolMode = !symbolMode
+            rebuildKeys()
+        })
+        langKey = key(langLabel(), 1.4f, functional = true) { onToggleLang() }
+        row.addView(langKey)
+        row.addView(key("，", 1f, functional = true) { onPunct("，") })
+        row.addView(key("空格", 3.4f) { onSpace() })
+        row.addView(key("。", 1f, functional = true) { onPunct("。") })
+        row.addView(key("回车", 1.8f, functional = true) { onEnter() })
         return row
+    }
+
+    private fun langLabel(): String =
+        if (engineReady && RimeBridge.nativeIsAscii()) "英" else "中"
+
+    private fun onToggleLang() {
+        if (!engineReady) return
+        RimeBridge.nativeToggleAscii()
+        // 切换会清掉未完成组合，刷新界面
+        RimeBridge.nativeReset()
+        langKey?.text = langLabel()
+        sync()
     }
 
     // ---------- 输入处理 ----------
@@ -288,6 +356,7 @@ class ShurufaImeService : InputMethodService() {
         if (engineReady) {
             RimeBridge.nativeReset()
         }
+        langKey?.text = langLabel()
         updateCandidates("", emptyList(), 0)
     }
 
