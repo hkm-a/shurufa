@@ -6,6 +6,7 @@
 mod listener;
 mod panel;
 mod paste;
+mod sync;
 
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore, RetentionPolicy};
 use std::path::PathBuf;
@@ -54,6 +55,7 @@ fn main() {
                 log_line(&format!("PANIC：{info}"));
             }));
             hide_own_console();
+            sync::start_daemon();
             // 高分屏下面板按真实 DPI 布局渲染，而非被系统位图拉伸
             unsafe {
                 use windows::Win32::UI::HiDpi::{
@@ -133,6 +135,21 @@ fn main() {
         "clear" => {
             let n = open_store().clear_unpinned().unwrap_or(0);
             println!("已清空 {n} 条未置顶记录");
+        }
+        "pair" => {
+            let Some(addr) = args.get(1) else {
+                eprintln!("用法：shurufa-host pair <对方IP[:端口]>");
+                std::process::exit(2);
+            };
+            sync::cli_pair(addr);
+        }
+        "devices" => sync::cli_devices(),
+        "unpair" => {
+            let Some(fp) = args.get(1) else {
+                eprintln!("用法：shurufa-host unpair <指纹前缀>");
+                std::process::exit(2);
+            };
+            sync::cli_unpair(fp);
         }
         "retention" => {
             let n = open_store()

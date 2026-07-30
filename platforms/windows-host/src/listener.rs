@@ -160,6 +160,10 @@ impl ListenerState {
             };
             match result {
                 Ok(Some(id)) => {
+                    // 文本条目推送给已配对设备（文件/图片暂不同步）
+                    if let Capture::Text(text) = &capture {
+                        crate::sync::broadcast_text(text);
+                    }
                     if !normalized.is_empty() {
                         self.last_insert = Some((id, normalized, std::time::Instant::now()));
                     }
