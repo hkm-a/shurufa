@@ -9,6 +9,7 @@ import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -340,11 +341,62 @@ class ShurufaImeService : InputMethodService() {
             row.addView(key(c.toString(), 1f) { onLetter(c) })
         }
         if (withBackspace) {
-            row.addView(key("⌫", 1.5f, functional = true) { onBackspace() })
+            row.addView(backspaceKey(1.5f))
         } else if (letters.length == 9) {
             row.addView(spacer(0.5f))
         }
         return row
+    }
+
+    /// 退格键：轻触删一字，向上滑清空整个输入（组合与已输入文本）。
+    private fun backspaceKey(weight: Float): TextView = TextView(this).apply {
+        text = "⌫"
+        gravity = Gravity.CENTER
+        textSize = 19f
+        setTextColor(COLOR_TEXT)
+        setBackgroundColor(COLOR_KEY_FUNC)
+        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
+            .apply { setMargins(dp(2f), dp(3f), dp(2f), dp(3f)) }
+        var downY = 0f
+        var cleared = false
+        setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downY = ev.y
+                    cleared = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    // 上滑超过阈值即清空，一次手势只触发一次
+                    if (!cleared && downY - ev.y > dp(36f)) {
+                        cleared = true
+                        onClearAll()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!cleared) onBackspace()
+                    performClick()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    /// 清空当前输入：清引擎组合、结束预编辑，并删除输入框内文本。
+    private fun onClearAll() {
+        val ic = currentInputConnection ?: return
+        ic.beginBatchEdit()
+        if (engineReady) {
+            RimeBridge.nativeReset()
+        }
+        ic.finishComposingText()
+        // deleteSurroundingText 对已提交文本生效，删光标前后大范围即清空
+        ic.deleteSurroundingText(50000, 50000)
+        ic.endBatchEdit()
+        updateCandidates("", emptyList(), 0)
+        syncBar?.visibility = View.GONE
     }
 
     private fun spacer(weight: Float): View = View(this).apply {
