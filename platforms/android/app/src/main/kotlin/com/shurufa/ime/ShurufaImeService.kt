@@ -1,8 +1,10 @@
 package com.shurufa.ime
 
 import android.content.ClipboardManager
-import android.graphics.Color
+import android.content.res.Configuration
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
@@ -13,29 +15,73 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
 import java.io.File
 import kotlin.concurrent.thread
 
 /**
- * 最小可用的拼音键盘：QWERTY 三排字母 + 功能行 + 候选栏。
+ * 拼音键盘：QWERTY + 常驻数字行 + 符号页 + 中英切换，候选栏与
+ * 剪贴板历史面板，双向同步接收。视觉支持浅色/深色主题、圆角按键
+ * 与按下态、字符气泡、退格长按连删。
  *
- * 引擎在后台线程初始化（首次含词典部署，数秒到数十秒），
- * 就绪前按键直接以字母上屏（英文直通），与桌面端策略一致。
+ * 引擎在后台线程初始化（首次含词典部署），就绪前按键英文直通，
+ * 与桌面端策略一致。
  */
 class ShurufaImeService : InputMethodService() {
+
+    /** 一套主题配色（ARGB）。 */
+    private data class Palette(
+        val bg: Int,
+        val key: Int,
+        val keyPressed: Int,
+        val keyFunc: Int,
+        val funcPressed: Int,
+        val keyText: Int,
+        val funcText: Int,
+        val candidate: Int,
+        val candidateHl: Int,
+        val preedit: Int,
+        val syncBg: Int,
+        val syncText: Int,
+        val accent: Int,
+    )
 
     companion object {
         private const val XK_BACKSPACE = 0xff08
         private const val XK_RETURN = 0xff0d
-        private const val COLOR_BG = 0xFFF2F3F5.toInt()
-        private const val COLOR_KEY = 0xFFFFFFFF.toInt()
-        private const val COLOR_KEY_FUNC = 0xFFDCE0E6.toInt()
-        private const val COLOR_TEXT = 0xFF202020.toInt()
-        private const val COLOR_CAND = 0xFF202020.toInt()
-        private const val COLOR_CAND_HL = 0xFFB06030.toInt()
-        private const val COLOR_PREEDIT = 0xFF888888.toInt()
+
+        private val LIGHT = Palette(
+            bg = 0xFFE8EAEE.toInt(),
+            key = 0xFFFFFFFF.toInt(),
+            keyPressed = 0xFFC7CED9.toInt(),
+            keyFunc = 0xFFD3D8E1.toInt(),
+            funcPressed = 0xFFBFC6D2.toInt(),
+            keyText = 0xFF1A1A1A.toInt(),
+            funcText = 0xFF33383F.toInt(),
+            candidate = 0xFF1A1A1A.toInt(),
+            candidateHl = 0xFFB86A34.toInt(),
+            preedit = 0xFF8A9099.toInt(),
+            syncBg = 0xFFFFF1DE.toInt(),
+            syncText = 0xFF6A4A20.toInt(),
+            accent = 0xFFB86A34.toInt(),
+        )
+        private val DARK = Palette(
+            bg = 0xFF15171B.toInt(),
+            key = 0xFF2B2F36.toInt(),
+            keyPressed = 0xFF474D57.toInt(),
+            keyFunc = 0xFF373C44.toInt(),
+            funcPressed = 0xFF4A5059.toInt(),
+            keyText = 0xFFECECEC.toInt(),
+            funcText = 0xFFCFD3D9.toInt(),
+            candidate = 0xFFECECEC.toInt(),
+            candidateHl = 0xFFE6A867.toInt(),
+            preedit = 0xFF8B9199.toInt(),
+            syncBg = 0xFF3A331F.toInt(),
+            syncText = 0xFFEAD6B0.toInt(),
+            accent = 0xFFE6A867.toInt(),
+        )
 
         @Volatile
         private var engineReady = false
@@ -46,24 +92,26 @@ class ShurufaImeService : InputMethodService() {
 
     private lateinit var candidateBar: LinearLayout
     private lateinit var preeditView: TextView
-    /// 键盘按键区容器；切换字母页/符号页时只重建这一部分
     private lateinit var keyArea: LinearLayout
-    /// 中英文标记键，切换后更新键帽
     private var langKey: TextView? = null
-    /// 当前是否显示符号页
     private var symbolMode = false
-    /// 顶部同步提示条：显示电脑同步来的剪贴板，点击一键上屏
     private var syncBar: TextView? = null
     private var pendingSyncText: String? = null
     private val syncPoll = Handler(Looper.getMainLooper())
-    /// 剪贴板历史面板（覆盖按键区）与去重用的最近系统剪贴板文本
     private var historyPanel: LinearLayout? = null
     private var lastClipboardText: String? = null
+
+    /// 当前主题；随系统深色设置在重建输入视图时更新
+    private var palette: Palette = LIGHT
+    /// 字符气泡（按键放大预览）
+    private var bubble: PopupWindow? = null
+    private var bubbleText: TextView? = null
+    /// 退格长按连删定时器
+    private val repeatHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
         super.onCreate()
         ensureEngine()
-        // 同步与历史库初始化含 I/O，放后台线程避免阻塞主线程
         thread(name = "sync-start") {
             try {
                 ClipStore.ensureInit(applicationContext)
@@ -74,7 +122,6 @@ class ShurufaImeService : InputMethodService() {
         }
     }
 
-    /** 后台准备引擎：解包方案资产 → 初始化 librime（幂等）。 */
     private fun ensureEngine() {
         if (engineReady || engineStarting) return
         engineStarting = true
@@ -91,7 +138,6 @@ class ShurufaImeService : InputMethodService() {
         }
     }
 
-    /** 把 assets/schemas 解包到私有目录；按 versionCode 判断是否需要刷新。 */
     private fun unpackSchemas(): File {
         val dest = File(filesDir, "schemas")
         val marker = File(dest, ".version")
@@ -110,32 +156,144 @@ class ShurufaImeService : InputMethodService() {
         return dest
     }
 
-    // ---------- 键盘视图 ----------
+    // ---------- 主题与控件工厂 ----------
 
     private fun dp(v: Float): Int =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics).toInt()
 
+    private fun isDark(): Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+
+    /// 圆角按键背景：normal / pressed 两态。每次新建（Drawable 状态不可共享）。
+    private fun keyBackground(normal: Int, pressed: Int): StateListDrawable {
+        fun round(color: Int) = GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(7f).toFloat()
+        }
+        return StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), round(pressed))
+            addState(intArrayOf(), round(normal))
+        }
+    }
+
+    /// 字符键：圆角、按下态、按下弹放大气泡。
+    private fun charKey(label: String, weight: Float, onTap: () -> Unit): TextView =
+        TextView(this).apply {
+            text = label
+            gravity = Gravity.CENTER
+            textSize = 20f
+            setTextColor(palette.keyText)
+            background = keyBackground(palette.key, palette.keyPressed)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
+                .apply { setMargins(dp(2.5f), dp(3.5f), dp(2.5f), dp(3.5f)) }
+            setOnTouchListener { v, ev ->
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        isPressed = true
+                        showBubble(v, label)
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        isPressed = false
+                        hideBubble()
+                        onTap()
+                        performClick()
+                        true
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        isPressed = false
+                        hideBubble()
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
+
+    /// 功能键：圆角、按下态，无气泡。返回 TextView 供调用方持有（如中英键）。
+    private fun funcKey(label: String, weight: Float, onTap: () -> Unit): TextView =
+        TextView(this).apply {
+            text = label
+            gravity = Gravity.CENTER
+            textSize = 16f
+            setTextColor(palette.funcText)
+            typeface = Typeface.DEFAULT_BOLD
+            background = keyBackground(palette.keyFunc, palette.funcPressed)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
+                .apply { setMargins(dp(2.5f), dp(3.5f), dp(2.5f), dp(3.5f)) }
+            setOnClickListener { onTap() }
+        }
+
+    private fun showBubble(anchor: View, label: String) {
+        val w = dp(46f)
+        val h = dp(54f)
+        val tv = bubbleText ?: TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 26f
+            setTextColor(palette.keyText)
+            background = GradientDrawable().apply {
+                setColor(palette.key)
+                cornerRadius = dp(8f).toFloat()
+                setStroke(dp(1f), palette.keyPressed)
+            }
+            bubbleText = this
+        }
+        tv.text = label
+        tv.setTextColor(palette.keyText)
+        val pop = bubble ?: PopupWindow(tv, w, h, false).also {
+            it.isClippingEnabled = false
+            bubble = it
+        }
+        val loc = IntArray(2)
+        anchor.getLocationInWindow(loc)
+        val x = loc[0] + anchor.width / 2 - w / 2
+        val y = loc[1] - h - dp(2f)
+        try {
+            if (pop.isShowing) {
+                pop.update(x, y, w, h)
+            } else {
+                pop.showAtLocation(anchor, Gravity.NO_GRAVITY, x, y)
+            }
+        } catch (e: Throwable) {
+            // 个别 ROM 的 IME 窗口不允许弹窗，降级为无气泡
+        }
+    }
+
+    private fun hideBubble() {
+        try {
+            bubble?.dismiss()
+        } catch (e: Throwable) {
+        }
+    }
+
+    // ---------- 键盘视图 ----------
+
     override fun onCreateInputView(): View {
+        palette = if (isDark()) DARK else LIGHT
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(COLOR_BG)
-            setPadding(dp(2f), dp(2f), dp(2f), dp(4f))
+            setBackgroundColor(palette.bg)
+            setPadding(dp(3f), dp(4f), dp(3f), dp(6f))
         }
 
         preeditView = TextView(this).apply {
-            setTextColor(COLOR_PREEDIT)
+            setTextColor(palette.preedit)
             textSize = 13f
-            setPadding(dp(10f), dp(2f), dp(10f), 0)
+            setPadding(dp(12f), dp(3f), dp(12f), 0)
             visibility = View.GONE
         }
         root.addView(preeditView)
 
-        // 顶部同步提示条：电脑复制的内容同步到手机后在此一键上屏
         syncBar = TextView(this).apply {
-            setBackgroundColor(0xFFFFF3E0.toInt())
-            setTextColor(COLOR_TEXT)
+            background = GradientDrawable().apply {
+                setColor(palette.syncBg)
+                cornerRadius = dp(8f).toFloat()
+            }
+            setTextColor(palette.syncText)
             textSize = 14f
-            setPadding(dp(12f), dp(9f), dp(12f), dp(9f))
+            setPadding(dp(14f), dp(10f), dp(14f), dp(10f))
             visibility = View.GONE
             setOnClickListener {
                 pendingSyncText?.let { currentInputConnection?.commitText(it, 1) }
@@ -143,22 +301,23 @@ class ShurufaImeService : InputMethodService() {
                 visibility = View.GONE
             }
         }
-        root.addView(syncBar)
+        root.addView(syncBar, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { setMargins(dp(3f), dp(2f), dp(3f), dp(2f)) })
 
-        // 候选栏行：左侧剪贴板按钮 + 可横向滚动的候选列表
+        // 候选栏行：左侧剪贴板按钮 + 横向滚动候选
         val topRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(44f)
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46f)
             )
         }
         val clipButton = TextView(this).apply {
             text = "⊞"
             gravity = Gravity.CENTER
-            textSize = 20f
-            setTextColor(COLOR_CAND_HL)
-            setBackgroundColor(COLOR_KEY_FUNC)
-            setPadding(dp(14f), 0, dp(14f), 0)
+            textSize = 21f
+            setTextColor(palette.accent)
+            setPadding(dp(16f), 0, dp(16f), 0)
             setOnClickListener { toggleHistory() }
         }
         topRow.addView(
@@ -168,9 +327,7 @@ class ShurufaImeService : InputMethodService() {
                 LinearLayout.LayoutParams.MATCH_PARENT
             )
         )
-        candidateBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
+        candidateBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val scroll = HorizontalScrollView(this).apply {
             addView(candidateBar)
             isHorizontalScrollBarEnabled = false
@@ -183,7 +340,6 @@ class ShurufaImeService : InputMethodService() {
         root.addView(keyArea)
         rebuildKeys()
 
-        // 历史面板：默认隐藏，展开时盖住按键区
         historyPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -209,10 +365,10 @@ class ShurufaImeService : InputMethodService() {
     private fun populateHistory(panel: LinearLayout) {
         panel.removeAllViews()
         panel.addView(TextView(this).apply {
-            text = "剪贴板历史（点击上屏，再点 ⊞ 返回）"
+            text = "剪贴板历史 · 点击上屏 · 再点 ⊞ 返回"
             textSize = 12f
-            setTextColor(COLOR_PREEDIT)
-            setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
+            setTextColor(palette.preedit)
+            setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
         })
         val entries = try {
             ClipStore.list(30)
@@ -222,8 +378,8 @@ class ShurufaImeService : InputMethodService() {
         if (entries.isEmpty()) {
             panel.addView(TextView(this).apply {
                 text = "（暂无历史）"
-                setTextColor(COLOR_PREEDIT)
-                setPadding(dp(12f), dp(16f), dp(12f), dp(16f))
+                setTextColor(palette.preedit)
+                setPadding(dp(14f), dp(20f), dp(14f), dp(20f))
             })
             return
         }
@@ -232,13 +388,17 @@ class ShurufaImeService : InputMethodService() {
             list.addView(TextView(this).apply {
                 text = entry.text.replace('\n', ' ').take(48)
                 textSize = 16f
-                setTextColor(COLOR_TEXT)
-                setPadding(dp(14f), dp(12f), dp(14f), dp(12f))
+                setTextColor(palette.keyText)
+                background = keyBackground(palette.key, palette.keyPressed)
+                setPadding(dp(14f), dp(13f), dp(14f), dp(13f))
                 setOnClickListener {
                     currentInputConnection?.commitText(entry.text, 1)
                     toggleHistory()
                 }
-            })
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(dp(4f), dp(3f), dp(4f), dp(3f)) })
         }
         panel.addView(ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -248,8 +408,6 @@ class ShurufaImeService : InputMethodService() {
         })
     }
 
-    /// 键盘弹出时读系统剪贴板：新内容入本地历史并推送电脑（手机→电脑）。
-    /// 输入法在前台，读取合法；安卓 12+ 会有一次系统提示，属正常。
     private fun captureSystemClipboard() {
         val cm = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager ?: return
         val clip = cm.primaryClip ?: return
@@ -265,23 +423,19 @@ class ShurufaImeService : InputMethodService() {
         }
     }
 
-    /// 依据 symbolMode 重建按键区：字母页含常驻数字行，符号页含标点表。
+    // ---------- 按键布局 ----------
+
     private fun rebuildKeys() {
         if (!::keyArea.isInitialized) return
         keyArea.removeAllViews()
         langKey = null
-        if (symbolMode) {
-            buildSymbolPage()
-        } else {
-            buildLetterPage()
-        }
+        if (symbolMode) buildSymbolPage() else buildLetterPage()
     }
 
     private fun buildLetterPage() {
-        // 常驻数字行：有组合时选词，无组合时上屏数字（复用 onLetter 的直通逻辑）
         val numberRow = rowLayout()
         "1234567890".forEach { c ->
-            numberRow.addView(key(c.toString(), 1f) { onLetter(c) })
+            numberRow.addView(charKey(c.toString(), 1f) { onLetter(c) })
         }
         keyArea.addView(numberRow)
 
@@ -292,7 +446,6 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun buildSymbolPage() {
-        // 常用中文标点与符号，点击直接上屏（组合中先确认首选）
         listOf(
             "，。？！；：",
             "“”‘’（）",
@@ -301,7 +454,7 @@ class ShurufaImeService : InputMethodService() {
         ).forEach { line ->
             val row = rowLayout()
             line.forEach { c ->
-                row.addView(key(c.toString(), 1f) { onPunct(c.toString()) })
+                row.addView(charKey(c.toString(), 1f) { onPunct(c.toString()) })
             }
             keyArea.addView(row)
         }
@@ -311,35 +464,14 @@ class ShurufaImeService : InputMethodService() {
     private fun rowLayout(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, dp(50f)
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(52f)
         )
-    }
-
-    private fun key(
-        label: String,
-        weight: Float,
-        functional: Boolean = false,
-        onClick: () -> Unit,
-    ): TextView = TextView(this).apply {
-        text = label
-        gravity = Gravity.CENTER
-        textSize = 19f
-        setTextColor(COLOR_TEXT)
-        typeface = Typeface.DEFAULT
-        setBackgroundColor(if (functional) COLOR_KEY_FUNC else COLOR_KEY)
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
-            .apply { setMargins(dp(2f), dp(3f), dp(2f), dp(3f)) }
-        setOnClickListener { onClick() }
     }
 
     private fun buildLetterRow(letters: String, withBackspace: Boolean): LinearLayout {
         val row = rowLayout()
-        if (letters.length == 9) {
-            row.addView(spacer(0.5f))
-        }
-        letters.forEach { c ->
-            row.addView(key(c.toString(), 1f) { onLetter(c) })
-        }
+        if (letters.length == 9) row.addView(spacer(0.5f))
+        letters.forEach { c -> row.addView(charKey(c.toString(), 1f) { onLetter(c) }) }
         if (withBackspace) {
             row.addView(backspaceKey(1.5f))
         } else if (letters.length == 9) {
@@ -348,35 +480,53 @@ class ShurufaImeService : InputMethodService() {
         return row
     }
 
-    /// 退格键：轻触删一字，向上滑清空整个输入（组合与已输入文本）。
+    /// 退格键：轻触删一字，长按连续删除，上滑清空整个输入。
     private fun backspaceKey(weight: Float): TextView = TextView(this).apply {
         text = "⌫"
         gravity = Gravity.CENTER
         textSize = 19f
-        setTextColor(COLOR_TEXT)
-        setBackgroundColor(COLOR_KEY_FUNC)
+        setTextColor(palette.funcText)
+        background = keyBackground(palette.keyFunc, palette.funcPressed)
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
-            .apply { setMargins(dp(2f), dp(3f), dp(2f), dp(3f)) }
+            .apply { setMargins(dp(2.5f), dp(3.5f), dp(2.5f), dp(3.5f)) }
         var downY = 0f
         var cleared = false
+        var repeated = false
+        val repeat = object : Runnable {
+            override fun run() {
+                onBackspace()
+                repeated = true
+                repeatHandler.postDelayed(this, 55)
+            }
+        }
         setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    isPressed = true
                     downY = ev.y
                     cleared = false
+                    repeated = false
+                    repeatHandler.postDelayed(repeat, 400)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    // 上滑超过阈值即清空，一次手势只触发一次
                     if (!cleared && downY - ev.y > dp(36f)) {
                         cleared = true
+                        repeatHandler.removeCallbacks(repeat)
                         onClearAll()
                     }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (!cleared) onBackspace()
+                    isPressed = false
+                    repeatHandler.removeCallbacks(repeat)
+                    if (!cleared && !repeated) onBackspace()
                     performClick()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    isPressed = false
+                    repeatHandler.removeCallbacks(repeat)
                     true
                 }
                 else -> false
@@ -384,15 +534,11 @@ class ShurufaImeService : InputMethodService() {
         }
     }
 
-    /// 清空当前输入：清引擎组合、结束预编辑，并删除输入框内文本。
     private fun onClearAll() {
         val ic = currentInputConnection ?: return
         ic.beginBatchEdit()
-        if (engineReady) {
-            RimeBridge.nativeReset()
-        }
+        if (engineReady) RimeBridge.nativeReset()
         ic.finishComposingText()
-        // deleteSurroundingText 对已提交文本生效，删光标前后大范围即清空
         ic.deleteSurroundingText(50000, 50000)
         ic.endBatchEdit()
         updateCandidates("", emptyList(), 0)
@@ -403,20 +549,22 @@ class ShurufaImeService : InputMethodService() {
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
     }
 
-    /// 底部功能行：符号页切换、中英切换、逗号、空格、句号、回车。
     private fun buildBottomRow(): LinearLayout {
         val row = rowLayout()
-        val symbolLabel = if (symbolMode) "返回" else "符"
-        row.addView(key(symbolLabel, 1.4f, functional = true) {
+        row.addView(funcKey(if (symbolMode) "返回" else "符", 1.4f) {
             symbolMode = !symbolMode
             rebuildKeys()
         })
-        langKey = key(langLabel(), 1.4f, functional = true) { onToggleLang() }
+        langKey = funcKey(langLabel(), 1.4f) { onToggleLang() }
         row.addView(langKey)
-        row.addView(key("，", 1f, functional = true) { onPunct("，") })
-        row.addView(key("空格", 3.4f) { onSpace() })
-        row.addView(key("。", 1f, functional = true) { onPunct("。") })
-        row.addView(key("回车", 1.8f, functional = true) { onEnter() })
+        row.addView(funcKey("，", 1f) { onPunct("，") })
+        row.addView(charKey("空格", 3.4f) { onSpace() }.apply {
+            // 空格用字符键的底色更醒目，但不需要气泡：覆盖触摸为纯点击
+            setOnTouchListener(null)
+            setOnClickListener { onSpace() }
+        })
+        row.addView(funcKey("。", 1f) { onPunct("。") })
+        row.addView(funcKey("回车", 1.8f) { onEnter() })
         return row
     }
 
@@ -426,7 +574,6 @@ class ShurufaImeService : InputMethodService() {
     private fun onToggleLang() {
         if (!engineReady) return
         RimeBridge.nativeToggleAscii()
-        // 切换会清掉未完成组合，刷新界面
         RimeBridge.nativeReset()
         langKey?.text = langLabel()
         sync()
@@ -441,25 +588,19 @@ class ShurufaImeService : InputMethodService() {
             return
         }
         val eaten = RimeBridge.nativeProcessKey(c.code, 0)
-        if (!eaten) {
-            currentInputConnection?.commitText(c.toString(), 1)
-        }
+        if (!eaten) currentInputConnection?.commitText(c.toString(), 1)
         sync()
     }
 
     private fun onBackspace() {
         val eaten = engineReady && RimeBridge.nativeProcessKey(XK_BACKSPACE, 0)
-        if (!eaten) {
-            currentInputConnection?.deleteSurroundingText(1, 0)
-        }
+        if (!eaten) currentInputConnection?.deleteSurroundingText(1, 0)
         sync()
     }
 
     private fun onSpace() {
         val eaten = engineReady && RimeBridge.nativeProcessKey(0x20, 0)
-        if (!eaten) {
-            currentInputConnection?.commitText(" ", 1)
-        }
+        if (!eaten) currentInputConnection?.commitText(" ", 1)
         sync()
     }
 
@@ -475,7 +616,6 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun onPunct(s: String) {
-        // 组合中先确认当前首选，再上屏标点（主流输入法行为）
         if (engineReady && RimeBridge.nativeContext().isNotEmpty()) {
             RimeBridge.nativeProcessKey(0x20, 0)
             sync()
@@ -489,7 +629,6 @@ class ShurufaImeService : InputMethodService() {
         sync()
     }
 
-    /** 把引擎状态同步到编辑框与候选栏。 */
     private fun sync() {
         val ic = currentInputConnection ?: return
         if (!engineReady) {
@@ -497,9 +636,7 @@ class ShurufaImeService : InputMethodService() {
             return
         }
         val commit = RimeBridge.nativeCommit()
-        if (commit.isNotEmpty()) {
-            ic.commitText(commit, 1)
-        }
+        if (commit.isNotEmpty()) ic.commitText(commit, 1)
         val raw = RimeBridge.nativeContext()
         if (raw.isEmpty()) {
             ic.finishComposingText()
@@ -524,9 +661,9 @@ class ShurufaImeService : InputMethodService() {
                 this.text = text
                 textSize = 20f
                 gravity = Gravity.CENTER
-                setTextColor(if (i == highlighted) COLOR_CAND_HL else COLOR_CAND)
+                setTextColor(if (i == highlighted) palette.candidateHl else palette.candidate)
                 if (i == highlighted) typeface = Typeface.DEFAULT_BOLD
-                setPadding(dp(14f), 0, dp(14f), 0)
+                setPadding(dp(15f), 0, dp(15f), 0)
                 setOnClickListener { onCandidate(i) }
             }
             candidateBar.addView(
@@ -541,13 +678,14 @@ class ShurufaImeService : InputMethodService() {
 
     override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        ensureEngine()
-        if (engineReady) {
-            RimeBridge.nativeReset()
+        // 系统深色设置变化后重建输入视图，刷新主题
+        if ((palette === DARK) != isDark()) {
+            setInputView(onCreateInputView())
         }
+        ensureEngine()
+        if (engineReady) RimeBridge.nativeReset()
         langKey?.text = langLabel()
         updateCandidates("", emptyList(), 0)
-        // 历史面板复位到键盘态
         historyPanel?.visibility = View.GONE
         keyArea.visibility = View.VISIBLE
         captureSystemClipboard()
@@ -556,13 +694,11 @@ class ShurufaImeService : InputMethodService() {
 
     override fun onFinishInput() {
         super.onFinishInput()
-        if (engineReady) {
-            RimeBridge.nativeReset()
-        }
+        if (engineReady) RimeBridge.nativeReset()
         syncPoll.removeCallbacksAndMessages(null)
+        hideBubble()
     }
 
-    /// 键盘活跃期间轮询同步入站队列（安卓不用反向 JNI 回调）。
     private fun startSyncPolling() {
         syncPoll.removeCallbacksAndMessages(null)
         val tick = object : Runnable {
