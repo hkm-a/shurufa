@@ -13,6 +13,8 @@ use jni::JNIEnv;
 
 use ime_bridge::{Engine, Session};
 
+mod sync_jni;
+
 static ENGINE: OnceLock<Result<Engine, String>> = OnceLock::new();
 static SESSION: Mutex<Option<Session<'static>>> = Mutex::new(None);
 

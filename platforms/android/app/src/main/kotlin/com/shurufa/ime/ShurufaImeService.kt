@@ -3,6 +3,8 @@ package com.shurufa.ime
 import android.graphics.Color
 import android.graphics.Typeface
 import android.inputmethodservice.InputMethodService
+import android.os.Handler
+import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -47,10 +49,22 @@ class ShurufaImeService : InputMethodService() {
     private var langKey: TextView? = null
     /// 当前是否显示符号页
     private var symbolMode = false
+    /// 顶部同步提示条：显示电脑同步来的剪贴板，点击一键上屏
+    private var syncBar: TextView? = null
+    private var pendingSyncText: String? = null
+    private val syncPoll = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
         super.onCreate()
         ensureEngine()
+        // 同步服务启动含身份生成与端口绑定，放后台线程避免阻塞主线程
+        thread(name = "sync-start") {
+            try {
+                SyncBridge.ensureStarted(applicationContext)
+            } catch (e: Throwable) {
+                android.util.Log.e("shurufa", "同步启动失败", e)
+            }
+        }
     }
 
     /** 后台准备引擎：解包方案资产 → 初始化 librime（幂等）。 */
@@ -108,6 +122,21 @@ class ShurufaImeService : InputMethodService() {
             visibility = View.GONE
         }
         root.addView(preeditView)
+
+        // 顶部同步提示条：电脑复制的内容同步到手机后在此一键上屏
+        syncBar = TextView(this).apply {
+            setBackgroundColor(0xFFFFF3E0.toInt())
+            setTextColor(COLOR_TEXT)
+            textSize = 14f
+            setPadding(dp(12f), dp(9f), dp(12f), dp(9f))
+            visibility = View.GONE
+            setOnClickListener {
+                pendingSyncText?.let { currentInputConnection?.commitText(it, 1) }
+                pendingSyncText = null
+                visibility = View.GONE
+            }
+        }
+        root.addView(syncBar)
 
         candidateBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -358,6 +387,7 @@ class ShurufaImeService : InputMethodService() {
         }
         langKey?.text = langLabel()
         updateCandidates("", emptyList(), 0)
+        startSyncPolling()
     }
 
     override fun onFinishInput() {
@@ -365,5 +395,33 @@ class ShurufaImeService : InputMethodService() {
         if (engineReady) {
             RimeBridge.nativeReset()
         }
+        syncPoll.removeCallbacksAndMessages(null)
+    }
+
+    /// 键盘活跃期间轮询同步入站队列（安卓不用反向 JNI 回调）。
+    private fun startSyncPolling() {
+        syncPoll.removeCallbacksAndMessages(null)
+        val tick = object : Runnable {
+            override fun run() {
+                val raw = try {
+                    SyncBridge.nativePoll()
+                } catch (e: Throwable) {
+                    ""
+                }
+                if (raw.isNotEmpty()) {
+                    val parts = raw.split('\u0001')
+                    val from = parts.getOrNull(0).orEmpty()
+                    val text = parts.drop(1).joinToString("\u0001")
+                    if (text.isNotEmpty()) {
+                        pendingSyncText = text
+                        val preview = text.replace('\n', ' ').take(30)
+                        syncBar?.text = "来自 $from：$preview（点此上屏）"
+                        syncBar?.visibility = View.VISIBLE
+                    }
+                }
+                syncPoll.postDelayed(this, 1500)
+            }
+        }
+        syncPoll.postDelayed(tick, 800)
     }
 }

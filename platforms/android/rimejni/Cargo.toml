@@ -11,4 +11,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ime-bridge = { path = "../../../core/ime-bridge" }
+sync-core = { path = "../../../core/sync" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 jni = "0.21"

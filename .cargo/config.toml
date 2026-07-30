@@ -1,3 +1,12 @@
-# Android 交叉编译：链接器指向 NDK 28 的 clang 包装脚本（minSdk 23）
+# Android 交叉编译（NDK 28，minSdk 23）。
+# 路径写死本机 NDK 位置；换机器时改这里。
 [target.aarch64-linux-android]
-linker = "C:\\Users\\hkm\\AppData\\Local\\Android\\Sdk\\ndk\\28.0.13004108\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\aarch64-linux-android23-clang.cmd"
+linker = 'C:\Users\hkm\AppData\Local\Android\Sdk\ndk\28.0.13004108\toolchains\llvm\prebuilt\windows-x86_64\bin\aarch64-linux-android23-clang.cmd'
+
+# ring（rustls 加密后端）含 C/汇编，交叉编译需指向 NDK 的 clang/ar。
+# 变量名带 target 后缀，只影响 android target，不干扰桌面构建。
+[env]
+CC_aarch64_linux_android = 'C:\Users\hkm\AppData\Local\Android\Sdk\ndk\28.0.13004108\toolchains\llvm\prebuilt\windows-x86_64\bin\aarch64-linux-android23-clang.cmd'
+CXX_aarch64_linux_android = 'C:\Users\hkm\AppData\Local\Android\Sdk\ndk\28.0.13004108\toolchains\llvm\prebuilt\windows-x86_64\bin\aarch64-linux-android23-clang++.cmd'
+AR_aarch64_linux_android = 'C:\Users\hkm\AppData\Local\Android\Sdk\ndk\28.0.13004108\toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-ar.exe'
+CFLAGS_aarch64_linux_android = '--target=aarch64-linux-android23'
