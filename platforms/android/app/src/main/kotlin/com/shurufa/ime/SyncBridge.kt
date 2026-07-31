@@ -18,6 +18,7 @@ object SyncBridge {
     external fun nativeStart(configDir: String, deviceName: String): Boolean
     external fun nativePoll(): String
     external fun nativeSendClip(text: String)
+    external fun nativeSendImage(png: ByteArray)
     external fun nativeDevices(): String
     external fun nativePairBegin(addr: String): Boolean
     external fun nativePairCode(): String

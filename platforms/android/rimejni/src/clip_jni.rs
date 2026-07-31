@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use jni::objects::{JClass, JString};
+use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jboolean, jbyteArray, jint, jstring};
 use jni::JNIEnv;
 
@@ -109,6 +109,24 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeImageData(
     env.byte_array_from_slice(&data)
         .map(|a| a.into_raw())
         .unwrap_or(std::ptr::null_mut())
+}
+
+/// 插入本机图片（PNG 字节）到历史；供键盘读到系统剪贴板图片时调用。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeInsertImage(
+    mut env: JNIEnv,
+    _class: JClass,
+    data: JByteArray,
+    source: JString,
+) {
+    if let Some(store) = STORE.get() {
+        if let Ok(bytes) = env.convert_byte_array(&data) {
+            if !bytes.is_empty() {
+                let src = jstr(&mut env, &source);
+                let _ = store.lock().expect("历史库锁不可恢复").insert_image(&bytes, &src);
+            }
+        }
+    }
 }
 
 /// 供同步桥调用：把收到的图片（PNG 字节）存入历史，返回条目 id。

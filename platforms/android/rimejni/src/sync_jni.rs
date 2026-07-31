@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use jni::objects::{JClass, JString};
+use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jboolean, jstring};
 use jni::JNIEnv;
 use tokio::runtime::Runtime;
@@ -167,6 +167,20 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendClip(
     if let Some(state) = STATE.get() {
         let t = jstr(&mut env, &text);
         state.service.send_clip(&t);
+    }
+}
+
+/// 推送本机图片（PNG 字节）给已配对设备。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendImage(
+    env: JNIEnv,
+    _class: JClass,
+    data: JByteArray,
+) {
+    if let Some(state) = STATE.get() {
+        if let Ok(bytes) = env.convert_byte_array(&data) {
+            state.service.send_image(&bytes);
+        }
     }
 }
 

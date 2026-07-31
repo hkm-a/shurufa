@@ -3,11 +3,13 @@ package com.shurufa.ime
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.inputmethodservice.InputMethodService
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.TypedValue
@@ -25,6 +27,7 @@ import androidx.core.content.FileProvider
 import androidx.core.view.inputmethod.EditorInfoCompat
 import androidx.core.view.inputmethod.InputConnectionCompat
 import androidx.core.view.inputmethod.InputContentInfoCompat
+import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.concurrent.thread
 
@@ -109,6 +112,8 @@ class ShurufaImeService : InputMethodService() {
     private val syncPoll = Handler(Looper.getMainLooper())
     private var historyPanel: LinearLayout? = null
     private var lastClipboardText: String? = null
+    /// 系统剪贴板图片去重签名（大小与首尾字节）
+    private var lastClipboardImageSig: Int? = null
 
     /// 当前主题；随系统深色设置在重建输入视图时更新
     private var palette: Palette = LIGHT
@@ -481,7 +486,34 @@ class ShurufaImeService : InputMethodService() {
         val cm = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager ?: return
         val clip = cm.primaryClip ?: return
         if (clip.itemCount == 0) return
-        val text = clip.getItemAt(0).coerceToText(this)?.toString()
+        val item = clip.getItemAt(0)
+
+        // 优先处理图片：读 content:// URI，解码为 PNG 后发送与入库
+        val uri = item.uri
+        if (uri != null && contentResolver.getType(uri)?.startsWith("image/") == true) {
+            val png = try {
+                readImageAsPng(uri)
+            } catch (e: Throwable) {
+                null
+            }
+            if (png != null) {
+                val sig = png.size xor
+                    (png.firstOrNull()?.toInt() ?: 0) xor
+                    ((png.getOrNull(png.size / 2)?.toInt() ?: 0) shl 8)
+                if (sig != lastClipboardImageSig) {
+                    lastClipboardImageSig = sig
+                    try {
+                        ClipStore.insertImage(png, "本机")
+                        SyncBridge.nativeSendImage(png)
+                    } catch (e: Throwable) {
+                        android.util.Log.e("shurufa", "图片同步失败", e)
+                    }
+                }
+            }
+            return
+        }
+
+        val text = item.coerceToText(this)?.toString()
         if (text.isNullOrBlank() || text == lastClipboardText) return
         lastClipboardText = text
         try {
@@ -490,6 +522,26 @@ class ShurufaImeService : InputMethodService() {
         } catch (e: Throwable) {
             android.util.Log.e("shurufa", "剪贴板同步失败", e)
         }
+    }
+
+    /// 读取剪贴板图片 URI 并编码为 PNG；过大时降采样，避免超出同步上限。
+    private fun readImageAsPng(uri: Uri): ByteArray? {
+        val bmp = contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it)
+        } ?: return null
+        val scaled = downscaleIfNeeded(bmp)
+        val out = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.PNG, 100, out)
+        return out.toByteArray()
+    }
+
+    private fun downscaleIfNeeded(bmp: Bitmap): Bitmap {
+        val maxDim = 2000
+        val w = bmp.width
+        val h = bmp.height
+        if (w <= maxDim && h <= maxDim) return bmp
+        val scale = maxDim.toFloat() / maxOf(w, h)
+        return Bitmap.createScaledBitmap(bmp, (w * scale).toInt(), (h * scale).toInt(), true)
     }
 
     // ---------- 按键布局 ----------
