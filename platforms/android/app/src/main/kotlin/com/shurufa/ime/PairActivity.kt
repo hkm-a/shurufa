@@ -51,6 +51,7 @@ class PairActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ClipboardSyncService.start(applicationContext)
         SyncBridge.ensureStarted(applicationContext)
 
         val root = LinearLayout(this).apply {
@@ -60,6 +61,7 @@ class PairActivity : Activity() {
         }
 
         root.addView(title("剪贴板同步"))
+        root.addView(hint("版本 ${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）"))
         root.addView(hint("与电脑同一 Wi-Fi。电脑端运行 shurufa-host 后，下方会自动出现电脑；点击即可配对。"))
 
         root.addView(subtitle("发现的电脑"))

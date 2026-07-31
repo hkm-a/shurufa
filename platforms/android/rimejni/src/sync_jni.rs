@@ -10,16 +10,16 @@
 //!   接收端共用同一 pending 槽（同一时刻只处理一个配对）。
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use jni::objects::{JByteArray, JClass, JString};
-use jni::sys::{jboolean, jstring};
+use jni::sys::{jboolean, jint, jstring};
 use jni::JNIEnv;
 use tokio::runtime::Runtime;
 
-use sync_core::{ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService};
+use sync_core::{ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService, MAX_CLIP_FILE_BYTES};
 
 struct PairPending {
     code: String,
@@ -31,7 +31,7 @@ struct SyncState {
     rt: Runtime,
     service: SyncService,
     /// 入站条目队列：(kind, from, payload)。kind=text 时 payload 为文本；
-    /// kind=image 时图片已存入历史库，payload 为条目 id。
+    /// kind=image/file 时内容已存入历史库，payload 为条目 id。
     incoming: Arc<Mutex<VecDeque<(String, String, String)>>>,
     pending: Arc<Mutex<Option<PairPending>>>,
 }
@@ -48,6 +48,20 @@ fn to_jstring(env: &JNIEnv, s: &str) -> jstring {
     env.new_string(s)
         .map(|v| v.into_raw())
         .unwrap_or(std::ptr::null_mut())
+}
+
+fn received_file_path(dir: &Path, name: &str) -> Option<PathBuf> {
+    let name = Path::new(name).file_name()?.to_str()?;
+    if name.is_empty() || name == "." || name == ".." {
+        return None;
+    }
+    let received = dir.join("received");
+    std::fs::create_dir_all(&received).ok()?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    Some(received.join(format!("{stamp}_{name}")))
 }
 
 /// 构造一个把确认码塞入 pending 槽、阻塞等待 Kotlin 放行的确认回调。
@@ -91,6 +105,7 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
     let pending = Arc::new(Mutex::new(None));
 
     let incoming_task = incoming.clone();
+    let received_dir = dir.clone();
     let confirm = make_confirm(pending.clone());
     let service = rt.block_on(async move {
         let (in_tx, mut in_rx) = tokio::sync::mpsc::channel::<Incoming>(64);
@@ -106,6 +121,28 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                         // 图片直接存入历史库，队列只带条目 id
                         match crate::clip_jni::store_image(&png, &format!("同步·{from_name}")) {
                             Some(id) => ("image".to_string(), from_name, id.to_string()),
+                            None => continue,
+                        }
+                    }
+                    Incoming::File {
+                        from_name,
+                        name,
+                        data,
+                        ..
+                    } => {
+                        if data.is_empty() || data.len() > MAX_CLIP_FILE_BYTES {
+                            continue;
+                        }
+                        let Some(path) = received_file_path(&received_dir, &name) else {
+                            continue;
+                        };
+                        if std::fs::write(&path, data).is_err() {
+                            continue;
+                        }
+                        let paths = vec![path.to_string_lossy().into_owned()];
+                        match crate::clip_jni::store_files(&paths, &format!("同步·{from_name}"))
+                        {
+                            Some(id) => ("file".to_string(), from_name, id.to_string()),
                             None => continue,
                         }
                     }
@@ -135,7 +172,7 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
 }
 
 /// 取一条入站条目：`kind\u{1}from\u{1}payload`；队列为空返回空串。
-/// kind=text 时 payload 为文本，kind=image 时 payload 为历史库条目 id。
+/// kind=text 时 payload 为文本，kind=image/file 时 payload 为历史库条目 id。
 #[no_mangle]
 pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativePoll(
     env: JNIEnv,
@@ -182,6 +219,42 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendImage(
             state.service.send_image(&bytes);
         }
     }
+}
+
+/// 推送本机文件给已配对设备。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    name: JString,
+    mime_type: JString,
+    data: JByteArray,
+) {
+    if let Some(state) = STATE.get() {
+        if let Ok(bytes) = env.convert_byte_array(&data) {
+            let name = jstr(&mut env, &name);
+            let mime_type = jstr(&mut env, &mime_type);
+            state.service.send_file(&name, &mime_type, &bytes);
+        }
+    }
+}
+
+/// 返回同步核心允许传输的单张 PNG 上限，供 Kotlin 转码阶段使用同一约束。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeMaxImageBytes(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    sync_core::MAX_CLIP_IMAGE_BYTES as jint
+}
+
+/// 返回同步核心允许传输的单文件上限。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeMaxFileBytes(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    sync_core::MAX_CLIP_FILE_BYTES as jint
 }
 
 /// 已配对设备列表：每行 `指纹前12\u{1}名称`，换行分隔。

@@ -55,7 +55,10 @@ async fn 配对后双向同步文本() {
 
     // 甲 → 乙 发起配对（两端自动确认）
     let peer = a
-        .pair_with(&format!("127.0.0.1:{}", b.local_port()), auto_confirm.clone())
+        .pair_with(
+            &format!("127.0.0.1:{}", b.local_port()),
+            auto_confirm.clone(),
+        )
         .await
         .expect("配对失败");
     assert_eq!(peer.name, "乙机");
@@ -69,10 +72,7 @@ async fn 配对后双向同步文本() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(
-        !a.connected_fingerprints().is_empty(),
-        "数据连接未建立"
-    );
+    assert!(!a.connected_fingerprints().is_empty(), "数据连接未建立");
 
     // 甲 → 乙
     a.send_clip("你好，来自甲机");
@@ -85,8 +85,24 @@ async fn 配对后双向同步文本() {
         }
     );
 
+    // 甲 → 乙 传文件（名称、MIME 与字节均保持不变）
+    let file = b"sync file bytes";
+    a.send_file("note.txt", "text/plain", file);
+    let got = recv_clip(&mut rx_b).await;
+    assert_eq!(
+        got,
+        Incoming::File {
+            from_name: "甲机".into(),
+            name: "note.txt".into(),
+            mime_type: "text/plain".into(),
+            data: file.to_vec(),
+        }
+    );
+
     // 甲 → 乙 传图片（PNG 字节原样往返）
-    let png: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 250, 0, 128];
+    let png: Vec<u8> = vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 250, 0, 128,
+    ];
     a.send_image(&png);
     let got = recv_clip(&mut rx_b).await;
     assert_eq!(
@@ -122,7 +138,9 @@ async fn 配对后双向同步文本() {
     a.send_clip("丙机不应看到");
     let _ = recv_clip(&mut rx_b).await; // 乙正常收到
     assert!(
-        timeout(Duration::from_millis(800), rx_c.recv()).await.is_err(),
+        timeout(Duration::from_millis(800), rx_c.recv())
+            .await
+            .is_err(),
         "未配对设备不应收到同步"
     );
 }

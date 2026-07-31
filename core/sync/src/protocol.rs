@@ -21,6 +21,13 @@ pub enum Message {
     ClipText { text: String, sent_at_ms: i64 },
     /// 图片剪贴板条目（data 为 base64 编码的 PNG，跨平台通用）
     ClipImage { data: String, sent_at_ms: i64 },
+    /// 文件剪贴板条目（data 为 base64 编码的文件字节）。
+    ClipFile {
+        name: String,
+        mime_type: String,
+        data: String,
+        sent_at_ms: i64,
+    },
     /// 保活
     Ping,
 }
@@ -33,7 +40,9 @@ pub async fn write_msg<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> Resul
     w.write_all(&(body.len() as u32).to_le_bytes())
         .await
         .map_err(|e| format!("写长度失败: {e}"))?;
-    w.write_all(&body).await.map_err(|e| format!("写消息失败: {e}"))?;
+    w.write_all(&body)
+        .await
+        .map_err(|e| format!("写消息失败: {e}"))?;
     w.flush().await.map_err(|e| format!("刷新失败: {e}"))?;
     Ok(())
 }

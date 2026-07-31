@@ -17,7 +17,10 @@ mod tls;
 pub use identity::DeviceIdentity;
 pub use peers::{Peer, PeerStore};
 pub use protocol::Message;
-pub use service::{ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService};
+pub use service::{
+    ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService, MAX_CLIP_FILE_BYTES,
+    MAX_CLIP_IMAGE_BYTES,
+};
 
 use sha2::{Digest, Sha256};
 
@@ -30,7 +33,11 @@ pub fn fingerprint_hex(cert_der: &[u8]) -> String {
 /// 配对确认码：对两端指纹排序拼接后取哈希，两端计算结果必然一致；
 /// 六位数字供人眼比对，防中间人。
 pub fn pairing_code(fp_a: &str, fp_b: &str) -> String {
-    let (lo, hi) = if fp_a <= fp_b { (fp_a, fp_b) } else { (fp_b, fp_a) };
+    let (lo, hi) = if fp_a <= fp_b {
+        (fp_a, fp_b)
+    } else {
+        (fp_b, fp_a)
+    };
     let hash = Sha256::digest(format!("shurufa-pair:{lo}:{hi}").as_bytes());
     let n = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) % 1_000_000;
     format!("{n:06}")

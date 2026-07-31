@@ -18,6 +18,7 @@ object ClipStore {
     external fun nativeInit(dbPath: String): Boolean
     external fun nativeInsert(text: String, source: String)
     external fun nativeInsertImage(png: ByteArray, source: String)
+    external fun nativeInsertFiles(paths: String, source: String)
     external fun nativeList(limit: Int): String
     external fun nativeImageData(id: Int): ByteArray
     external fun nativeDelete(id: Int)
@@ -41,6 +42,11 @@ object ClipStore {
 
     fun insertImage(png: ByteArray, source: String) {
         if (ready && png.isNotEmpty()) nativeInsertImage(png, source)
+    }
+
+    fun insertFiles(paths: List<String>, source: String) {
+        val value = paths.filter { it.isNotBlank() }.joinToString("\n")
+        if (ready && value.isNotEmpty()) nativeInsertFiles(value, source)
     }
 
     fun list(limit: Int = 30): List<Entry> {

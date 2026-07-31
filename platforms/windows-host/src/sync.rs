@@ -14,6 +14,11 @@ use sync_core::{ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService};
 enum Broadcast {
     Text(String),
     Image(Vec<u8>),
+    File {
+        name: String,
+        mime_type: String,
+        data: Vec<u8>,
+    },
 }
 
 /// 守护进程内广播出口；`run` 模式启动后可用
@@ -56,6 +61,56 @@ pub fn broadcast_image(bmp: &[u8]) {
             let _ = tx.send(Broadcast::Image(png));
         }
     }
+}
+
+/// 监听器捕获到本机文件时调用；单文件在同步上限内才会发送。
+pub fn broadcast_file(path: &std::path::Path) {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let Ok(data) = std::fs::read(path) else {
+        return;
+    };
+    let mime_type = mime_type_for(path);
+    if let Some(tx) = CLIP_TX.get() {
+        let _ = tx.send(Broadcast::File {
+            name: name.to_string(),
+            mime_type,
+            data,
+        });
+    }
+}
+
+fn mime_type_for(path: &std::path::Path) -> String {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+fn received_file_path(name: &str) -> Option<PathBuf> {
+    let name = std::path::Path::new(name).file_name()?.to_str()?;
+    if name.is_empty() || name == "." || name == ".." {
+        return None;
+    }
+    let dir = sync_config_dir().parent()?.join("received");
+    std::fs::create_dir_all(&dir).ok()?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    Some(dir.join(format!("{stamp}_{name}")))
 }
 
 /// BMP 字节转 PNG（跨平台传输格式）；失败返回 None。
@@ -120,15 +175,26 @@ pub fn start_daemon() {
                         Some(b) = rx.recv() => match b {
                             Broadcast::Text(t) => service.send_clip(&t),
                             Broadcast::Image(png) => service.send_image(&png),
+                            Broadcast::File { name, mime_type, data } => {
+                                service.send_file(&name, &mime_type, &data)
+                            }
                         },
                         Some(incoming) = in_rx.recv() => match incoming {
                             Incoming::Clip { from_name, text } => {
                                 let store = crate::open_store();
                                 match store.insert_text(&text, &format!("同步·{from_name}")) {
-                                    Ok(_) => crate::log_line(&format!(
-                                        "收到 {from_name} 的剪贴板（{} 字符）",
-                                        text.chars().count()
-                                    )),
+                                    Ok(_) => {
+                                        if crate::listener::write_remote_text(text.clone()) {
+                                            crate::log_line(&format!(
+                                            "收到 {from_name} 的剪贴板（{} 字符），已写入系统剪贴板",
+                                            text.chars().count()
+                                            ));
+                                        } else {
+                                            crate::log_line(&format!(
+                                                "收到 {from_name} 的文本，但写入系统剪贴板失败"
+                                            ));
+                                        }
+                                    }
                                     Err(e) => crate::log_line(&format!("同步条目入库失败：{e}")),
                                 }
                             }
@@ -136,15 +202,52 @@ pub fn start_daemon() {
                                 Some(bmp) => {
                                     let store = crate::open_store();
                                     match store.insert_image(&bmp, &format!("同步·{from_name}")) {
-                                        Ok(_) => crate::log_line(&format!(
-                                            "收到 {from_name} 的图片（{} 字节 PNG）",
-                                            png.len()
-                                        )),
+                                        Ok(_) => {
+                                            if crate::listener::write_remote_image(bmp.clone()) {
+                                                crate::log_line(&format!(
+                                                "收到 {from_name} 的图片（{} 字节 PNG），已写入系统剪贴板",
+                                                png.len()
+                                                ));
+                                            } else {
+                                                crate::log_line(&format!(
+                                                    "收到 {from_name} 的图片，但写入系统剪贴板失败"
+                                                ));
+                                            }
+                                        }
                                         Err(e) => crate::log_line(&format!("同步图片入库失败：{e}")),
                                     }
                                 }
                                 None => crate::log_line("收到图片解码失败"),
                             },
+                            Incoming::File { from_name, name, data, .. } => {
+                                let Some(path) = received_file_path(&name) else {
+                                    crate::log_line("收到文件名无效");
+                                    continue;
+                                };
+                                match std::fs::write(&path, data) {
+                                    Ok(()) => {
+                                        let store = crate::open_store();
+                                        let paths = vec![path.to_string_lossy().into_owned()];
+                                        match store.insert_files(&paths, &format!("同步·{from_name}")) {
+                                            Ok(_) => {
+                                                if crate::listener::write_remote_files(
+                                                    path.to_string_lossy().into_owned(),
+                                                ) {
+                                                    crate::log_line(&format!(
+                                                    "收到 {from_name} 的文件：{name}，已写入系统剪贴板"
+                                                    ));
+                                                } else {
+                                                    crate::log_line(&format!(
+                                                        "收到 {from_name} 的文件，但写入系统剪贴板失败"
+                                                    ));
+                                                }
+                                            }
+                                            Err(e) => crate::log_line(&format!("同步文件入库失败：{e}")),
+                                        }
+                                    }
+                                    Err(e) => crate::log_line(&format!("收到文件落盘失败：{e}")),
+                                }
+                            }
                         },
                         else => break,
                     }

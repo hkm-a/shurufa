@@ -1,9 +1,12 @@
 //! 剪贴板监听：消息窗口接收 WM_CLIPBOARDUPDATE，读取内容归一化入库。
 //!
-//! 捕获优先级：文件列表 > 文本 > 图片（与用户感知的"复制了什么"一致）。
+//! 捕获优先级：图片 > 文件列表 > 文本，避免多格式图片退化为临时文件名。
 //! 密码管理器等敏感来源默认不入库。
 
+use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use clipboard_store::{ClipboardStore, RetentionPolicy};
 use windows::core::{w, Result, PCWSTR};
@@ -15,13 +18,12 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT};
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowThreadProcessId,
-    RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE,
+    RegisterClassW, TranslateMessage, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
     WM_CLIPBOARDUPDATE, WM_HOTKEY, WNDCLASSW,
 };
 
@@ -36,6 +38,20 @@ const SENSITIVE_APPS: &[&str] = &[
 
 /// 每捕获多少条执行一次留存清理
 const RETENTION_INTERVAL: u64 = 50;
+#[cfg(debug_assertions)]
+pub const WM_TEST_SET_IMAGE: u32 = WM_APP + 41;
+const WM_WRITE_CLIPBOARD: u32 = WM_APP + 42;
+#[cfg(debug_assertions)]
+const WM_TEST_INSPECT_IMAGE: u32 = WM_APP + 43;
+
+enum ClipboardWrite {
+    Text(String),
+    Image(Vec<u8>),
+    Files(String),
+}
+
+static WRITE_QUEUE: OnceLock<Mutex<VecDeque<ClipboardWrite>>> = OnceLock::new();
+static LISTENER_HWND: AtomicIsize = AtomicIsize::new(0);
 
 struct ListenerState {
     store: ClipboardStore,
@@ -71,12 +87,13 @@ pub fn run(store: ClipboardStore) -> Result<()> {
             0,
             0,
             0,
-            // 消息专用窗口：不可见，仅收消息
-            Some(HWND_MESSAGE),
+            // 不可见顶层窗口：接收剪贴板消息，也允许 Debug 控制进程按类名发现。
+            None,
             None,
             Some(hinstance.into()),
             None,
         )?;
+        LISTENER_HWND.store(hwnd.0 as isize, Ordering::Release);
 
         STATE = Some(ListenerState {
             store,
@@ -119,7 +136,127 @@ unsafe extern "system" fn wnd_proc(
         }
         return LRESULT(0);
     }
+    #[cfg(debug_assertions)]
+    if msg == WM_TEST_SET_IMAGE {
+        let result = crate::paste::set_test_clipboard_image_with_owner(
+            wparam.0 as u32,
+            lparam.0 as u32,
+            Some(hwnd),
+        );
+        return LRESULT(if result.is_ok() { 1 } else { 0 });
+    }
+    if msg == WM_WRITE_CLIPBOARD {
+        let command = WRITE_QUEUE
+            .get_or_init(|| Mutex::new(VecDeque::new()))
+            .lock()
+            .expect("剪贴板写入队列锁不可恢复")
+            .pop_front();
+        let ok = command
+            .map(|item| write_clipboard(hwnd, item))
+            .unwrap_or(false);
+        return LRESULT(if ok { 1 } else { 0 });
+    }
+    #[cfg(debug_assertions)]
+    if msg == WM_TEST_INSPECT_IMAGE {
+        return match crate::paste::inspect_test_clipboard_image_with_owner(Some(hwnd)) {
+            Ok((width, height, _, _)) if width > 0 && height > 0 => {
+                LRESULT((((width as u32) << 16) | height as u32) as isize)
+            }
+            _ => LRESULT(0),
+        };
+    }
     DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+fn write_clipboard(hwnd: HWND, command: ClipboardWrite) -> bool {
+    let result = match command {
+        ClipboardWrite::Text(text) => {
+            crate::paste::set_clipboard_text_with_owner(&text, Some(hwnd))
+        }
+        ClipboardWrite::Image(bmp) => {
+            crate::paste::set_clipboard_image_with_owner(&bmp, Some(hwnd))
+        }
+        ClipboardWrite::Files(paths) => {
+            crate::paste::set_clipboard_files_with_owner(&paths, Some(hwnd))
+        }
+    };
+    result.is_ok()
+}
+
+fn listener_window() -> Option<HWND> {
+    let raw = LISTENER_HWND.load(Ordering::Acquire);
+    if raw != 0 {
+        return Some(HWND(raw as *mut _));
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+
+        return unsafe { FindWindowW(w!("ShurufaClipboardListener"), PCWSTR::null()).ok() };
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+}
+
+fn request_write(command: ClipboardWrite) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+    let Some(hwnd) = listener_window() else {
+        return false;
+    };
+    WRITE_QUEUE
+        .get_or_init(|| Mutex::new(VecDeque::new()))
+        .lock()
+        .expect("剪贴板写入队列锁不可恢复")
+        .push_back(command);
+    unsafe { SendMessageW(hwnd, WM_WRITE_CLIPBOARD, None, None).0 == 1 }
+}
+
+pub fn write_remote_text(text: String) -> bool {
+    request_write(ClipboardWrite::Text(text))
+}
+
+pub fn write_remote_image(bmp: Vec<u8>) -> bool {
+    request_write(ClipboardWrite::Image(bmp))
+}
+
+pub fn write_remote_files(paths: String) -> bool {
+    request_write(ClipboardWrite::Files(paths))
+}
+
+#[cfg(debug_assertions)]
+pub fn request_test_image(width: u32, height: u32) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+    unsafe {
+        let Some(hwnd) = listener_window() else {
+            return false;
+        };
+        SendMessageW(
+            hwnd,
+            WM_TEST_SET_IMAGE,
+            Some(WPARAM(width as usize)),
+            Some(LPARAM(height as isize)),
+        )
+        .0 == 1
+    }
+}
+
+#[cfg(debug_assertions)]
+pub fn inspect_test_image() -> Option<(u32, u32)> {
+    use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+    let hwnd = listener_window()?;
+    let packed = unsafe { SendMessageW(hwnd, WM_TEST_INSPECT_IMAGE, None, None).0 as u32 };
+    if packed == 0 {
+        None
+    } else {
+        Some((packed >> 16, packed & 0xffff))
+    }
 }
 
 impl ListenerState {
@@ -131,6 +268,12 @@ impl ListenerState {
         }
         self.last_sequence = seq;
 
+        // 历史面板回填的图片同时含 CF_DIB 和 CF_HDROP；跳过私有标记，
+        // 防止临时 PNG 反向变成文件历史并被再次同步。
+        if unsafe { IsClipboardFormatAvailable(crate::paste::owned_clipboard_format()) }.is_ok() {
+            return;
+        }
+
         let source = clipboard_source_app();
         if SENSITIVE_APPS.contains(&source.as_str()) {
             return;
@@ -140,8 +283,10 @@ impl ListenerState {
             // 同一次复制的多重更新：与上一条内容一致且间隔极短时，
             // 删除旧条目改存新条目（文件对象优先于纯文本路径）
             let normalized = match &capture {
-                Capture::Files(paths) => paths.join("
-"),
+                Capture::Files(paths) => paths.join(
+                    "
+",
+                ),
                 Capture::Text(text) => text.clone(),
                 Capture::Image(_) => String::new(),
             };
@@ -160,11 +305,15 @@ impl ListenerState {
             };
             match result {
                 Ok(Some(id)) => {
-                    // 本机复制的文本与图片推送给已配对设备（文件不同步）
+                    // 本机复制的文本、图片和上限内单文件均推送给已配对设备。
                     match &capture {
                         Capture::Text(text) => crate::sync::broadcast_text(text),
                         Capture::Image(bmp) => crate::sync::broadcast_image(bmp),
-                        Capture::Files(_) => {}
+                        Capture::Files(paths) => {
+                            if paths.len() == 1 {
+                                crate::sync::broadcast_file(Path::new(&paths[0]));
+                            }
+                        }
                     }
                     if !normalized.is_empty() {
                         self.last_insert = Some((id, normalized, std::time::Instant::now()));
@@ -208,22 +357,38 @@ fn read_clipboard(hwnd: HWND) -> Option<Capture> {
 }
 
 unsafe fn read_open_clipboard() -> Option<Capture> {
-    if IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_ok() {
-        if let Some(files) = read_files() {
-            return Some(Capture::Files(files));
-        }
+    let format = preferred_format(
+        IsClipboardFormatAvailable(CF_DIB.0 as u32).is_ok(),
+        IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_ok(),
+        IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_ok(),
+    );
+    match format {
+        Some(PreferredFormat::Image) => read_dib_as_bmp().map(Capture::Image),
+        Some(PreferredFormat::Files) => read_files().map(Capture::Files),
+        Some(PreferredFormat::Text) => read_text().map(Capture::Text),
+        None => None,
     }
-    if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_ok() {
-        if let Some(text) = read_text() {
-            return Some(Capture::Text(text));
-        }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreferredFormat {
+    Image,
+    Files,
+    Text,
+}
+
+/// 图片应用常同时提供 CF_DIB、CF_HDROP 和文件名文本；位图必须优先，
+/// 否则跨设备同步会退化成临时文件或纯文件名。
+fn preferred_format(has_image: bool, has_files: bool, has_text: bool) -> Option<PreferredFormat> {
+    if has_image {
+        Some(PreferredFormat::Image)
+    } else if has_files {
+        Some(PreferredFormat::Files)
+    } else if has_text {
+        Some(PreferredFormat::Text)
+    } else {
+        None
     }
-    if IsClipboardFormatAvailable(CF_DIB.0 as u32).is_ok() {
-        if let Some(bmp) = read_dib_as_bmp() {
-            return Some(Capture::Image(bmp));
-        }
-    }
-    None
 }
 
 unsafe fn read_text() -> Option<String> {
@@ -296,7 +461,11 @@ fn wrap_dib_in_bmp(dib: &[u8]) -> Option<Vec<u8>> {
         0
     };
     // BI_BITFIELDS(3) 且经典 40 字节头时附带 3 个颜色掩码
-    let masks = if compression == 3 && header_size == 40 { 12 } else { 0 };
+    let masks = if compression == 3 && header_size == 40 {
+        12
+    } else {
+        0
+    };
     let pixel_offset = 14 + header_size + masks + palette_entries * 4;
 
     let mut bmp = Vec::with_capacity(14 + dib.len());
@@ -306,6 +475,27 @@ fn wrap_dib_in_bmp(dib: &[u8]) -> Option<Vec<u8>> {
     bmp.extend_from_slice(&(pixel_offset as u32).to_le_bytes());
     bmp.extend_from_slice(dib);
     Some(bmp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 图片格式优先于文件和文本() {
+        assert_eq!(
+            preferred_format(true, true, true),
+            Some(PreferredFormat::Image)
+        );
+        assert_eq!(
+            preferred_format(false, true, true),
+            Some(PreferredFormat::Files)
+        );
+        assert_eq!(
+            preferred_format(false, false, true),
+            Some(PreferredFormat::Text)
+        );
+    }
 }
 
 /// 剪贴板所有者的进程名（小写文件名）；取不到时返回空串。

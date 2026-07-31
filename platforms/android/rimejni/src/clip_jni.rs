@@ -59,7 +59,10 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeInsert(
         let t = jstr(&mut env, &text);
         let src = jstr(&mut env, &source);
         if !t.is_empty() {
-            let _ = store.lock().expect("历史库锁不可恢复").insert_text(&t, &src);
+            let _ = store
+                .lock()
+                .expect("历史库锁不可恢复")
+                .insert_text(&t, &src);
         }
     }
 }
@@ -123,8 +126,35 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeInsertImage(
         if let Ok(bytes) = env.convert_byte_array(&data) {
             if !bytes.is_empty() {
                 let src = jstr(&mut env, &source);
-                let _ = store.lock().expect("历史库锁不可恢复").insert_image(&bytes, &src);
+                let _ = store
+                    .lock()
+                    .expect("历史库锁不可恢复")
+                    .insert_image(&bytes, &src);
             }
+        }
+    }
+}
+
+/// 插入文件路径历史；Kotlin 侧以换行分隔路径，与存储层格式一致。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeInsertFiles(
+    mut env: JNIEnv,
+    _class: JClass,
+    paths: JString,
+    source: JString,
+) {
+    if let Some(store) = STORE.get() {
+        let values = jstr(&mut env, &paths)
+            .lines()
+            .filter(|path| !path.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        if !values.is_empty() {
+            let src = jstr(&mut env, &source);
+            let _ = store
+                .lock()
+                .expect("历史库锁不可恢复")
+                .insert_files(&values, &src);
         }
     }
 }
@@ -133,6 +163,17 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeInsertImage(
 pub(crate) fn store_image(png: &[u8], source: &str) -> Option<i64> {
     let store = STORE.get()?;
     store.lock().ok()?.insert_image(png, source).ok().flatten()
+}
+
+/// 供同步桥调用：把收到的本地文件路径存入历史，返回条目 id。
+pub(crate) fn store_files(paths: &[String], source: &str) -> Option<i64> {
+    let store = STORE.get()?;
+    store
+        .lock()
+        .ok()?
+        .insert_files(paths, source)
+        .ok()
+        .flatten()
 }
 
 /// 删除单条历史。

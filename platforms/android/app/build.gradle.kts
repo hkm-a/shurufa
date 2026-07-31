@@ -3,19 +3,25 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val shurufaVersionCode = providers.gradleProperty("SHURUFA_VERSION_CODE").get().toInt()
+val shurufaVersionName = providers.gradleProperty("SHURUFA_VERSION_NAME").get()
+
 android {
     namespace = "com.shurufa.ime"
     compileSdk = 35
+    buildFeatures {
+        buildConfig = true
+    }
 
     defaultConfig {
         applicationId = "com.shurufa.ime"
         // 预编译 librime 面向 platform 23（Android 6.0）
         minSdk = 23
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = shurufaVersionCode
+        versionName = shurufaVersionName
         ndk {
-            abiFilters += "arm64-v8a"
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
@@ -57,7 +63,18 @@ tasks.named("preBuild") {
     dependsOn(syncSchemas)
 }
 
+val copyVersionedDebugApk = tasks.register<Copy>("copyVersionedDebugApk") {
+    from(layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
+    into(layout.buildDirectory.dir("outputs/apk/versioned"))
+    rename { "shurufa-${shurufaVersionName}-${shurufaVersionCode}-debug.apk" }
+}
+
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    finalizedBy(copyVersionedDebugApk)
+}
+
 dependencies {
     // FileProvider 与 InputConnectionCompat.commitContent（图片上屏）
     implementation("androidx.core:core:1.13.1")
+    testImplementation("junit:junit:4.13.2")
 }

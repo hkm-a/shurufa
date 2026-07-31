@@ -19,15 +19,15 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, VIRTUAL_KEY, VK_CONTROL, VK_DOWN,
-    VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_UP,
+    KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, VIRTUAL_KEY, VK_CONTROL, VK_DOWN, VK_ESCAPE,
+    VK_RETURN, VK_SHIFT, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
     GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW, MoveWindow, RegisterClassW,
-    SetForegroundWindow, ShowWindow, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO, IDC_ARROW,
-    SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_KEYDOWN, WM_KILLFOCUS, WM_PAINT,
-    WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SetForegroundWindow, ShowWindow, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO, IDC_ARROW, SM_CXSCREEN,
+    SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_KEYDOWN, WM_KILLFOCUS, WM_PAINT, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 /// 面板一次展示的最大条目数（与数字键 1-9 对应）
@@ -137,11 +137,8 @@ fn hide() {
 /// 确认选择：写回剪贴板 → 归还前台 → 模拟 Ctrl+V。
 fn commit(index: usize) {
     let Some((entry, target)) = PANEL.with_borrow(|slot| {
-        slot.as_ref().and_then(|s| {
-            s.entries
-                .get(index)
-                .map(|e| (e.clone(), s.target))
-        })
+        slot.as_ref()
+            .and_then(|s| s.entries.get(index).map(|e| (e.clone(), s.target)))
     }) else {
         return;
     };
@@ -172,7 +169,11 @@ unsafe fn send_ctrl_v() {
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: vk,
-                    dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        Default::default()
+                    },
                     ..Default::default()
                 },
             },
@@ -377,7 +378,14 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
 
         if state.entries.is_empty() {
             SetTextColor(hdc, COLORREF(COLOR_DIM));
-            draw_line(hdc, "（历史为空）", padding, padding, width - padding * 2, row_h);
+            draw_line(
+                hdc,
+                "（历史为空）",
+                padding,
+                padding,
+                width - padding * 2,
+                row_h,
+            );
         }
 
         for (i, entry) in state.entries.iter().enumerate().take(MAX_ROWS) {
@@ -427,7 +435,14 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 (ClipKind::Text, true) => "★",
                 (ClipKind::Text, false) => "",
             };
-            draw_line(hdc, tag, padding + scale(20, dpi), top, scale(30, dpi), row_h);
+            draw_line(
+                hdc,
+                tag,
+                padding + scale(20, dpi),
+                top,
+                scale(30, dpi),
+                row_h,
+            );
 
             // 内容预览
             SelectObject(hdc, HGDIOBJ(font.0));

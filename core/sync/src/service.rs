@@ -10,10 +10,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Notify};
-use base64::Engine as _;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::protocol::{read_msg, write_msg, Message};
@@ -21,8 +21,12 @@ use crate::{tls, DeviceIdentity, Peer, PeerStore};
 
 /// 同步文本上限：与桌面剪贴板采集策略一致
 const MAX_CLIP_TEXT: usize = 64 * 1024;
-/// 同步图片上限（PNG 字节）：留在协议帧上限内
-const MAX_CLIP_IMAGE: usize = 8 * 1024 * 1024;
+/// 同步图片上限（PNG 字节）：留在协议帧上限内。
+///
+/// 平台层必须使用此值约束转码结果，避免图片在发送端被静默丢弃。
+pub const MAX_CLIP_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+/// 单文件同步上限（字节）：与图片共用协议帧预算。
+pub const MAX_CLIP_FILE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct SyncConfig {
@@ -53,9 +57,22 @@ impl SyncConfig {
 /// 交给宿主的入站事件。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Incoming {
-    Clip { from_name: String, text: String },
+    Clip {
+        from_name: String,
+        text: String,
+    },
     /// 图片（PNG 字节）
-    Image { from_name: String, png: Vec<u8> },
+    Image {
+        from_name: String,
+        png: Vec<u8>,
+    },
+    /// 文件（文件名、MIME 类型与原始字节）。
+    File {
+        from_name: String,
+        name: String,
+        mime_type: String,
+        data: Vec<u8>,
+    },
 }
 
 /// 出站广播内容：文本或图片，经 broadcast 通道推给所有活跃连接。
@@ -63,6 +80,11 @@ pub enum Incoming {
 enum Outbound {
     Text(String),
     Image(Vec<u8>),
+    File {
+        name: String,
+        mime_type: String,
+        data: Vec<u8>,
+    },
 }
 
 /// 配对确认提示：宿主展示 `code` 并让用户比对两端一致后放行。
@@ -123,7 +145,9 @@ impl SyncService {
         let listener = TcpListener::bind(("0.0.0.0", config.port))
             .await
             .map_err(|e| format!("绑定端口 {} 失败: {e}", config.port))?;
-        let local_addr = listener.local_addr().map_err(|e| format!("取监听地址失败: {e}"))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|e| format!("取监听地址失败: {e}"))?;
 
         let shared = Arc::new(Shared {
             identity: identity.clone(),
@@ -226,18 +250,32 @@ impl SyncService {
 
     /// 广播一张本机产生的剪贴板图片（PNG 字节）。
     pub fn send_image(&self, png: &[u8]) {
-        if png.is_empty() || png.len() > MAX_CLIP_IMAGE {
+        if png.is_empty() || png.len() > MAX_CLIP_IMAGE_BYTES {
             return;
         }
         let _ = self.shared.outgoing.send(Outbound::Image(png.to_vec()));
     }
 
+    /// 广播一个本机复制的文件。文件名与 MIME 类型仅用于接收端落盘和上屏。
+    pub fn send_file(&self, name: &str, mime_type: &str, data: &[u8]) {
+        if name.is_empty()
+            || name.len() > 255
+            || mime_type.is_empty()
+            || mime_type.len() > 255
+            || data.is_empty()
+            || data.len() > MAX_CLIP_FILE_BYTES
+        {
+            return;
+        }
+        let _ = self.shared.outgoing.send(Outbound::File {
+            name: name.to_string(),
+            mime_type: mime_type.to_string(),
+            data: data.to_vec(),
+        });
+    }
+
     /// 主动向指定地址发起配对（发起端流程）。
-    pub async fn pair_with(
-        &self,
-        addr: &str,
-        confirm: ConfirmFn,
-    ) -> Result<Peer, String> {
+    pub async fn pair_with(&self, addr: &str, confirm: ConfirmFn) -> Result<Peer, String> {
         let connector = TlsConnector::from(tls::client_config(&self.shared.identity)?);
         let peer = pair_initiate(&self.shared, &connector, addr, confirm).await?;
         self.shared.reconnect_now.notify_one();
@@ -306,7 +344,13 @@ fn start_mdns(shared: &Arc<Shared>, port: u16) -> Result<mdns_sd::ServiceDaemon,
 fn sanitize_instance(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let trimmed = cleaned.trim_matches('-');
     if trimmed.is_empty() {
@@ -358,8 +402,8 @@ async fn connect_peer(
     let stream = TcpStream::connect(addr)
         .await
         .map_err(|e| format!("TCP 连接失败: {e}"))?;
-    let domain = rustls::pki_types::ServerName::try_from("shurufa-device")
-        .expect("固定域名不应失败");
+    let domain =
+        rustls::pki_types::ServerName::try_from("shurufa-device").expect("固定域名不应失败");
     let tls = connector
         .connect(domain, stream)
         .await
@@ -460,8 +504,8 @@ async fn pair_initiate(
     let stream = TcpStream::connect(addr)
         .await
         .map_err(|e| format!("TCP 连接失败: {e}"))?;
-    let domain = rustls::pki_types::ServerName::try_from("shurufa-device")
-        .expect("固定域名不应失败");
+    let domain =
+        rustls::pki_types::ServerName::try_from("shurufa-device").expect("固定域名不应失败");
     let mut tls = connector
         .connect(domain, stream)
         .await
@@ -514,9 +558,7 @@ async fn pair_initiate(
 
 /// 从 TLS 连接取对端证书指纹。
 fn peer_fingerprint(conn: &rustls::CommonState) -> Result<String, String> {
-    let certs = conn
-        .peer_certificates()
-        .ok_or("对端未提供证书")?;
+    let certs = conn.peer_certificates().ok_or("对端未提供证书")?;
     let first = certs.first().ok_or("对端证书为空")?;
     Ok(crate::fingerprint_hex(first.as_ref()))
 }
@@ -560,12 +602,34 @@ where
                 }
                 Ok(Message::ClipImage { data, .. }) => {
                     match base64::engine::general_purpose::STANDARD.decode(&data) {
-                        Ok(png) if png.len() <= MAX_CLIP_IMAGE => {
+                        Ok(png) if png.len() <= MAX_CLIP_IMAGE_BYTES => {
                             let _ = shared
                                 .incoming
                                 .send(Incoming::Image {
                                     from_name: peer_name.clone(),
                                     png,
+                                })
+                                .await;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Message::ClipFile { name, mime_type, data, .. }) => {
+                    match base64::engine::general_purpose::STANDARD.decode(&data) {
+                        Ok(data)
+                            if !name.is_empty()
+                                && name.len() <= 255
+                                && !mime_type.is_empty()
+                                && mime_type.len() <= 255
+                                && data.len() <= MAX_CLIP_FILE_BYTES =>
+                        {
+                            let _ = shared
+                                .incoming
+                                .send(Incoming::File {
+                                    from_name: peer_name.clone(),
+                                    name,
+                                    mime_type,
+                                    data,
                                 })
                                 .await;
                         }
@@ -590,6 +654,17 @@ where
                     let data = base64::engine::general_purpose::STANDARD.encode(&png);
                     let msg = Message::ClipImage {
                         data,
+                        sent_at_ms: now_ms(),
+                    };
+                    if let Err(e) = write_msg(&mut tls, &msg).await {
+                        break Err(e);
+                    }
+                }
+                Ok(Outbound::File { name, mime_type, data }) => {
+                    let msg = Message::ClipFile {
+                        name,
+                        mime_type,
+                        data: base64::engine::general_purpose::STANDARD.encode(&data),
                         sent_at_ms: now_ms(),
                     };
                     if let Err(e) = write_msg(&mut tls, &msg).await {

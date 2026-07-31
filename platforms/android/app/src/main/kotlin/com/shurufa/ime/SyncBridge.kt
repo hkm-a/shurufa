@@ -19,6 +19,9 @@ object SyncBridge {
     external fun nativePoll(): String
     external fun nativeSendClip(text: String)
     external fun nativeSendImage(png: ByteArray)
+    external fun nativeSendFile(name: String, mimeType: String, data: ByteArray)
+    external fun nativeMaxImageBytes(): Int
+    external fun nativeMaxFileBytes(): Int
     external fun nativeDevices(): String
     external fun nativePairBegin(addr: String): Boolean
     external fun nativePairCode(): String
@@ -37,6 +40,11 @@ object SyncBridge {
     }
 
     fun deviceName(): String = Build.MODEL ?: "Android 设备"
+
+    /** 与 Rust 同步核心保持一致的单张 PNG 上限。 */
+    fun maxImageBytes(): Int = nativeMaxImageBytes().takeIf { it > 0 } ?: 8 * 1024 * 1024
+
+    fun maxFileBytes(): Int = nativeMaxFileBytes().takeIf { it > 0 } ?: 8 * 1024 * 1024
 
     /** 已配对设备名列表。 */
     fun deviceNames(): List<String> {

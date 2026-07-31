@@ -13,3 +13,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "shurufa-android"
 include(":app")
+include(":attachment-test")

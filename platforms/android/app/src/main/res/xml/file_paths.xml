@@ -2,4 +2,5 @@
 <paths>
     <!-- 图片上屏经 FileProvider 从 cache/shared 暴露临时 content:// URI -->
     <cache-path name="shared" path="shared/" />
+    <files-path name="received" path="sync/received/" />
 </paths>

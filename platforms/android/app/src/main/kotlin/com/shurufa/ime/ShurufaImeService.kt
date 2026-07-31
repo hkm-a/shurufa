@@ -1,15 +1,18 @@
 package com.shurufa.ime
 
+import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.inputmethodservice.InputMethodService
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.TypedValue
@@ -17,18 +20,21 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.core.view.inputmethod.EditorInfoCompat
 import androidx.core.view.inputmethod.InputConnectionCompat
 import androidx.core.view.inputmethod.InputContentInfoCompat
-import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.ByteArrayOutputStream
+import java.net.URLConnection
 import kotlin.concurrent.thread
 
 /**
@@ -109,11 +115,15 @@ class ShurufaImeService : InputMethodService() {
     private var pendingSyncText: String? = null
     /// 同步收到的图片历史 id，syncBar 点击时上屏
     private var pendingSyncImageId: Int? = null
+    /// 同步收到的文件历史 id，syncBar 点击时作为附件提交。
+    private var pendingSyncFileId: Int? = null
     private val syncPoll = Handler(Looper.getMainLooper())
+    private var pendingSyncToken: Long? = null
     private var historyPanel: LinearLayout? = null
-    private var lastClipboardText: String? = null
-    /// 系统剪贴板图片去重签名（大小与首尾字节）
-    private var lastClipboardImageSig: Int? = null
+    /// 微信输入法 S33 同款图片预览键盘（点图后先预览再保存/发送）
+    private var previewKeyboard: LinearLayout? = null
+    /// 预览键盘当前展示的图片历史 id
+    private var previewImageId: Int? = null
 
     /// 当前主题；随系统深色设置在重建输入视图时更新
     private var palette: Palette = LIGHT
@@ -123,13 +133,26 @@ class ShurufaImeService : InputMethodService() {
     /// 退格长按连删定时器
     private val repeatHandler = Handler(Looper.getMainLooper())
 
+    /// 附件发送结果：SENT=已投递，COPIED=已复制到剪贴板（需长按粘贴），FAILED=彻底失败
+    private enum class SendResult { SENT, COPIED, FAILED }
+
+    /// 收起 syncBar 并清空待发送状态
+    private fun dismissSyncBar() {
+        pendingSyncToken?.let { SyncInbox.clear(this, it) }
+        pendingSyncText = null
+        pendingSyncImageId = null
+        pendingSyncFileId = null
+        pendingSyncToken = null
+        syncBar?.visibility = View.GONE
+    }
+
     override fun onCreate() {
         super.onCreate()
+        ClipboardSyncService.start(applicationContext)
         ensureEngine()
         thread(name = "sync-start") {
             try {
                 ClipStore.ensureInit(applicationContext)
-                SyncBridge.ensureStarted(applicationContext)
             } catch (e: Throwable) {
                 android.util.Log.e("shurufa", "同步/历史初始化失败", e)
             }
@@ -155,7 +178,7 @@ class ShurufaImeService : InputMethodService() {
     private fun unpackSchemas(): File {
         val dest = File(filesDir, "schemas")
         val marker = File(dest, ".version")
-        val version = packageManager.getPackageInfo(packageName, 0).longVersionCode.toString()
+        val version = appVersionCode().toString()
         if (marker.takeIf { it.exists() }?.readText() == version) {
             return dest
         }
@@ -168,6 +191,16 @@ class ShurufaImeService : InputMethodService() {
         }
         marker.writeText(version)
         return dest
+    }
+
+    @Suppress("DEPRECATION")
+    private fun appVersionCode(): Long {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            info.versionCode.toLong()
+        }
     }
 
     // ---------- 主题与控件工厂 ----------
@@ -311,29 +344,50 @@ class ShurufaImeService : InputMethodService() {
             visibility = View.GONE
             setOnClickListener {
                 val imgId = pendingSyncImageId
-                if (imgId != null) {
-                    commitImage(imgId)
-                } else {
-                    pendingSyncText?.let { currentInputConnection?.commitText(it, 1) }
+                val fileId = pendingSyncFileId
+                when {
+                    // 微信输入法同款：点图先进预览键盘，再保存/发送
+                    imgId != null -> {
+                        dismissSyncBar()
+                        openImagePreview(imgId)
+                    }
+                    fileId != null -> when (commitFile(fileId)) {
+                        SendResult.SENT -> dismissSyncBar()
+                        SendResult.COPIED -> {
+                            text = "文件已复制到剪贴板，长按输入框粘贴即可发送"
+                        }
+                        SendResult.FAILED -> showAttachmentError("文件发送失败")
+                    }
+                    else -> {
+                        val sent = pendingSyncText?.let {
+                            currentInputConnection?.commitText(it, 1)
+                            true
+                        } ?: false
+                        if (sent) dismissSyncBar() else showAttachmentError("无可发送内容")
+                    }
                 }
-                pendingSyncText = null
-                pendingSyncImageId = null
-                visibility = View.GONE
             }
         }
         root.addView(syncBar, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { setMargins(dp(3f), dp(2f), dp(3f), dp(2f)) })
 
-        // 候选栏行：左侧剪贴板按钮 + 横向滚动候选
+        // 候选栏行（微信输入法布局：顶部整条白底候选栏 + 左侧工具按钮）
         val topRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            // 微信候选栏：白底与键盘区分
+            setBackgroundColor(palette.key)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(46f)
             )
         }
+        // 候选栏与键盘之间的细分隔线（微信同款层次感）
+        root.addView(View(this).apply {
+            setBackgroundColor(if (isDark()) 0xFF3A3F47.toInt() else 0xFFD8DCE3.toInt())
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1f)))
         val clipButton = TextView(this).apply {
             text = "⊞"
+            contentDescription = "剪贴板历史"
             gravity = Gravity.CENTER
             textSize = 21f
             setTextColor(palette.accent)
@@ -365,6 +419,17 @@ class ShurufaImeService : InputMethodService() {
             visibility = View.GONE
         }
         root.addView(historyPanel)
+
+        // 微信输入法 S33 同款：图片预览键盘（点图先进预览，再保存/发送）
+        previewKeyboard = buildImagePreviewKeyboard()
+        // 必须占满整个输入视图：内部用 weight 布局，wrap_content 会使预览区高度塌缩
+        root.addView(
+            previewKeyboard,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
         return root
     }
 
@@ -380,6 +445,233 @@ class ShurufaImeService : InputMethodService() {
             panel.visibility = View.VISIBLE
             keyArea.visibility = View.GONE
         }
+    }
+
+    // ---------- 图片预览键盘（微信输入法 S33 同款布局） ----------
+
+    /**
+     * 微信输入法 S33ImagePreviewKeyboard 的布局范式：
+     * 顶部工具栏（关闭 + 标题）→ 中部大图预览（圆角卡片）→ 底部操作区（保存 / 发送）。
+     * 样式取自反编译规范：键盘白底浅灰、预览圆角 16dp、主按钮微信绿 #07C160 圆角 22dp。
+     */
+    private fun buildImagePreviewKeyboard(): LinearLayout {
+        val dark = isDark()
+        val toolbarBg = if (dark) 0xFF23262C.toInt() else 0xFFF7F7F7.toInt()
+        val titleColor = if (dark) 0xFFE6E8EB.toInt() else 0xFF333333.toInt()
+        val previewBg = if (dark) 0xFF1A1C20.toInt() else 0xFFF2F3F5.toInt()
+        val btnWhite = if (dark) 0xFF2B2F36.toInt() else 0xFFFFFFFF.toInt()
+        val btnText = if (dark) 0xFFE6E8EB.toInt() else 0xFF33383F.toInt()
+        val btnStroke = if (dark) 0xFF4A5059.toInt() else 0xFFD9D9D9.toInt()
+        // 主按钮用我们自己的品牌色（样式自己定，只借微信输入法的布局结构）
+        val primaryColor = palette.accent
+        val primaryPressed = if (dark) 0xFFC98E4E.toInt() else 0xFF9C5A28.toInt()
+
+        // 顶部工具栏：关闭 ✕ + 居中标题（同 S33：mContentInfoLayout 标题区）
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(toolbarBg)
+            setPadding(dp(6f), 0, dp(6f), 0)
+        }
+        val closeBtn = TextView(this).apply {
+            text = "✕"
+            contentDescription = "关闭预览"
+            gravity = Gravity.CENTER
+            textSize = 18f
+            setTextColor(titleColor)
+            setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+            setOnClickListener { closeImagePreview() }
+        }
+        toolbar.addView(
+            closeBtn,
+            LinearLayout.LayoutParams(dp(44f), LinearLayout.LayoutParams.MATCH_PARENT),
+        )
+        val title = TextView(this).apply {
+            text = "图片预览"
+            gravity = Gravity.CENTER
+            textSize = 15f
+            setTextColor(titleColor)
+        }
+        toolbar.addView(title, LinearLayout.LayoutParams(0, dp(44f), 1f))
+        // 右侧占位与关闭对齐（保持标题居中）
+        toolbar.addView(View(this), LinearLayout.LayoutParams(dp(44f), LinearLayout.LayoutParams.MATCH_PARENT))
+
+        // 中部大图预览（圆角卡片，同 S33：ImeRadiusConstraintLayout + 图片）
+        val previewWrap = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            setBackgroundColor(previewBg)
+        }
+        val previewImage = ImageView(this).apply {
+            tag = "preview_image"
+            contentDescription = "图片预览"
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            adjustViewBounds = true
+            background = GradientDrawable().apply {
+                setColor(btnWhite)
+                cornerRadius = dp(16f).toFloat()
+                setStroke(dp(1f), btnStroke)
+            }
+        }
+        previewWrap.addView(
+            previewImage,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f,
+            ).apply { setMargins(dp(14f), dp(12f), dp(14f), dp(12f)) },
+        )
+
+        // 底部操作区：保存到相册（次级）+ 发送（微信绿主按钮）
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(previewBg)
+            setPadding(dp(16f), dp(12f), dp(16f), dp(16f))
+        }
+        fun actionBtn(label: String, primary: Boolean): TextView = TextView(this).apply {
+            text = label
+            gravity = Gravity.CENTER
+            textSize = 15f
+            if (primary) {
+                setTextColor(0xFFFFFFFF.toInt())
+                // 按下态反馈：主按钮按下变暗（StateListDrawable）
+                background = StateListDrawable().apply {
+                    addState(
+                        intArrayOf(android.R.attr.state_pressed),
+                        GradientDrawable().apply {
+                            setColor(primaryPressed)
+                            cornerRadius = dp(22f).toFloat()
+                        },
+                    )
+                    addState(
+                        intArrayOf(),
+                        GradientDrawable().apply {
+                            setColor(primaryColor)
+                            cornerRadius = dp(22f).toFloat()
+                        },
+                    )
+                }
+            } else {
+                setTextColor(btnText)
+                background = StateListDrawable().apply {
+                    addState(
+                        intArrayOf(android.R.attr.state_pressed),
+                        GradientDrawable().apply {
+                            setColor(if (dark) 0xFF3A4048.toInt() else 0xFFEDEFF2.toInt())
+                            cornerRadius = dp(22f).toFloat()
+                            setStroke(dp(1f), btnStroke)
+                        },
+                    )
+                    addState(
+                        intArrayOf(),
+                        GradientDrawable().apply {
+                            setColor(btnWhite)
+                            cornerRadius = dp(22f).toFloat()
+                            setStroke(dp(1f), btnStroke)
+                        },
+                    )
+                }
+            }
+        }
+        val saveBtn = actionBtn("保存到相册", false).apply {
+            setOnClickListener {
+                val id = previewImageId ?: return@setOnClickListener
+                val png = try {
+                    ClipStore.imageData(id)
+                } catch (e: Throwable) {
+                    null
+                }
+                if (png == null) {
+                    showAttachmentError("图片数据缺失")
+                    return@setOnClickListener
+                }
+                val uri = ImageClipboard.saveToGallery(this@ShurufaImeService, png)
+                if (uri != null) {
+                    android.util.Log.i("shurufa", "预览保存到相册 历史ID=$id URI=$uri")
+                    Toast.makeText(
+                        this@ShurufaImeService,
+                        "已保存到相册（Shurufa 文件夹）",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                } else {
+                    showAttachmentError("保存到相册失败")
+                }
+            }
+        }
+        val sendBtn = actionBtn("发 送", true).apply {
+            // 点击反馈：立即变「发送中…」禁用，完成后结果 toast（用户可感知全过程）
+            setOnClickListener {
+                val id = previewImageId ?: return@setOnClickListener
+                isEnabled = false
+                text = "发送中…"
+                Toast.makeText(
+                    this@ShurufaImeService,
+                    "正在发送图片…",
+                    Toast.LENGTH_SHORT,
+                ).show()
+                val result = commitImage(id)
+                isEnabled = true
+                text = "发 送"
+                when (result) {
+                    SendResult.SENT -> {
+                        Toast.makeText(
+                            this@ShurufaImeService,
+                            "已发送到输入框，请点 App 的发送键",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        closeImagePreview()
+                    }
+                    SendResult.COPIED -> {
+                        // copyImageToClipboard 内部已 toast 明确结果（粘贴失败→存相册）
+                        closeImagePreview()
+                    }
+                    SendResult.FAILED -> showAttachmentError("图片发送失败")
+                }
+            }
+        }
+        val gap = View(this)
+        actions.addView(saveBtn, LinearLayout.LayoutParams(0, dp(44f), 1f))
+        actions.addView(gap, LinearLayout.LayoutParams(dp(12f), LinearLayout.LayoutParams.MATCH_PARENT))
+        actions.addView(sendBtn, LinearLayout.LayoutParams(0, dp(44f), 1f))
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setBackgroundColor(previewBg)
+            addView(toolbar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44f)))
+            addView(previewWrap, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(actions, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    /** 打开图片预览键盘（微信输入法：点图先进预览，再点发送/保存）。 */
+    private fun openImagePreview(id: Int) {
+        val panel = previewKeyboard ?: return
+        val image = panel.findViewWithTag<ImageView>("preview_image") ?: return
+        val png = try {
+            ClipStore.imageData(id)
+        } catch (e: Throwable) {
+            null
+        }
+        if (png == null) {
+            showAttachmentError("图片数据缺失")
+            return
+        }
+        val bmp = BitmapFactory.decodeByteArray(png, 0, png.size)
+        if (bmp != null) image.setImageBitmap(bmp)
+        previewImageId = id
+        historyPanel?.visibility = View.GONE
+        keyArea.visibility = View.GONE
+        panel.visibility = View.VISIBLE
+        android.util.Log.i("shurufa", "打开图片预览 历史ID=$id 字节=${png.size}")
+    }
+
+    private fun closeImagePreview() {
+        // 同步条会挤压预览区，关闭时一并收起（发送反馈已用 toast）
+        dismissSyncBar()
+        previewKeyboard?.visibility = View.GONE
+        previewImageId = null
+        keyArea.visibility = View.VISIBLE
     }
 
     private fun populateHistory(panel: LinearLayout) {
@@ -406,24 +698,61 @@ class ShurufaImeService : InputMethodService() {
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         for (entry in entries) {
             if (entry.kind == "image") {
+                val supportedImageMime = currentSupportedImageMimeType()
+                android.util.Log.i(
+                    "shurufa",
+                    "图片历史条目状态 历史ID=${entry.id} 声明MIME=$supportedImageMime",
+                )
                 val bmp = try {
                     ClipStore.imageData(entry.id)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
                 } catch (e: Throwable) {
                     null
                 }
                 val thumb = ImageView(this).apply {
-                    if (bmp != null) setImageBitmap(bmp) else contentDescription = "图片"
+                    contentDescription = "图片附件：${entry.source}，点击预览后发送到当前输入框"
+                    if (bmp != null) setImageBitmap(bmp)
                     adjustViewBounds = true
                     maxHeight = dp(130f)
                     scaleType = ImageView.ScaleType.FIT_START
                     background = keyBackground(palette.key, palette.keyPressed)
+                    alpha = 1f
                     setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
-                    setOnClickListener {
-                        commitImage(entry.id)
-                        toggleHistory()
-                    }
+                    // 微信输入法同款：点图先进预览键盘，再保存/发送
+                    setOnClickListener { openImagePreview(entry.id) }
                 }
                 list.addView(thumb, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { setMargins(dp(4f), dp(3f), dp(4f), dp(3f)) })
+                continue
+            }
+            if (entry.kind == "files") {
+                list.addView(TextView(this).apply {
+                    val fileName = entry.text.lineSequence().firstOrNull()?.let { File(it).name } ?: "文件"
+                    val fileMimeType = URLConnection.guessContentTypeFromName(fileName)
+                        ?: "application/octet-stream"
+                    text = fileName
+                    contentDescription = "文件附件：$fileName"
+                    textSize = 16f
+                    setTextColor(palette.keyText)
+                    background = keyBackground(palette.key, palette.keyPressed)
+                    alpha = 1f
+                    setPadding(dp(14f), dp(13f), dp(14f), dp(13f))
+                    setOnClickListener {
+                        when (commitFile(entry.id)) {
+                            SendResult.SENT -> toggleHistory()
+                            SendResult.COPIED -> {
+                                Toast.makeText(
+                                    this@ShurufaImeService,
+                                    "文件已复制，长按输入框粘贴",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                                toggleHistory()
+                            }
+                            SendResult.FAILED -> showAttachmentError("文件发送失败")
+                        }
+                    }
+                }, LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply { setMargins(dp(4f), dp(3f), dp(4f), dp(3f)) })
@@ -452,96 +781,238 @@ class ShurufaImeService : InputMethodService() {
         })
     }
 
-    /// 图片上屏：经 FileProvider 暴露 content:// URI，用 commitContent 交给
-    /// 目标输入框。仅当输入框声明支持 image/png（微信、邮件等富文本框）时
-    /// 生效；不支持的输入框静默（图片仍在历史面板可查看）。
-    private fun commitImage(id: Int) {
+    /// 图片以附件形式提交给当前输入框：无条件尝试 Commit Content 原位插入，失败回退剪贴板。
+    /// 不做 ACTION_SEND 分享：分享语义是“分享到应用”而非“插入输入框”，
+    /// 对抖音/B 站等会误触打开发布/分享界面（实机验证结论）。
+    /// 不检查 MIME 声明：抖音/B 站等评论框声明为空但实现了 OnReceiveContentListener，
+    /// 直接 commitContent 依然能成功插入（微信输入法的通用做法）。
+    private fun commitImage(id: Int): SendResult {
         val png = try {
             ClipStore.imageData(id)
         } catch (e: Throwable) {
             null
-        } ?: return
-        val ic = currentInputConnection ?: return
-        val editor = currentInputEditorInfo ?: return
-        val supported = EditorInfoCompat.getContentMimeTypes(editor)
-            .any { ClipDescription.compareMimeTypes(it, "image/png") }
-        if (!supported) return
+        } ?: return SendResult.FAILED
+        // 第 1 级：Commit Content 原位插入（按目标声明转码；无声明用原图 PNG）
+        val targetMimeType = currentSupportedImageMimeType() ?: "image/png"
         try {
-            val dir = File(cacheDir, "shared").apply { mkdirs() }
-            val f = File(dir, "clip_$id.png")
-            f.writeBytes(png)
-            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", f)
-            val desc = ClipDescription("图片", arrayOf("image/png"))
-            val content = InputContentInfoCompat(uri, desc, null)
-            InputConnectionCompat.commitContent(
-                ic, editor, content,
-                InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null
+            val encoded = encodeImageForTarget(png, targetMimeType)
+            android.util.Log.i(
+                "shurufa",
+                "准备发送图片 历史ID=$id 原始字节=${png.size} 类型=$targetMimeType 字节=${encoded.size}",
             )
+            val dir = File(cacheDir, "shared").apply { mkdirs() }
+            val f = File(dir, "clip_$id.${imageExtension(targetMimeType)}")
+            f.writeBytes(encoded)
+            if (commitAttachment(f, targetMimeType)) return SendResult.SENT
         } catch (e: Throwable) {
-            android.util.Log.e("shurufa", "图片上屏失败", e)
+            android.util.Log.e("shurufa", "图片准备上屏失败", e)
+        }
+        // 第 2 级：原位提交被拒 → 复制到系统剪贴板，长按粘贴或从相册发送
+        return copyImageToClipboard(png, id)
+    }
+
+    /** 文件以附件形式提交给当前输入框：无条件尝试 commitContent，失败回退剪贴板。 */
+    private fun commitFile(id: Int): SendResult {
+        val entry = ClipStore.list(100).firstOrNull { it.id == id && it.kind == "files" } ?: return SendResult.FAILED
+        val path = entry.text.lineSequence().firstOrNull()?.takeIf { it.isNotBlank() } ?: return SendResult.FAILED
+        val file = File(path)
+        if (!file.isFile) {
+            showAttachmentError("文件不存在")
+            return SendResult.FAILED
+        }
+        val mimeType = URLConnection.guessContentTypeFromName(file.name) ?: "application/octet-stream"
+        if (commitAttachment(file, mimeType)) {
+            return SendResult.SENT
+        }
+        return copyFileToClipboard(file, mimeType, id)
+    }
+
+    /**
+     * 通过 Android Commit Content 标准协议提交，不依赖目标 MIME 声明：
+     * 声明只是“接受哪些类型”的广告，真正决定成败的是目标是否实现
+     * OnReceiveContentListener / onCommitContent（微信输入法的通用做法）。
+     */
+    private fun commitAttachment(file: File, mimeType: String): Boolean {
+        val ic = currentInputConnection ?: return false
+        val editor = currentInputEditorInfo ?: return false
+        return try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val declaredMimeTypes = EditorInfoCompat.getContentMimeTypes(editor)
+            val supported = AttachmentDeliveryPolicy.supportsMimeType(mimeType, declaredMimeTypes)
+            val targetPackage = editor.packageName
+            val desc = ClipDescription(file.name, arrayOf(mimeType))
+            val content = InputContentInfoCompat(uri, desc, null)
+            val flags = if (Build.VERSION.SDK_INT >= 25) {
+                InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION
+            } else {
+                grantAttachmentUri(targetPackage, uri)
+                0
+            }
+            val commitAccepted = InputConnectionCompat.commitContent(
+                ic, editor, content, flags, null,
+            )
+            android.util.Log.i(
+                "shurufa",
+                "附件富内容投递 名称=${file.name} 字节=${file.length()} 类型=$mimeType " +
+                    "目标=$targetPackage 声明=${declaredMimeTypes.joinToString()} 匹配=$supported " +
+                    "授权标志=$flags URI=$uri 接收=$commitAccepted",
+            )
+            if (!commitAccepted) {
+                android.util.Log.i("shurufa", "目标拒绝原位提交，准备回退到剪贴板 名称=${file.name}")
+            } else {
+                // 微信输入法同款行为：commitContent 成功后不自动触发发送，
+                // 图片已在输入框内，由用户在 App 的发送键发出。
+            }
+            commitAccepted
+        } catch (e: Throwable) {
+            android.util.Log.e("shurufa", "附件上屏失败", e)
+            showAttachmentError("附件发送失败")
+            false
         }
     }
 
-    private fun captureSystemClipboard() {
-        val cm = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-        val clip = cm.primaryClip ?: return
-        if (clip.itemCount == 0) return
-        val item = clip.getItemAt(0)
+    /**
+     * 微信输入法同款“点击图片直接进输入框”机制（反编译 com.tencent.wetype 实锤）：
+     * 图片已写入系统剪贴板后，向目标输入框触发「粘贴」：
+     * InputConnection.performContextMenuAction(android.R.id.paste=16908322)
+     * —— 微信输入法 S33ImagePreviewKeyboard.h() 对非微信生态 App 的唯一动作
+     * （WxHldService.performContextMenuAction → q0 协程 → 标准 InputConnection 调用，
+     * 无 performEditorAction / 无回车 / 无键事件）。
+     *
+     * 支持粘贴图片的输入框（豆包、微信、抖音私信等）会直接从剪贴板取图插入，
+     * 之后由用户在 App 的发送键发出；不支持的输入框（抖音/B站评论框）返回 false，
+     * 提示保存后从相册发送（微信输入法在 B≥2 时提示同样文案）。
+     */
+    private fun triggerPasteInTarget(): Boolean {
+        return try {
+            val ic = currentInputConnection ?: return false
+            val accepted = ic.performContextMenuAction(android.R.id.paste)
+            android.util.Log.i("shurufa", "触发自动粘贴（微信输入法同款）performContextMenuAction(PASTE)=$accepted")
+            accepted
+        } catch (e: Throwable) {
+            android.util.Log.e("shurufa", "触发自动粘贴失败", e)
+            false
+        }
+    }
 
-        // 优先处理图片：读 content:// URI，解码为 PNG 后发送与入库
-        val uri = item.uri
-        if (uri != null && contentResolver.getType(uri)?.startsWith("image/") == true) {
-            val png = try {
-                readImageAsPng(uri)
-            } catch (e: Throwable) {
-                null
-            }
-            if (png != null) {
-                val sig = png.size xor
-                    (png.firstOrNull()?.toInt() ?: 0) xor
-                    ((png.getOrNull(png.size / 2)?.toInt() ?: 0) shl 8)
-                if (sig != lastClipboardImageSig) {
-                    lastClipboardImageSig = sig
-                    try {
-                        ClipStore.insertImage(png, "本机")
-                        SyncBridge.nativeSendImage(png)
-                    } catch (e: Throwable) {
-                        android.util.Log.e("shurufa", "图片同步失败", e)
-                    }
+    /** Android 7.0 及以下没有提交授权标志，需要显式授权目标包。 */
+    private fun grantAttachmentUri(targetPackage: String?, uri: Uri): Boolean {
+        if (targetPackage.isNullOrBlank()) return false
+        return try {
+            grantUriPermission(targetPackage, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            true
+        } catch (e: Throwable) {
+            android.util.Log.w("shurufa", "附件 URI 显式授权失败 目标=$targetPackage URI=$uri", e)
+            false
+        }
+    }
+
+    private fun currentSupportedImageMimeType(): String? {
+        val editor = currentInputEditorInfo ?: return null
+        if (currentInputConnection == null || editor.packageName.isNullOrBlank()) return null
+        return AttachmentDeliveryPolicy.selectImageMimeType(EditorInfoCompat.getContentMimeTypes(editor))
+    }
+
+    private fun currentSupportsMimeType(mimeType: String): Boolean {
+        val editor = currentInputEditorInfo ?: return false
+        if (currentInputConnection == null || editor.packageName.isNullOrBlank()) return false
+        return AttachmentDeliveryPolicy.supportsMimeType(
+            mimeType,
+            EditorInfoCompat.getContentMimeTypes(editor),
+        )
+    }
+
+    /// 第 2 级兜底：图片复制到系统剪贴板（URI + image/png），随后自动触发粘贴+发送。
+    private fun copyImageToClipboard(png: ByteArray, id: Int): SendResult {
+        return try {
+            val uri = ImageClipboard.setClipboard(this, png, "图片")
+            ImageClipboard.grantTo(this, uri, currentInputEditorInfo?.packageName)
+            android.util.Log.i(
+                "shurufa",
+                "图片已复制到剪贴板 历史ID=$id 字节=${png.size} URI=$uri 目标=${currentInputEditorInfo?.packageName}",
+            )
+            // 微信输入法同款：自动触发粘贴（performContextMenuAction PASTE），
+            // 支持粘贴图片的输入框会直接从剪贴板取图插入，无需用户长按。
+            if (!triggerPasteInTarget()) {
+                // 输入框不吃粘贴：保存到相册，用户从「+」→ 相册 → Shurufa 文件夹发送
+                val galleryUri = ImageClipboard.saveToGallery(this, png)
+                if (galleryUri != null) {
+                    android.util.Log.i("shurufa", "已保存到相册 Pictures/Shurufa URI=$galleryUri")
+                    showAttachmentError("已保存到相册（Shurufa 文件夹），请从「+」发送")
+                } else {
+                    showAttachmentError("该输入框不支持发送图片，已复制到剪贴板，请长按粘贴")
                 }
             }
-            return
-        }
-
-        val text = item.coerceToText(this)?.toString()
-        if (text.isNullOrBlank() || text == lastClipboardText) return
-        lastClipboardText = text
-        try {
-            ClipStore.insert(text, "本机")
-            SyncBridge.nativeSendClip(text)
+            SendResult.COPIED
         } catch (e: Throwable) {
-            android.util.Log.e("shurufa", "剪贴板同步失败", e)
+            android.util.Log.e("shurufa", "复制图片到剪贴板失败", e)
+            SendResult.FAILED
         }
     }
 
-    /// 读取剪贴板图片 URI 并编码为 PNG；过大时降采样，避免超出同步上限。
-    private fun readImageAsPng(uri: Uri): ByteArray? {
-        val bmp = contentResolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it)
-        } ?: return null
-        val scaled = downscaleIfNeeded(bmp)
-        val out = ByteArrayOutputStream()
-        scaled.compress(Bitmap.CompressFormat.PNG, 100, out)
-        return out.toByteArray()
+    /// 第 2 级兜底：文件复制到系统剪贴板（URI + MIME），随后自动触发粘贴+发送。
+    private fun copyFileToClipboard(file: File, mimeType: String, id: Int): SendResult {
+        return try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val description = ClipDescription(ImageClipboard.LABEL_PREFIX + "文件", arrayOf(mimeType))
+            clipboard.setPrimaryClip(ClipData(description, ClipData.Item(uri)))
+            ImageClipboard.grantTo(this, uri, currentInputEditorInfo?.packageName)
+            android.util.Log.i(
+                "shurufa",
+                "文件已复制到剪贴板 历史ID=$id 名称=${file.name} 类型=$mimeType URI=$uri",
+            )
+            triggerPasteInTarget()
+            SendResult.COPIED
+        } catch (e: Throwable) {
+            android.util.Log.e("shurufa", "复制文件到剪贴板失败", e)
+            SendResult.FAILED
+        }
     }
 
-    private fun downscaleIfNeeded(bmp: Bitmap): Bitmap {
-        val maxDim = 2000
-        val w = bmp.width
-        val h = bmp.height
-        if (w <= maxDim && h <= maxDim) return bmp
-        val scale = maxDim.toFloat() / maxOf(w, h)
-        return Bitmap.createScaledBitmap(bmp, (w * scale).toInt(), (h * scale).toInt(), true)
+    private fun encodeImageForTarget(png: ByteArray, mimeType: String): ByteArray {
+        if (mimeType == "image/png") return png
+        val bitmap = BitmapFactory.decodeByteArray(png, 0, png.size)
+            ?: error("同步图片无法解码")
+        return try {
+            ByteArrayOutputStream().use { output ->
+                val format = when (mimeType) {
+                    "image/jpeg" -> android.graphics.Bitmap.CompressFormat.JPEG
+                    "image/webp" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        android.graphics.Bitmap.CompressFormat.WEBP_LOSSLESS
+                    } else {
+                        @Suppress("DEPRECATION")
+                        android.graphics.Bitmap.CompressFormat.WEBP
+                    }
+                    else -> error("不支持的目标图片类型：$mimeType")
+                }
+                check(bitmap.compress(format, 95, output)) { "图片转码失败：$mimeType" }
+                output.toByteArray()
+            }
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    private fun imageExtension(mimeType: String): String = when (mimeType) {
+        "image/jpeg" -> "jpg"
+        "image/webp" -> "webp"
+        else -> "png"
+    }
+
+    private fun logUnsupportedAttachment(name: String) {
+        val editor = currentInputEditorInfo
+        val declared = editor?.let { EditorInfoCompat.getContentMimeTypes(it).joinToString() }.orEmpty()
+        android.util.Log.i(
+            "shurufa",
+            "目标不支持附件 名称=$name 目标=${editor?.packageName} 声明=$declared",
+        )
+    }
+
+    private fun showAttachmentError(message: String) {
+        syncBar?.text = message
+        syncBar?.visibility = View.VISIBLE
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
     // ---------- 按键布局 ----------
@@ -554,12 +1025,7 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun buildLetterPage() {
-        val numberRow = rowLayout()
-        "1234567890".forEach { c ->
-            numberRow.addView(charKey(c.toString(), 1f) { onLetter(c) })
-        }
-        keyArea.addView(numberRow)
-
+        // 微信输入法 S2 布局：候选栏下直接 3 行字母 + 底部功能行（无独立数字行，数字在符号页）
         listOf("qwertyuiop", "asdfghjkl", "zxcvbnm").forEachIndexed { index, row ->
             keyArea.addView(buildLetterRow(row, withBackspace = index == 2))
         }
@@ -567,7 +1033,9 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun buildSymbolPage() {
+        // 符号页第一行放数字（微信输入法同款：数字在符号页）
         listOf(
+            "1234567890",
             "，。？！；：",
             "“”‘’（）",
             "、~·@#￥",
@@ -809,8 +1277,8 @@ class ShurufaImeService : InputMethodService() {
         updateCandidates("", emptyList(), 0)
         historyPanel?.visibility = View.GONE
         keyArea.visibility = View.VISIBLE
-        captureSystemClipboard()
-        startSyncPolling()
+        refreshSyncInbox()
+        startInboxPolling()
     }
 
     override fun onFinishInput() {
@@ -820,40 +1288,44 @@ class ShurufaImeService : InputMethodService() {
         hideBubble()
     }
 
-    private fun startSyncPolling() {
+    private fun startInboxPolling() {
         syncPoll.removeCallbacksAndMessages(null)
         val tick = object : Runnable {
             override fun run() {
-                val raw = try {
-                    SyncBridge.nativePoll()
-                } catch (e: Throwable) {
-                    ""
-                }
-                if (raw.isNotEmpty()) {
-                    val parts = raw.split('\u0001')
-                    val kind = parts.getOrNull(0).orEmpty()
-                    val from = parts.getOrNull(1).orEmpty()
-                    val payload = parts.drop(2).joinToString("\u0001")
-                    when (kind) {
-                        "text" -> if (payload.isNotEmpty()) {
-                            ClipStore.insert(payload, "同步·$from")
-                            pendingSyncText = payload
-                            pendingSyncImageId = null
-                            val preview = payload.replace('\n', ' ').take(30)
-                            syncBar?.text = "来自 $from：$preview（点此上屏）"
-                            syncBar?.visibility = View.VISIBLE
-                        }
-                        "image" -> payload.toIntOrNull()?.let { id ->
-                            pendingSyncImageId = id
-                            pendingSyncText = null
-                            syncBar?.text = "来自 $from：收到图片（点此上屏）"
-                            syncBar?.visibility = View.VISIBLE
-                        }
-                    }
-                }
-                syncPoll.postDelayed(this, 1500)
+                refreshSyncInbox()
+                syncPoll.postDelayed(this, 500)
             }
         }
-        syncPoll.postDelayed(tick, 800)
+        syncPoll.postDelayed(tick, 500)
+    }
+
+    private fun refreshSyncInbox() {
+        val event = SyncInbox.load(this) ?: return
+        if (event.token == pendingSyncToken) return
+        pendingSyncToken = event.token
+        when (event.kind) {
+            "text" -> if (event.payload.isNotEmpty()) {
+                pendingSyncText = event.payload
+                pendingSyncImageId = null
+                pendingSyncFileId = null
+                val preview = event.payload.replace('\n', ' ').take(30)
+                syncBar?.text = "来自 ${event.from}：$preview（点此上屏）"
+                syncBar?.visibility = View.VISIBLE
+            }
+            "image" -> event.payload.toIntOrNull()?.let { id ->
+                pendingSyncImageId = id
+                pendingSyncText = null
+                pendingSyncFileId = null
+                syncBar?.text = "来自 ${event.from}：收到图片（点此发送）"
+                syncBar?.visibility = View.VISIBLE
+            }
+            "file" -> event.payload.toIntOrNull()?.let { id ->
+                pendingSyncFileId = id
+                pendingSyncText = null
+                pendingSyncImageId = null
+                syncBar?.text = "来自 ${event.from}：收到文件（点此发送）"
+                syncBar?.visibility = View.VISIBLE
+            }
+        }
     }
 }

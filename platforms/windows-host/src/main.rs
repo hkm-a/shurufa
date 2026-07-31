@@ -15,18 +15,32 @@ use std::path::PathBuf;
 /// 排障信息统一落 %TEMP%\shurufa-host.log，失败静默。
 pub fn log_line(msg: &str) {
     use std::io::Write;
-    let path = std::env::temp_dir().join("shurufa-host.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    let path = std::env::var_os("SHURUFA_LOG_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("shurufa-host.log"));
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let _ = f.write_all(format!("[{ts}] {msg}
-").as_bytes());
+        let _ = f.write_all(
+            format!(
+                "[{ts}] {msg}
+"
+            )
+            .as_bytes(),
+        );
     }
 }
 
 fn db_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("SHURUFA_DB_PATH") {
+        return PathBuf::from(path);
+    }
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
@@ -157,6 +171,25 @@ fn main() {
                 .unwrap_or(0);
             println!("清理 {n} 条过期记录");
         }
+        #[cfg(debug_assertions)]
+        "test-set-image" => {
+            let width = parse_arg(&args, 1).unwrap_or(41);
+            let height = parse_arg(&args, 2).unwrap_or(29);
+            if listener::request_test_image(width, height) {
+                println!("已请求常驻进程写入测试图片剪贴板：{width}x{height}");
+            } else {
+                eprintln!("常驻进程未接受测试图片请求");
+                std::process::exit(1);
+            }
+        }
+        #[cfg(debug_assertions)]
+        "test-inspect-image" => match listener::inspect_test_image() {
+            Some((width, height)) => println!("图片={width}x{height}"),
+            None => {
+                eprintln!("常驻进程无法读取当前位图剪贴板");
+                std::process::exit(1);
+            }
+        },
         _ => {
             println!(
                 "用法：shurufa-host <子命令>\n\
@@ -243,7 +276,13 @@ fn print_entries(entries: &[ClipEntry]) {
 fn single_line_preview(text: &str, max_chars: usize) -> String {
     let mut line: String = text
         .chars()
-        .map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c })
+        .map(|c| {
+            if c == '\n' || c == '\r' || c == '\t' {
+                ' '
+            } else {
+                c
+            }
+        })
         .take(max_chars)
         .collect();
     if text.chars().count() > max_chars {
