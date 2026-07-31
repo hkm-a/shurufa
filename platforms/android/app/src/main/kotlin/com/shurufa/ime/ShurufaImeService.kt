@@ -111,6 +111,9 @@ class ShurufaImeService : InputMethodService() {
     private lateinit var keyArea: LinearLayout
     private var langKey: TextView? = null
     private var symbolMode = false
+    private var emojiMode = false
+    /// 大写锁定（微信输入法同款 capslock 键：行首图标键）
+    private var shiftMode = false
     private var syncBar: TextView? = null
     private var pendingSyncText: String? = null
     /// 同步收到的图片历史 id，syncBar 点击时上屏
@@ -233,7 +236,7 @@ class ShurufaImeService : InputMethodService() {
             setTextColor(palette.keyText)
             background = keyBackground(palette.key, palette.keyPressed)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
-                .apply { setMargins(dp(2.5f), dp(3.5f), dp(2.5f), dp(3.5f)) }
+                .apply { setMargins(dp(1.5f), dp(2f), dp(1.5f), dp(2f)) }
             setOnTouchListener { v, ev ->
                 when (ev.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -268,7 +271,7 @@ class ShurufaImeService : InputMethodService() {
             typeface = Typeface.DEFAULT_BOLD
             background = keyBackground(palette.keyFunc, palette.funcPressed)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
-                .apply { setMargins(dp(2.5f), dp(3.5f), dp(2.5f), dp(3.5f)) }
+                .apply { setMargins(dp(1.5f), dp(2f), dp(1.5f), dp(2f)) }
             setOnClickListener { onTap() }
         }
 
@@ -322,7 +325,7 @@ class ShurufaImeService : InputMethodService() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(palette.bg)
-            setPadding(dp(3f), dp(4f), dp(3f), dp(6f))
+            setPadding(dp(1f), dp(1f), dp(1f), dp(1f))
         }
 
         preeditView = TextView(this).apply {
@@ -391,11 +394,27 @@ class ShurufaImeService : InputMethodService() {
             gravity = Gravity.CENTER
             textSize = 21f
             setTextColor(palette.accent)
-            setPadding(dp(16f), 0, dp(16f), 0)
+            setPadding(dp(14f), 0, dp(14f), 0)
             setOnClickListener { toggleHistory() }
         }
         topRow.addView(
             clipButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        // 斗图键（微信输入法同款入口）：打开图片历史，点图预览后发送
+        val memeButton = TextView(this).apply {
+            text = "🖼"
+            contentDescription = "斗图（图片历史）"
+            gravity = Gravity.CENTER
+            textSize = 19f
+            setPadding(dp(14f), 0, dp(14f), 0)
+            setOnClickListener { toggleImageHistory() }
+        }
+        topRow.addView(
+            memeButton,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.MATCH_PARENT
@@ -411,7 +430,16 @@ class ShurufaImeService : InputMethodService() {
         root.addView(topRow)
 
         keyArea = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(keyArea)
+        // 键盘高度 = 屏幕 39%（微信输入法同款比例）：固定高度让 IME 窗口跟随，任何分辨率都满屏
+        val metrics = resources.displayMetrics
+        val kbHeight = (metrics.heightPixels * 0.39f).toInt()
+        root.addView(
+            keyArea,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                kbHeight - dp(47f), // 候选栏 46dp + 分隔线 1dp
+            ),
+        )
         rebuildKeys()
 
         historyPanel = LinearLayout(this).apply {
@@ -441,7 +469,20 @@ class ShurufaImeService : InputMethodService() {
             panel.visibility = View.GONE
             keyArea.visibility = View.VISIBLE
         } else {
-            populateHistory(panel)
+            populateHistory(panel, onlyImages = false)
+            panel.visibility = View.VISIBLE
+            keyArea.visibility = View.GONE
+        }
+    }
+
+    /** 斗图面板（微信输入法同款）：只显示图片历史，点图预览后发送。 */
+    private fun toggleImageHistory() {
+        val panel = historyPanel ?: return
+        if (panel.visibility == View.VISIBLE) {
+            panel.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+        } else {
+            populateHistory(panel, onlyImages = true)
             panel.visibility = View.VISIBLE
             keyArea.visibility = View.GONE
         }
@@ -505,7 +546,6 @@ class ShurufaImeService : InputMethodService() {
             tag = "preview_image"
             contentDescription = "图片预览"
             scaleType = ImageView.ScaleType.FIT_CENTER
-            adjustViewBounds = true
             background = GradientDrawable().apply {
                 setColor(btnWhite)
                 cornerRadius = dp(16f).toFloat()
@@ -516,8 +556,7 @@ class ShurufaImeService : InputMethodService() {
             previewImage,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f,
+                LinearLayout.LayoutParams.MATCH_PARENT,
             ).apply { setMargins(dp(14f), dp(12f), dp(14f), dp(12f)) },
         )
 
@@ -660,6 +699,9 @@ class ShurufaImeService : InputMethodService() {
         val bmp = BitmapFactory.decodeByteArray(png, 0, png.size)
         if (bmp != null) image.setImageBitmap(bmp)
         previewImageId = id
+        // 隐藏一切可能挤压预览区的元素（同步条/拼音行/历史面板）
+        syncBar?.visibility = View.GONE
+        preeditView.visibility = View.GONE
         historyPanel?.visibility = View.GONE
         keyArea.visibility = View.GONE
         panel.visibility = View.VISIBLE
@@ -674,16 +716,16 @@ class ShurufaImeService : InputMethodService() {
         keyArea.visibility = View.VISIBLE
     }
 
-    private fun populateHistory(panel: LinearLayout) {
+    private fun populateHistory(panel: LinearLayout, onlyImages: Boolean = false) {
         panel.removeAllViews()
         panel.addView(TextView(this).apply {
-            text = "剪贴板历史 · 点击上屏 · 再点 ⊞ 返回"
+            text = if (onlyImages) "斗图 · 点图片预览 · 再点 ⊞ 返回" else "剪贴板历史 · 点击上屏 · 再点 ⊞ 返回"
             textSize = 12f
             setTextColor(palette.preedit)
             setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
         })
         val entries = try {
-            ClipStore.list(30)
+            ClipStore.list(30).filter { !onlyImages || it.kind == "image" }
         } catch (e: Throwable) {
             emptyList()
         }
@@ -775,7 +817,7 @@ class ShurufaImeService : InputMethodService() {
         }
         panel.addView(ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(210f)
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
             )
             addView(list)
         })
@@ -1021,7 +1063,11 @@ class ShurufaImeService : InputMethodService() {
         if (!::keyArea.isInitialized) return
         keyArea.removeAllViews()
         langKey = null
-        if (symbolMode) buildSymbolPage() else buildLetterPage()
+        when {
+            emojiMode -> buildEmojiPage()
+            symbolMode -> buildSymbolPage()
+            else -> buildLetterPage()
+        }
     }
 
     private fun buildLetterPage() {
@@ -1052,21 +1098,35 @@ class ShurufaImeService : InputMethodService() {
 
     private fun rowLayout(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
+        // 行高自适应：4 行均分键盘高度
         layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, dp(52f)
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
         )
     }
 
     private fun buildLetterRow(letters: String, withBackspace: Boolean): LinearLayout {
         val row = rowLayout()
-        if (letters.length == 9) row.addView(spacer(0.5f))
+        // 微信输入法 S2 行首是 capslock 图标键（不是空白占位）
+        if (letters.length == 9) row.addView(shiftKey(1.2f))
         letters.forEach { c -> row.addView(charKey(c.toString(), 1f) { onLetter(c) }) }
         if (withBackspace) {
-            row.addView(backspaceKey(1.5f))
+            row.addView(backspaceKey(1.2f))
         } else if (letters.length == 9) {
             row.addView(spacer(0.5f))
         }
         return row
+    }
+
+    /// 大写键（微信输入法 icon_keys_outlinedcapslock 同款）：点一次切大写，再点切回。
+    private fun shiftKey(weight: Float): TextView = funcKey("⇧", weight) {
+        shiftMode = !shiftMode
+        rebuildKeys()
+    }.apply {
+        // 大写态高亮（微信输入法 capslock 按下变色）
+        if (shiftMode) {
+            setTextColor(palette.accent)
+            background = keyBackground(palette.keyFunc, palette.funcPressed)
+        }
     }
 
     /// 退格键：轻触删一字，长按连续删除，上滑清空整个输入。
@@ -1138,22 +1198,64 @@ class ShurufaImeService : InputMethodService() {
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
     }
 
+    /** 表情页（微信输入法同款：表情网格 + 底部功能行，点表情直接上屏） */
+    private fun buildEmojiPage() {
+        listOf(
+            "😀😁😂🤣😊😍😘😜🤪🤔",
+            "👍👎🙏👏🤝💪🔥❤️💔😭",
+            "🎉🎂🎁⭐🌟☀️🌙🌈🍀🎯",
+            "🐶🐱🐼🐯🦊🐸🐵🐷🐮🐔",
+            "🚗🚕🚀✈️🏠💰📱💻🎧🎮",
+            "✅❌❗❓➕➖➗✖️💯🔔",
+        ).forEach { line ->
+            val row = rowLayout()
+            line.forEach { e ->
+                val emoji = e.toString()
+                row.addView(charKey(emoji, 1f) {
+                    currentInputConnection?.commitText(emoji, 1)
+                }.apply {
+                    textSize = 22f
+                    // 表情不需要放大气泡：覆盖触摸为纯点击
+                    setOnTouchListener(null)
+                    setOnClickListener { currentInputConnection?.commitText(emoji, 1) }
+                })
+            }
+            keyArea.addView(row)
+        }
+        keyArea.addView(buildBottomRow())
+    }
+
     private fun buildBottomRow(): LinearLayout {
         val row = rowLayout()
-        row.addView(funcKey(if (symbolMode) "返回" else "符", 1.4f) {
-            symbolMode = !symbolMode
+        // 微信输入法 S2 真实底部功能行（反编译 JSON 实证）：
+        //   123 | 表情 | ， | 换行 | 空格(最长) | 中/英
+        // 宽度比 92:92:92:92:103:92
+        row.addView(funcKey(if (symbolMode || emojiMode) "返回" else "123", 1f) {
+            if (symbolMode || emojiMode) {
+                symbolMode = false
+                emojiMode = false
+            } else {
+                // 微信输入法 icon_keys_123 同款：主键盘点 123 切数字/符号页
+                symbolMode = true
+            }
+            shiftMode = false
             rebuildKeys()
         })
-        langKey = funcKey(langLabel(), 1.4f) { onToggleLang() }
-        row.addView(langKey)
+        row.addView(funcKey("☺", 1f) {
+            symbolMode = false
+            emojiMode = !emojiMode
+            shiftMode = false
+            rebuildKeys()
+        })
         row.addView(funcKey("，", 1f) { onPunct("，") })
-        row.addView(charKey("空格", 3.4f) { onSpace() }.apply {
+        row.addView(funcKey("换行", 1f) { onEnter() })
+        row.addView(charKey("空格", 1.12f) { onSpace() }.apply {
             // 空格用字符键的底色更醒目，但不需要气泡：覆盖触摸为纯点击
             setOnTouchListener(null)
             setOnClickListener { onSpace() }
         })
-        row.addView(funcKey("。", 1f) { onPunct("。") })
-        row.addView(funcKey("回车", 1.8f) { onEnter() })
+        langKey = funcKey(langLabel(), 1f) { onToggleLang() }
+        row.addView(langKey)
         return row
     }
 
@@ -1171,6 +1273,13 @@ class ShurufaImeService : InputMethodService() {
     // ---------- 输入处理 ----------
 
     private fun onLetter(c: Char) {
+        // 大写态：直接输出大写字母（微信输入法 capslock 行为）
+        if (shiftMode && c.isLetter()) {
+            currentInputConnection?.commitText(c.uppercaseChar().toString(), 1)
+            shiftMode = false
+            rebuildKeys()
+            return
+        }
         if (!engineReady) {
             ensureEngine()
             currentInputConnection?.commitText(c.toString(), 1)
