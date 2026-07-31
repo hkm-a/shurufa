@@ -437,7 +437,7 @@ class ShurufaImeService : InputMethodService() {
             keyArea,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                kbHeight - dp(47f), // 候选栏 46dp + 分隔线 1dp
+                LinearLayout.LayoutParams.WRAP_CONTENT, // 高度由 WetypeKeyboardView 决定（屏幕 39%）
             ),
         )
         rebuildKeys()
@@ -1071,31 +1071,60 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun buildLetterPage() {
-        // 微信输入法 S2 布局：候选栏下直接 3 行字母 + 底部功能行（无独立数字行，数字在符号页）
-        listOf("qwertyuiop", "asdfghjkl", "zxcvbnm").forEachIndexed { index, row ->
-            keyArea.addView(buildLetterRow(row, withBackspace = index == 2))
-        }
-        keyArea.addView(buildBottomRow())
+        // 微信输入法 S2 键盘整块布局（反编译 JSON 直接渲染）
+        keyArea.addView(
+            WetypeKeyboardView(this, langLabel(), loadKeyboardJson("S2ChineseQwertyKeyboard.json"), isDark()) { onWetypeAction(it) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
     }
 
     private fun buildSymbolPage() {
-        // 符号页第一行放数字（微信输入法同款：数字在符号页）
-        listOf(
-            "1234567890",
-            "，。？！；：",
-            "“”‘’（）",
-            "、~·@#￥",
-            "%&*—…/",
-        ).forEach { line ->
-            val row = rowLayout()
-            line.forEach { c ->
-                row.addView(charKey(c.toString(), 1f) { onPunct(c.toString()) })
-            }
-            keyArea.addView(row)
-        }
-        keyArea.addView(buildBottomRow())
+        // 微信输入法 S13 数字符号页整块布局（反编译 JSON 直接渲染）
+        keyArea.addView(
+            WetypeKeyboardView(this, null, loadKeyboardJson("S13ChineseNumberSymbolKeyboard.json"), isDark()) { onWetypeAction(it) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
     }
 
+    private fun loadKeyboardJson(name: String): org.json.JSONObject =
+        org.json.JSONObject(assets.open("keyboard/" + name).bufferedReader().use { it.readText() })
+
+    private fun onWetypeAction(a: WetypeKeyboardView.WetypeAction) {
+        when (a) {
+            is WetypeKeyboardView.WetypeAction.Char -> {
+                val c = a.c
+                if (c.length == 1 && c[0].isLetter()) {
+                    onLetter(c[0].lowercaseChar())
+                } else {
+                    currentInputConnection?.commitText(c, 1)
+                }
+            }
+            WetypeKeyboardView.WetypeAction.Backspace -> onBackspace()
+            WetypeKeyboardView.WetypeAction.Shift -> {
+                shiftMode = !shiftMode
+                rebuildKeys()
+            }
+            WetypeKeyboardView.WetypeAction.NumberPage -> {
+                symbolMode = true
+                emojiMode = false
+                rebuildKeys()
+            }
+            WetypeKeyboardView.WetypeAction.EmojiPage -> {
+                emojiMode = true
+                symbolMode = false
+                rebuildKeys()
+            }
+            WetypeKeyboardView.WetypeAction.BackPage -> {
+                symbolMode = false
+                emojiMode = false
+                rebuildKeys()
+            }
+            WetypeKeyboardView.WetypeAction.SymbolMore -> { /* 单页符号，忽略 */ }
+            WetypeKeyboardView.WetypeAction.Enter -> onEnter()
+            WetypeKeyboardView.WetypeAction.Space -> onSpace()
+            WetypeKeyboardView.WetypeAction.Lang -> onToggleLang()
+        }
+    }
     private fun rowLayout(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         // 行高自适应：4 行均分键盘高度
@@ -1266,7 +1295,7 @@ class ShurufaImeService : InputMethodService() {
         if (!engineReady) return
         RimeBridge.nativeToggleAscii()
         RimeBridge.nativeReset()
-        langKey?.text = langLabel()
+        if (::keyArea.isInitialized && !emojiMode && !symbolMode) rebuildKeys() // 刷新中英键帽
         sync()
     }
 
