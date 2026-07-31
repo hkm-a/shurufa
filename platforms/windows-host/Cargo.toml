@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 clipboard-store = { path = "../../core/clipboard" }
 sync-core = { path = "../../core/sync" }
+image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 windows-registry = "0.6"
 windows = { version = "0.62", features = [

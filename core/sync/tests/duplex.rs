@@ -85,6 +85,18 @@ async fn 配对后双向同步文本() {
         }
     );
 
+    // 甲 → 乙 传图片（PNG 字节原样往返）
+    let png: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 250, 0, 128];
+    a.send_image(&png);
+    let got = recv_clip(&mut rx_b).await;
+    assert_eq!(
+        got,
+        Incoming::Image {
+            from_name: "甲机".into(),
+            png: png.clone()
+        }
+    );
+
     // 乙 → 甲
     b.send_clip("收到，乙机回礼");
     let got = recv_clip(&mut rx_a).await;

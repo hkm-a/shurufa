@@ -5,8 +5,8 @@
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// 单条消息上限：明文剪贴板同步上限 64KB，留出封装余量
-const MAX_FRAME: u32 = 256 * 1024;
+/// 单条消息上限：文本仅数十 KB，图片同步的 base64 PNG 可达数 MB，留足余量
+const MAX_FRAME: u32 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -19,6 +19,8 @@ pub enum Message {
     PairReject,
     /// 文本剪贴板条目
     ClipText { text: String, sent_at_ms: i64 },
+    /// 图片剪贴板条目（data 为 base64 编码的 PNG，跨平台通用）
+    ClipImage { data: String, sent_at_ms: i64 },
     /// 保活
     Ping,
 }

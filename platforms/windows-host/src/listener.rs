@@ -160,9 +160,11 @@ impl ListenerState {
             };
             match result {
                 Ok(Some(id)) => {
-                    // 文本条目推送给已配对设备（文件/图片暂不同步）
-                    if let Capture::Text(text) = &capture {
-                        crate::sync::broadcast_text(text);
+                    // 本机复制的文本与图片推送给已配对设备（文件不同步）
+                    match &capture {
+                        Capture::Text(text) => crate::sync::broadcast_text(text),
+                        Capture::Image(bmp) => crate::sync::broadcast_image(bmp),
+                        Capture::Files(_) => {}
                     }
                     if !normalized.is_empty() {
                         self.last_insert = Some((id, normalized, std::time::Instant::now()));

@@ -1,7 +1,9 @@
 package com.shurufa.ime
 
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.res.Configuration
+import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
@@ -14,10 +16,15 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.content.FileProvider
+import androidx.core.view.inputmethod.EditorInfoCompat
+import androidx.core.view.inputmethod.InputConnectionCompat
+import androidx.core.view.inputmethod.InputContentInfoCompat
 import java.io.File
 import kotlin.concurrent.thread
 
@@ -97,6 +104,8 @@ class ShurufaImeService : InputMethodService() {
     private var symbolMode = false
     private var syncBar: TextView? = null
     private var pendingSyncText: String? = null
+    /// 同步收到的图片历史 id，syncBar 点击时上屏
+    private var pendingSyncImageId: Int? = null
     private val syncPoll = Handler(Looper.getMainLooper())
     private var historyPanel: LinearLayout? = null
     private var lastClipboardText: String? = null
@@ -296,8 +305,14 @@ class ShurufaImeService : InputMethodService() {
             setPadding(dp(14f), dp(10f), dp(14f), dp(10f))
             visibility = View.GONE
             setOnClickListener {
-                pendingSyncText?.let { currentInputConnection?.commitText(it, 1) }
+                val imgId = pendingSyncImageId
+                if (imgId != null) {
+                    commitImage(imgId)
+                } else {
+                    pendingSyncText?.let { currentInputConnection?.commitText(it, 1) }
+                }
                 pendingSyncText = null
+                pendingSyncImageId = null
                 visibility = View.GONE
             }
         }
@@ -385,6 +400,30 @@ class ShurufaImeService : InputMethodService() {
         }
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         for (entry in entries) {
+            if (entry.kind == "image") {
+                val bmp = try {
+                    ClipStore.imageData(entry.id)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                } catch (e: Throwable) {
+                    null
+                }
+                val thumb = ImageView(this).apply {
+                    if (bmp != null) setImageBitmap(bmp) else contentDescription = "图片"
+                    adjustViewBounds = true
+                    maxHeight = dp(130f)
+                    scaleType = ImageView.ScaleType.FIT_START
+                    background = keyBackground(palette.key, palette.keyPressed)
+                    setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+                    setOnClickListener {
+                        commitImage(entry.id)
+                        toggleHistory()
+                    }
+                }
+                list.addView(thumb, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { setMargins(dp(4f), dp(3f), dp(4f), dp(3f)) })
+                continue
+            }
             list.addView(TextView(this).apply {
                 text = entry.text.replace('\n', ' ').take(48)
                 textSize = 16f
@@ -406,6 +445,36 @@ class ShurufaImeService : InputMethodService() {
             )
             addView(list)
         })
+    }
+
+    /// 图片上屏：经 FileProvider 暴露 content:// URI，用 commitContent 交给
+    /// 目标输入框。仅当输入框声明支持 image/png（微信、邮件等富文本框）时
+    /// 生效；不支持的输入框静默（图片仍在历史面板可查看）。
+    private fun commitImage(id: Int) {
+        val png = try {
+            ClipStore.imageData(id)
+        } catch (e: Throwable) {
+            null
+        } ?: return
+        val ic = currentInputConnection ?: return
+        val editor = currentInputEditorInfo ?: return
+        val supported = EditorInfoCompat.getContentMimeTypes(editor)
+            .any { ClipDescription.compareMimeTypes(it, "image/png") }
+        if (!supported) return
+        try {
+            val dir = File(cacheDir, "shared").apply { mkdirs() }
+            val f = File(dir, "clip_$id.png")
+            f.writeBytes(png)
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", f)
+            val desc = ClipDescription("图片", arrayOf("image/png"))
+            val content = InputContentInfoCompat(uri, desc, null)
+            InputConnectionCompat.commitContent(
+                ic, editor, content,
+                InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null
+            )
+        } catch (e: Throwable) {
+            android.util.Log.e("shurufa", "图片上屏失败", e)
+        }
     }
 
     private fun captureSystemClipboard() {
@@ -710,14 +779,24 @@ class ShurufaImeService : InputMethodService() {
                 }
                 if (raw.isNotEmpty()) {
                     val parts = raw.split('\u0001')
-                    val from = parts.getOrNull(0).orEmpty()
-                    val text = parts.drop(1).joinToString("\u0001")
-                    if (text.isNotEmpty()) {
-                        ClipStore.insert(text, "同步·$from")
-                        pendingSyncText = text
-                        val preview = text.replace('\n', ' ').take(30)
-                        syncBar?.text = "来自 $from：$preview（点此上屏）"
-                        syncBar?.visibility = View.VISIBLE
+                    val kind = parts.getOrNull(0).orEmpty()
+                    val from = parts.getOrNull(1).orEmpty()
+                    val payload = parts.drop(2).joinToString("\u0001")
+                    when (kind) {
+                        "text" -> if (payload.isNotEmpty()) {
+                            ClipStore.insert(payload, "同步·$from")
+                            pendingSyncText = payload
+                            pendingSyncImageId = null
+                            val preview = payload.replace('\n', ' ').take(30)
+                            syncBar?.text = "来自 $from：$preview（点此上屏）"
+                            syncBar?.visibility = View.VISIBLE
+                        }
+                        "image" -> payload.toIntOrNull()?.let { id ->
+                            pendingSyncImageId = id
+                            pendingSyncText = null
+                            syncBar?.text = "来自 $from：收到图片（点此上屏）"
+                            syncBar?.visibility = View.VISIBLE
+                        }
                     }
                 }
                 syncPoll.postDelayed(this, 1500)

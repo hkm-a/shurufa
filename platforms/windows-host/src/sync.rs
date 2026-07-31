@@ -10,8 +10,14 @@ use std::sync::{Arc, OnceLock};
 
 use sync_core::{ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService};
 
+/// 守护进程内广播的内容：文本或图片。
+enum Broadcast {
+    Text(String),
+    Image(Vec<u8>),
+}
+
 /// 守护进程内广播出口；`run` 模式启动后可用
-static CLIP_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<String>> = OnceLock::new();
+static CLIP_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<Broadcast>> = OnceLock::new();
 
 pub fn sync_config_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("SHURUFA_SYNC_DIR") {
@@ -39,13 +45,38 @@ pub fn device_name() -> String {
 /// 监听器捕获到本机文本时调用；服务未启动或无连接时静默。
 pub fn broadcast_text(text: &str) {
     if let Some(tx) = CLIP_TX.get() {
-        let _ = tx.send(text.to_string());
+        let _ = tx.send(Broadcast::Text(text.to_string()));
     }
+}
+
+/// 监听器捕获到本机图片时调用；BMP 转 PNG 后推送已配对设备。
+pub fn broadcast_image(bmp: &[u8]) {
+    if let Some(tx) = CLIP_TX.get() {
+        if let Some(png) = bmp_to_png(bmp) {
+            let _ = tx.send(Broadcast::Image(png));
+        }
+    }
+}
+
+/// BMP 字节转 PNG（跨平台传输格式）；失败返回 None。
+fn bmp_to_png(bmp: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory_with_format(bmp, image::ImageFormat::Bmp).ok()?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(out.into_inner())
+}
+
+/// PNG 字节转自包含 BMP（供 clipboard-store 存储，与本机采集格式一致）。
+fn png_to_bmp(png: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory_with_format(png, image::ImageFormat::Png).ok()?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Bmp).ok()?;
+    Some(out.into_inner())
 }
 
 /// 在独立线程启动同步服务（run 模式调用一次）。
 pub fn start_daemon() {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Broadcast>();
     if CLIP_TX.set(tx).is_err() {
         return;
     }
@@ -86,7 +117,10 @@ pub fn start_daemon() {
 
                 loop {
                     tokio::select! {
-                        Some(text) = rx.recv() => service.send_clip(&text),
+                        Some(b) = rx.recv() => match b {
+                            Broadcast::Text(t) => service.send_clip(&t),
+                            Broadcast::Image(png) => service.send_image(&png),
+                        },
                         Some(incoming) = in_rx.recv() => match incoming {
                             Incoming::Clip { from_name, text } => {
                                 let store = crate::open_store();
@@ -98,6 +132,19 @@ pub fn start_daemon() {
                                     Err(e) => crate::log_line(&format!("同步条目入库失败：{e}")),
                                 }
                             }
+                            Incoming::Image { from_name, png } => match png_to_bmp(&png) {
+                                Some(bmp) => {
+                                    let store = crate::open_store();
+                                    match store.insert_image(&bmp, &format!("同步·{from_name}")) {
+                                        Ok(_) => crate::log_line(&format!(
+                                            "收到 {from_name} 的图片（{} 字节 PNG）",
+                                            png.len()
+                                        )),
+                                        Err(e) => crate::log_line(&format!("同步图片入库失败：{e}")),
+                                    }
+                                }
+                                None => crate::log_line("收到图片解码失败"),
+                            },
                         },
                         else => break,
                     }

@@ -30,7 +30,9 @@ struct PairPending {
 struct SyncState {
     rt: Runtime,
     service: SyncService,
-    incoming: Arc<Mutex<VecDeque<(String, String)>>>,
+    /// 入站条目队列：(kind, from, payload)。kind=text 时 payload 为文本；
+    /// kind=image 时图片已存入历史库，payload 为条目 id。
+    incoming: Arc<Mutex<VecDeque<(String, String, String)>>>,
     pending: Arc<Mutex<Option<PairPending>>>,
 }
 
@@ -97,12 +99,22 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
         let service = SyncService::start(config, in_tx, Some(confirm), Box::new(|_| {})).await?;
         // 入站条目排入轮询队列
         tokio::spawn(async move {
-            while let Some(Incoming::Clip { from_name, text }) = in_rx.recv().await {
+            while let Some(inc) = in_rx.recv().await {
+                let item = match inc {
+                    Incoming::Clip { from_name, text } => ("text".to_string(), from_name, text),
+                    Incoming::Image { from_name, png } => {
+                        // 图片直接存入历史库，队列只带条目 id
+                        match crate::clip_jni::store_image(&png, &format!("同步·{from_name}")) {
+                            Some(id) => ("image".to_string(), from_name, id.to_string()),
+                            None => continue,
+                        }
+                    }
+                };
                 let mut q = incoming_task.lock().expect("入站队列锁不可恢复");
                 if q.len() >= 64 {
                     q.pop_front();
                 }
-                q.push_back((from_name, text));
+                q.push_back(item);
             }
         });
         Ok::<_, String>(service)
@@ -122,7 +134,8 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
     }
 }
 
-/// 取一条入站条目：`from\u{1}text`；队列为空返回空串。
+/// 取一条入站条目：`kind\u{1}from\u{1}payload`；队列为空返回空串。
+/// kind=text 时 payload 为文本，kind=image 时 payload 为历史库条目 id。
 #[no_mangle]
 pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativePoll(
     env: JNIEnv,
@@ -137,7 +150,9 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativePoll(
         .expect("入站队列锁不可恢复")
         .pop_front();
     match item {
-        Some((from, text)) => to_jstring(&env, &format!("{from}\u{1}{text}")),
+        Some((kind, from, payload)) => {
+            to_jstring(&env, &format!("{kind}\u{1}{from}\u{1}{payload}"))
+        }
         None => to_jstring(&env, ""),
     }
 }

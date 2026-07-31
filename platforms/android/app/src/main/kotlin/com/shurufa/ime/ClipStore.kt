@@ -18,9 +18,10 @@ object ClipStore {
     external fun nativeInit(dbPath: String): Boolean
     external fun nativeInsert(text: String, source: String)
     external fun nativeList(limit: Int): String
+    external fun nativeImageData(id: Int): ByteArray
     external fun nativeDelete(id: Int)
 
-    data class Entry(val id: Int, val source: String, val text: String)
+    data class Entry(val id: Int, val kind: String, val source: String, val text: String)
 
     @Volatile
     private var ready = false
@@ -43,14 +44,21 @@ object ClipStore {
         if (raw.isEmpty()) return emptyList()
         return raw.split(RECORD).mapNotNull { rec ->
             val f = rec.split(FIELD)
-            if (f.size >= 3) {
+            if (f.size >= 4) {
                 val id = f[0].toIntOrNull() ?: return@mapNotNull null
-                Entry(id, f[1], f.subList(2, f.size).joinToString(FIELD))
+                Entry(id, f[1], f[2], f.subList(3, f.size).joinToString(FIELD))
             } else null
         }
     }
 
     fun delete(id: Int) {
         if (ready) nativeDelete(id)
+    }
+
+    /** 图片条目 PNG 字节；非图片或不存在返回 null。 */
+    fun imageData(id: Int): ByteArray? {
+        if (!ready) return null
+        val b = try { nativeImageData(id) } catch (e: Throwable) { return null }
+        return if (b.isEmpty()) null else b
     }
 }

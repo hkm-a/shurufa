@@ -13,6 +13,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Notify};
+use base64::Engine as _;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::protocol::{read_msg, write_msg, Message};
@@ -20,6 +21,8 @@ use crate::{tls, DeviceIdentity, Peer, PeerStore};
 
 /// 同步文本上限：与桌面剪贴板采集策略一致
 const MAX_CLIP_TEXT: usize = 64 * 1024;
+/// 同步图片上限（PNG 字节）：留在协议帧上限内
+const MAX_CLIP_IMAGE: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct SyncConfig {
@@ -51,6 +54,15 @@ impl SyncConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Incoming {
     Clip { from_name: String, text: String },
+    /// 图片（PNG 字节）
+    Image { from_name: String, png: Vec<u8> },
+}
+
+/// 出站广播内容：文本或图片，经 broadcast 通道推给所有活跃连接。
+#[derive(Debug, Clone)]
+enum Outbound {
+    Text(String),
+    Image(Vec<u8>),
 }
 
 /// 配对确认提示：宿主展示 `code` 并让用户比对两端一致后放行。
@@ -69,7 +81,7 @@ struct Shared {
     connected: Mutex<HashSet<String>>,
     /// mDNS 发现的 指纹 → 地址 缓存
     addr_cache: Mutex<HashMap<String, SocketAddr>>,
-    outgoing: broadcast::Sender<String>,
+    outgoing: broadcast::Sender<Outbound>,
     incoming: mpsc::Sender<Incoming>,
     /// 入站配对请求的确认回调（None 表示拒绝一切配对请求）
     accept_confirm: Option<ConfirmFn>,
@@ -209,7 +221,15 @@ impl SyncService {
             return;
         }
         // 无活跃连接时发送失败属正常，静默
-        let _ = self.shared.outgoing.send(text.to_string());
+        let _ = self.shared.outgoing.send(Outbound::Text(text.to_string()));
+    }
+
+    /// 广播一张本机产生的剪贴板图片（PNG 字节）。
+    pub fn send_image(&self, png: &[u8]) {
+        if png.is_empty() || png.len() > MAX_CLIP_IMAGE {
+            return;
+        }
+        let _ = self.shared.outgoing.send(Outbound::Image(png.to_vec()));
     }
 
     /// 主动向指定地址发起配对（发起端流程）。
@@ -538,14 +558,38 @@ where
                             .await;
                     }
                 }
+                Ok(Message::ClipImage { data, .. }) => {
+                    match base64::engine::general_purpose::STANDARD.decode(&data) {
+                        Ok(png) if png.len() <= MAX_CLIP_IMAGE => {
+                            let _ = shared
+                                .incoming
+                                .send(Incoming::Image {
+                                    from_name: peer_name.clone(),
+                                    png,
+                                })
+                                .await;
+                        }
+                        _ => {}
+                    }
+                }
                 Ok(Message::Ping) => {}
                 Ok(_) => {}
                 Err(e) => break Err(e),
             },
             out = rx.recv() => match out {
-                Ok(text) => {
+                Ok(Outbound::Text(text)) => {
                     let msg = Message::ClipText {
                         text,
+                        sent_at_ms: now_ms(),
+                    };
+                    if let Err(e) = write_msg(&mut tls, &msg).await {
+                        break Err(e);
+                    }
+                }
+                Ok(Outbound::Image(png)) => {
+                    let data = base64::engine::general_purpose::STANDARD.encode(&png);
+                    let msg = Message::ClipImage {
+                        data,
                         sent_at_ms: now_ms(),
                     };
                     if let Err(e) = write_msg(&mut tls, &msg).await {

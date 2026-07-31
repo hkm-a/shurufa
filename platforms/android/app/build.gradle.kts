@@ -56,3 +56,8 @@ val syncSchemas = tasks.register<Copy>("syncSchemas") {
 tasks.named("preBuild") {
     dependsOn(syncSchemas)
 }
+
+dependencies {
+    // FileProvider 与 InputConnectionCompat.commitContent（图片上屏）
+    implementation("androidx.core:core:1.13.1")
+}

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jint, jstring};
+use jni::sys::{jboolean, jbyteArray, jint, jstring};
 use jni::JNIEnv;
 
 use clipboard_store::{ClipKind, ClipboardStore};
@@ -64,7 +64,8 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeInsert(
     }
 }
 
-/// 最近 limit 条文本历史：记录以 `\u{2}` 分隔，字段 `id\u{1}来源\u{1}文本`。
+/// 最近 limit 条历史：记录以 `\u{2}` 分隔，字段 `id\u{1}类型\u{1}来源\u{1}文本`。
+/// 类型为 text/image/files；图片文本为空，缩略图另经 nativeImageData 取。
 #[no_mangle]
 pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeList(
     env: JNIEnv,
@@ -81,11 +82,39 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeList(
         .unwrap_or_default();
     let text = entries
         .iter()
-        .filter(|e| e.kind == ClipKind::Text)
-        .map(|e| format!("{}\u{1}{}\u{1}{}", e.id, e.source_app, e.text))
+        .map(|e| {
+            let kind = match e.kind {
+                ClipKind::Text => "text",
+                ClipKind::Image => "image",
+                ClipKind::Files => "files",
+            };
+            format!("{}\u{1}{}\u{1}{}\u{1}{}", e.id, kind, e.source_app, e.text)
+        })
         .collect::<Vec<_>>()
         .join("\u{2}");
     to_jstring(&env, &text)
+}
+
+/// 图片条目的 PNG 字节；非图片或不存在返回空数组。供缩略图与写回剪贴板。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeImageData(
+    env: JNIEnv,
+    _class: JClass,
+    id: jint,
+) -> jbyteArray {
+    let data = STORE
+        .get()
+        .and_then(|s| s.lock().ok()?.image_data(id as i64).ok().flatten())
+        .unwrap_or_default();
+    env.byte_array_from_slice(&data)
+        .map(|a| a.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// 供同步桥调用：把收到的图片（PNG 字节）存入历史，返回条目 id。
+pub(crate) fn store_image(png: &[u8], source: &str) -> Option<i64> {
+    let store = STORE.get()?;
+    store.lock().ok()?.insert_image(png, source).ok().flatten()
 }
 
 /// 删除单条历史。
