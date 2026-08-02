@@ -8,6 +8,9 @@
 //! - 配对确认为两阶段：`pair_begin`/入站请求把确认码塞入 pending 槽，
 //!   Kotlin 读码展示给用户比对，`pair_respond` 放行或拒绝。发起端与
 //!   接收端共用同一 pending 槽（同一时刻只处理一个配对）。
+//!
+//! 所有 `#[no_mangle]` 入口经 [`crate::jni_catch`] 包裹，防止 panic
+//! 跨 FFI 传播导致进程 abort；锁污染时以 `.lock().ok()` 安全降级。
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -91,84 +94,103 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
     config_dir: JString,
     device_name: JString,
 ) -> jboolean {
-    if STATE.get().is_some() {
-        return 1;
-    }
-    let dir = PathBuf::from(jstr(&mut env, &config_dir));
-    let name = jstr(&mut env, &device_name);
-
-    let rt = match Runtime::new() {
-        Ok(rt) => rt,
-        Err(_) => return 0,
-    };
-    let incoming = Arc::new(Mutex::new(VecDeque::new()));
-    let pending = Arc::new(Mutex::new(None));
-
-    let incoming_task = incoming.clone();
-    let received_dir = dir.clone();
-    let confirm = make_confirm(pending.clone());
-    let service = rt.block_on(async move {
-        let (in_tx, mut in_rx) = tokio::sync::mpsc::channel::<Incoming>(64);
-        let mut config = SyncConfig::new(dir, name);
-        config.enable_mdns = false; // 安卓靠 IP 直连
-        let service = SyncService::start(config, in_tx, Some(confirm), Box::new(|_| {})).await?;
-        // 入站条目排入轮询队列
-        tokio::spawn(async move {
-            while let Some(inc) = in_rx.recv().await {
-                let item = match inc {
-                    Incoming::Clip { from_name, text } => ("text".to_string(), from_name, text),
-                    Incoming::Image { from_name, png } => {
-                        // 图片直接存入历史库，队列只带条目 id
-                        match crate::clip_jni::store_image(&png, &format!("同步·{from_name}")) {
-                            Some(id) => ("image".to_string(), from_name, id.to_string()),
-                            None => continue,
-                        }
-                    }
-                    Incoming::File {
-                        from_name,
-                        name,
-                        data,
-                        ..
-                    } => {
-                        if data.is_empty() || data.len() > MAX_CLIP_FILE_BYTES {
-                            continue;
-                        }
-                        let Some(path) = received_file_path(&received_dir, &name) else {
-                            continue;
-                        };
-                        if std::fs::write(&path, data).is_err() {
-                            continue;
-                        }
-                        let paths = vec![path.to_string_lossy().into_owned()];
-                        match crate::clip_jni::store_files(&paths, &format!("同步·{from_name}"))
-                        {
-                            Some(id) => ("file".to_string(), from_name, id.to_string()),
-                            None => continue,
-                        }
-                    }
-                };
-                let mut q = incoming_task.lock().expect("入站队列锁不可恢复");
-                if q.len() >= 64 {
-                    q.pop_front();
-                }
-                q.push_back(item);
+    crate::jni_catch(
+        || {
+            if STATE.get().is_some() {
+                return 1;
             }
-        });
-        Ok::<_, String>(service)
-    });
+            let dir = PathBuf::from(jstr(&mut env, &config_dir));
+            let name = jstr(&mut env, &device_name);
 
-    match service {
-        Ok(service) => {
-            let _ = STATE.set(SyncState {
-                rt,
-                service,
-                incoming,
-                pending,
+            let rt = match Runtime::new() {
+                Ok(rt) => rt,
+                Err(_) => return 0,
+            };
+            let incoming = Arc::new(Mutex::new(VecDeque::new()));
+            let pending = Arc::new(Mutex::new(None));
+
+            let incoming_task = incoming.clone();
+            let received_dir = dir.clone();
+            let confirm = make_confirm(pending.clone());
+            let service = rt.block_on(async move {
+                let (in_tx, mut in_rx) = tokio::sync::mpsc::channel::<Incoming>(64);
+                let mut config = SyncConfig::new(dir, name);
+                config.enable_mdns = false; // 安卓靠 IP 直连
+                let service =
+                    SyncService::start(config, in_tx, Some(confirm), Box::new(|_| {})).await?;
+                // 入站条目排入轮询队列。图片/文件入库与落盘是阻塞 IO，
+                // 移到 spawn_blocking，避免占用 tokio worker 线程。
+                tokio::spawn(async move {
+                    while let Some(inc) = in_rx.recv().await {
+                        let incoming_task = incoming_task.clone();
+                        let received_dir = received_dir.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let item = match inc {
+                                Incoming::Clip { from_name, text } => {
+                                    ("text".to_string(), from_name, text)
+                                }
+                                Incoming::Image { from_name, png } => {
+                                    // 图片直接存入历史库，队列只带条目 id
+                                    match crate::clip_jni::store_image(
+                                        &png,
+                                        &format!("同步·{from_name}"),
+                                    ) {
+                                        Some(id) => ("image".to_string(), from_name, id.to_string()),
+                                        None => return,
+                                    }
+                                }
+                                Incoming::File {
+                                    from_name,
+                                    name,
+                                    data,
+                                    ..
+                                } => {
+                                    if data.is_empty() || data.len() > MAX_CLIP_FILE_BYTES {
+                                        return;
+                                    }
+                                    let Some(path) = received_file_path(&received_dir, &name)
+                                    else {
+                                        return;
+                                    };
+                                    if std::fs::write(&path, data).is_err() {
+                                        return;
+                                    }
+                                    let paths = vec![path.to_string_lossy().into_owned()];
+                                    match crate::clip_jni::store_files(
+                                        &paths,
+                                        &format!("同步·{from_name}"),
+                                    ) {
+                                        Some(id) => ("file".to_string(), from_name, id.to_string()),
+                                        None => return,
+                                    }
+                                }
+                            };
+                            let mut q = incoming_task.lock().expect("入站队列锁不可恢复");
+                            if q.len() >= 64 {
+                                q.pop_front();
+                            }
+                            q.push_back(item);
+                        });
+                    }
+                });
+                Ok::<_, String>(service)
             });
-            1
-        }
-        Err(_) => 0,
-    }
+
+            match service {
+                Ok(service) => {
+                    let _ = STATE.set(SyncState {
+                        rt,
+                        service,
+                        incoming,
+                        pending,
+                    });
+                    1
+                }
+                Err(_) => 0,
+            }
+        },
+        0,
+    )
 }
 
 /// 取一条入站条目：`kind\u{1}from\u{1}payload`；队列为空返回空串。
@@ -178,20 +200,25 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativePoll(
     env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let Some(state) = STATE.get() else {
-        return to_jstring(&env, "");
-    };
-    let item = state
-        .incoming
-        .lock()
-        .expect("入站队列锁不可恢复")
-        .pop_front();
-    match item {
-        Some((kind, from, payload)) => {
-            to_jstring(&env, &format!("{kind}\u{1}{from}\u{1}{payload}"))
-        }
-        None => to_jstring(&env, ""),
-    }
+    let default = to_jstring(&env, "");
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else {
+                return to_jstring(&env, "");
+            };
+            let item = match state.incoming.lock() {
+                Ok(mut guard) => guard.pop_front(),
+                Err(_) => None,
+            };
+            match item {
+                Some((kind, from, payload)) => {
+                    to_jstring(&env, &format!("{kind}\u{1}{from}\u{1}{payload}"))
+                }
+                None => to_jstring(&env, ""),
+            }
+        },
+        default,
+    )
 }
 
 /// 推送本机文本给已配对设备。
@@ -201,10 +228,15 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendClip(
     _class: JClass,
     text: JString,
 ) {
-    if let Some(state) = STATE.get() {
-        let t = jstr(&mut env, &text);
-        state.service.send_clip(&t);
-    }
+    crate::jni_catch(
+        || {
+            if let Some(state) = STATE.get() {
+                let t = jstr(&mut env, &text);
+                state.service.send_clip(&t);
+            }
+        },
+        (),
+    )
 }
 
 /// 推送本机图片（PNG 字节）给已配对设备。
@@ -214,11 +246,16 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendImage(
     _class: JClass,
     data: JByteArray,
 ) {
-    if let Some(state) = STATE.get() {
-        if let Ok(bytes) = env.convert_byte_array(&data) {
-            state.service.send_image(&bytes);
-        }
-    }
+    crate::jni_catch(
+        || {
+            if let Some(state) = STATE.get() {
+                if let Ok(bytes) = env.convert_byte_array(&data) {
+                    state.service.send_image(&bytes);
+                }
+            }
+        },
+        (),
+    )
 }
 
 /// 推送本机文件给已配对设备。
@@ -230,13 +267,18 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendFile(
     mime_type: JString,
     data: JByteArray,
 ) {
-    if let Some(state) = STATE.get() {
-        if let Ok(bytes) = env.convert_byte_array(&data) {
-            let name = jstr(&mut env, &name);
-            let mime_type = jstr(&mut env, &mime_type);
-            state.service.send_file(&name, &mime_type, &bytes);
-        }
-    }
+    crate::jni_catch(
+        || {
+            if let Some(state) = STATE.get() {
+                if let Ok(bytes) = env.convert_byte_array(&data) {
+                    let name = jstr(&mut env, &name);
+                    let mime_type = jstr(&mut env, &mime_type);
+                    state.service.send_file(&name, &mime_type, &bytes);
+                }
+            }
+        },
+        (),
+    )
 }
 
 /// 返回同步核心允许传输的单张 PNG 上限，供 Kotlin 转码阶段使用同一约束。
@@ -245,7 +287,7 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeMaxImageBytes(
     _env: JNIEnv,
     _class: JClass,
 ) -> jint {
-    sync_core::MAX_CLIP_IMAGE_BYTES as jint
+    crate::jni_catch(|| sync_core::MAX_CLIP_IMAGE_BYTES as jint, 0)
 }
 
 /// 返回同步核心允许传输的单文件上限。
@@ -254,7 +296,7 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeMaxFileBytes(
     _env: JNIEnv,
     _class: JClass,
 ) -> jint {
-    sync_core::MAX_CLIP_FILE_BYTES as jint
+    crate::jni_catch(|| sync_core::MAX_CLIP_FILE_BYTES as jint, 0)
 }
 
 /// 已配对设备列表：每行 `指纹前12\u{1}名称`，换行分隔。
@@ -263,17 +305,23 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeDevices(
     env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let Some(state) = STATE.get() else {
-        return to_jstring(&env, "");
-    };
-    let text = state
-        .service
-        .peers()
-        .iter()
-        .map(|p| format!("{}\u{1}{}", &p.fingerprint[..12], p.name))
-        .collect::<Vec<_>>()
-        .join("\n");
-    to_jstring(&env, &text)
+    let default = to_jstring(&env, "");
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else {
+                return to_jstring(&env, "");
+            };
+            let text = state
+                .service
+                .peers()
+                .iter()
+                .map(|p| format!("{}\u{1}{}", &p.fingerprint[..12], p.name))
+                .collect::<Vec<_>>()
+                .join("\n");
+            to_jstring(&env, &text)
+        },
+        default,
+    )
 }
 
 /// 发起配对：连接 addr（ip 或 ip:port），触发本端确认回调。
@@ -285,18 +333,23 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativePairBegin(
     _class: JClass,
     addr: JString,
 ) -> jboolean {
-    let Some(state) = STATE.get() else {
-        return 0;
-    };
-    let mut addr = jstr(&mut env, &addr);
-    if !addr.contains(':') {
-        addr.push_str(":48632");
-    }
-    let confirm = make_confirm(state.pending.clone());
-    let result = state
-        .rt
-        .block_on(async { state.service.pair_with(&addr, confirm).await });
-    result.is_ok() as jboolean
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else {
+                return 0;
+            };
+            let mut addr = jstr(&mut env, &addr);
+            if !addr.contains(':') {
+                addr.push_str(":48632");
+            }
+            let confirm = make_confirm(state.pending.clone());
+            let result = state
+                .rt
+                .block_on(async { state.service.pair_with(&addr, confirm).await });
+            result.is_ok() as jboolean
+        },
+        0,
+    )
 }
 
 /// 取当前待确认的配对码；无待确认返回空串。
@@ -305,14 +358,23 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativePairCode(
     env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let Some(state) = STATE.get() else {
-        return to_jstring(&env, "");
-    };
-    let guard = state.pending.lock().expect("pending 锁不可恢复");
-    match guard.as_ref() {
-        Some(p) => to_jstring(&env, &format!("{}\u{1}{}", p.code, p.peer_name)),
-        None => to_jstring(&env, ""),
-    }
+    let default = to_jstring(&env, "");
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else {
+                return to_jstring(&env, "");
+            };
+            let guard = match state.pending.lock() {
+                Ok(g) => g,
+                Err(_) => return to_jstring(&env, ""),
+            };
+            match guard.as_ref() {
+                Some(p) => to_jstring(&env, &format!("{}\u{1}{}", p.code, p.peer_name)),
+                None => to_jstring(&env, ""),
+            }
+        },
+        default,
+    )
 }
 
 /// 用户比对确认码后放行（accept=true）或拒绝。
@@ -322,10 +384,16 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativePairRespond(
     _class: JClass,
     accept: jboolean,
 ) {
-    if let Some(state) = STATE.get() {
-        let guard = state.pending.lock().expect("pending 锁不可恢复");
-        if let Some(p) = guard.as_ref() {
-            let _ = p.respond.send(accept != 0);
-        }
-    }
+    crate::jni_catch(
+        || {
+            if let Some(state) = STATE.get() {
+                if let Ok(guard) = state.pending.lock() {
+                    if let Some(p) = guard.as_ref() {
+                        let _ = p.respond.send(accept != 0);
+                    }
+                }
+            }
+        },
+        (),
+    )
 }

@@ -3,6 +3,9 @@
 //! 手机的历史含两类来源：本机（键盘弹出时读到的系统剪贴板）与
 //! 同步（电脑推送来的）。列表返回以 `\u{2}` 分记录、`\u{1}` 分字段
 //! 的扁平串（id/来源/文本），避免引入 JSON。
+//!
+//! 所有 `#[no_mangle]` 入口经 [`crate::jni_catch`] 包裹，panic 不会
+//! 跨 FFI 传播；历史库锁被污染时以 `.ok()` 安全降级而不 abort。
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -34,17 +37,22 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeInit(
     _class: JClass,
     db_path: JString,
 ) -> jboolean {
-    if STORE.get().is_some() {
-        return 1;
-    }
-    let path = PathBuf::from(jstr(&mut env, &db_path));
-    match ClipboardStore::open(&path) {
-        Ok(store) => {
-            let _ = STORE.set(Mutex::new(store));
-            1
-        }
-        Err(_) => 0,
-    }
+    crate::jni_catch(
+        || {
+            if STORE.get().is_some() {
+                return 1;
+            }
+            let path = PathBuf::from(jstr(&mut env, &db_path));
+            match ClipboardStore::open(&path) {
+                Ok(store) => {
+                    let _ = STORE.set(Mutex::new(store));
+                    1
+                }
+                Err(_) => 0,
+            }
+        },
+        0,
+    )
 }
 
 /// 插入一条文本历史（去重由存储层负责）；source 为来源标记。
@@ -55,16 +63,20 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeInsert(
     text: JString,
     source: JString,
 ) {
-    if let Some(store) = STORE.get() {
-        let t = jstr(&mut env, &text);
-        let src = jstr(&mut env, &source);
-        if !t.is_empty() {
-            let _ = store
-                .lock()
-                .expect("历史库锁不可恢复")
-                .insert_text(&t, &src);
-        }
-    }
+    crate::jni_catch(
+        || {
+            if let Some(store) = STORE.get() {
+                let t = jstr(&mut env, &text);
+                let src = jstr(&mut env, &source);
+                if !t.is_empty() {
+                    if let Ok(guard) = store.lock() {
+                        let _ = guard.insert_text(&t, &src);
+                    }
+                }
+            }
+        },
+        (),
+    )
 }
 
 /// 最近 limit 条历史：记录以 `\u{2}` 分隔，字段 `id\u{1}类型\u{1}来源\u{1}文本`。
@@ -75,27 +87,32 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeList(
     _class: JClass,
     limit: jint,
 ) -> jstring {
-    let Some(store) = STORE.get() else {
-        return to_jstring(&env, "");
-    };
-    let entries = store
-        .lock()
-        .expect("历史库锁不可恢复")
-        .list(limit.max(0) as u32, 0)
-        .unwrap_or_default();
-    let text = entries
-        .iter()
-        .map(|e| {
-            let kind = match e.kind {
-                ClipKind::Text => "text",
-                ClipKind::Image => "image",
-                ClipKind::Files => "files",
+    let default = to_jstring(&env, "");
+    crate::jni_catch(
+        || {
+            let Some(store) = STORE.get() else {
+                return to_jstring(&env, "");
             };
-            format!("{}\u{1}{}\u{1}{}\u{1}{}", e.id, kind, e.source_app, e.text)
-        })
-        .collect::<Vec<_>>()
-        .join("\u{2}");
-    to_jstring(&env, &text)
+            let entries = match store.lock() {
+                Ok(guard) => guard.list(limit.max(0) as u32, 0).unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            let text = entries
+                .iter()
+                .map(|e| {
+                    let kind = match e.kind {
+                        ClipKind::Text => "text",
+                        ClipKind::Image => "image",
+                        ClipKind::Files => "files",
+                    };
+                    format!("{}\u{1}{}\u{1}{}\u{1}{}", e.id, kind, e.source_app, e.text)
+                })
+                .collect::<Vec<_>>()
+                .join("\u{2}");
+            to_jstring(&env, &text)
+        },
+        default,
+    )
 }
 
 /// 图片条目的 PNG 字节；非图片或不存在返回空数组。供缩略图与写回剪贴板。
@@ -105,13 +122,19 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeImageData(
     _class: JClass,
     id: jint,
 ) -> jbyteArray {
-    let data = STORE
-        .get()
-        .and_then(|s| s.lock().ok()?.image_data(id as i64).ok().flatten())
-        .unwrap_or_default();
-    env.byte_array_from_slice(&data)
-        .map(|a| a.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    let default = std::ptr::null_mut();
+    crate::jni_catch(
+        || {
+            let data = STORE
+                .get()
+                .and_then(|s| s.lock().ok()?.image_data(id as i64).ok().flatten())
+                .unwrap_or_default();
+            env.byte_array_from_slice(&data)
+                .map(|a| a.into_raw())
+                .unwrap_or(std::ptr::null_mut())
+        },
+        default,
+    )
 }
 
 /// 插入本机图片（PNG 字节）到历史；供键盘读到系统剪贴板图片时调用。
@@ -122,17 +145,21 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeInsertImage(
     data: JByteArray,
     source: JString,
 ) {
-    if let Some(store) = STORE.get() {
-        if let Ok(bytes) = env.convert_byte_array(&data) {
-            if !bytes.is_empty() {
-                let src = jstr(&mut env, &source);
-                let _ = store
-                    .lock()
-                    .expect("历史库锁不可恢复")
-                    .insert_image(&bytes, &src);
+    crate::jni_catch(
+        || {
+            if let Some(store) = STORE.get() {
+                if let Ok(bytes) = env.convert_byte_array(&data) {
+                    if !bytes.is_empty() {
+                        let src = jstr(&mut env, &source);
+                        if let Ok(guard) = store.lock() {
+                            let _ = guard.insert_image(&bytes, &src);
+                        }
+                    }
+                }
             }
-        }
-    }
+        },
+        (),
+    )
 }
 
 /// 插入文件路径历史；Kotlin 侧以换行分隔路径，与存储层格式一致。
@@ -143,20 +170,24 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeInsertFiles(
     paths: JString,
     source: JString,
 ) {
-    if let Some(store) = STORE.get() {
-        let values = jstr(&mut env, &paths)
-            .lines()
-            .filter(|path| !path.trim().is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
-        if !values.is_empty() {
-            let src = jstr(&mut env, &source);
-            let _ = store
-                .lock()
-                .expect("历史库锁不可恢复")
-                .insert_files(&values, &src);
-        }
-    }
+    crate::jni_catch(
+        || {
+            if let Some(store) = STORE.get() {
+                let values = jstr(&mut env, &paths)
+                    .lines()
+                    .filter(|path| !path.trim().is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>();
+                if !values.is_empty() {
+                    let src = jstr(&mut env, &source);
+                    if let Ok(guard) = store.lock() {
+                        let _ = guard.insert_files(&values, &src);
+                    }
+                }
+            }
+        },
+        (),
+    )
 }
 
 /// 供同步桥调用：把收到的图片（PNG 字节）存入历史，返回条目 id。
@@ -183,7 +214,14 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeDelete(
     _class: JClass,
     id: jint,
 ) {
-    if let Some(store) = STORE.get() {
-        let _ = store.lock().expect("历史库锁不可恢复").delete(id as i64);
-    }
+    crate::jni_catch(
+        || {
+            if let Some(store) = STORE.get() {
+                if let Ok(guard) = store.lock() {
+                    let _ = guard.delete(id as i64);
+                }
+            }
+        },
+        (),
+    )
 }

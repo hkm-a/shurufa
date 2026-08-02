@@ -22,7 +22,6 @@ import androidx.core.content.FileProvider
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLConnection
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -128,7 +127,6 @@ class ClipboardSyncService : Service(), ClipboardManager.OnPrimaryClipChangedLis
             when (incoming.kind) {
                 "text" -> {
                     if (incoming.payload.isEmpty()) return
-                    if (downloadImageUrl(incoming.payload, incoming.from)) return
                     ClipStore.insert(incoming.payload, "同步·${incoming.from}")
                     val clip = ClipData.newPlainText(
                         ClipboardTypePolicy.REMOTE_LABEL_PREFIX + incoming.from,
@@ -174,57 +172,6 @@ class ClipboardSyncService : Service(), ClipboardManager.OnPrimaryClipChangedLis
     private fun setClipboardUri(uri: Uri, mimeType: String, label: String) {
         val description = ClipDescription(label, arrayOf(mimeType))
         clipboard.setPrimaryClip(ClipData(description, ClipData.Item(uri)))
-    }
-
-    /** 兼容未来以图片 URL 作为同步载荷的发送端；当前二进制同步路径不经过此分支。 */
-    private fun downloadImageUrl(text: String, from: String): Boolean {
-        val value = text.trim()
-        if (!value.startsWith("https://", ignoreCase = true) &&
-            !value.startsWith("http://", ignoreCase = true)
-        ) return false
-        if (!value.substringBefore('?').substringBefore('#').matches(IMAGE_URL_REGEX)) return false
-        executor.execute {
-            val connection = try {
-                (URL(value).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 10_000
-                    readTimeout = 20_000
-                    instanceFollowRedirects = true
-                    requestMethod = "GET"
-                }
-            } catch (e: Throwable) {
-                Log.w(TAG, "图片 URL 连接失败：$value", e)
-                return@execute
-            }
-            try {
-                check(connection.responseCode in 200..299) { "HTTP ${connection.responseCode}" }
-                val type = connection.contentType?.substringBefore(';')?.lowercase()
-                check(type?.startsWith("image/") == true) { "响应不是图片：$type" }
-                val bytes = connection.inputStream.use { input ->
-                    input.readBytesLimited(MAX_URL_IMAGE_BYTES)
-                }
-                check(bytes.isNotEmpty()) { "图片响应为空" }
-                ClipStore.insertImage(bytes, "同步·$from")
-                setImageClipboard(bytes, "来自 $from 的图片")
-                Log.i(TAG, "已下载图片 URL 并写入系统剪贴板 来源=$from 字节=${bytes.size}")
-            } catch (e: Throwable) {
-                Log.w(TAG, "图片 URL 下载失败：$value", e)
-            } finally {
-                connection.disconnect()
-            }
-        }
-        return true
-    }
-
-    private fun java.io.InputStream.readBytesLimited(maxBytes: Int): ByteArray {
-        val output = java.io.ByteArrayOutputStream()
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        while (true) {
-            val count = read(buffer)
-            if (count < 0) break
-            if (output.size() + count > maxBytes) throw IOException("图片超过大小限制")
-            output.write(buffer, 0, count)
-        }
-        return output.toByteArray()
     }
 
     private fun receivedDir(): File = File(filesDir, "sync/received").apply { mkdirs() }
@@ -282,8 +229,6 @@ class ClipboardSyncService : Service(), ClipboardManager.OnPrimaryClipChangedLis
         private const val POLL_MILLIS = 500L
         private const val MAX_EVENTS_PER_TICK = 8
         private const val DUPLICATE_WINDOW_NANOS = 1_500_000_000L
-        private const val MAX_URL_IMAGE_BYTES = 20 * 1024 * 1024
-        private val IMAGE_URL_REGEX = Regex(".*\\.(png|jpe?g|webp|gif|bmp|heic|heif)$", RegexOption.IGNORE_CASE)
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(

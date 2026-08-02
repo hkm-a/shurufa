@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -27,6 +27,22 @@ const MAX_CLIP_TEXT: usize = 64 * 1024;
 pub const MAX_CLIP_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 /// 单文件同步上限（字节）：与图片共用协议帧预算。
 pub const MAX_CLIP_FILE_BYTES: usize = 8 * 1024 * 1024;
+
+/// TCP 连接到达超时（秒）：避免对黑洞/不可达地址无限挂起。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// 数据通道读空闲超时（秒）。
+///
+/// 对端正常时两侧每 30 秒互发一次 Ping，故活跃连接上收到的消息间隔
+/// 不会超过约 30 秒。超过该窗口仍无任何数据即判定连接失效（拔线、
+/// 对端崩溃但 TCP 未 RST 等），主动断开以让重连循环接管。取值显著
+/// 大于 Ping 周期以容忍瞬时延迟抖动。
+const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// 连接失败初试退避（秒），指数增长封顶。
+const BACKOFF_BASE: Duration = Duration::from_secs(10);
+const BACKOFF_CAP: Duration = Duration::from_secs(300);
+
+/// 连接失败或断线后介于两次 TCP 心跳之间的保活间隔（秒）。
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct SyncConfig {
@@ -103,6 +119,8 @@ struct Shared {
     connected: Mutex<HashSet<String>>,
     /// mDNS 发现的 指纹 → 地址 缓存
     addr_cache: Mutex<HashMap<String, SocketAddr>>,
+    /// 连接失败退避：指纹 → (连续失败次数, 最早可重试时刻)
+    backoff: Mutex<HashMap<String, (u32, Instant)>>,
     outgoing: broadcast::Sender<Outbound>,
     incoming: mpsc::Sender<Incoming>,
     /// 入站配对请求的确认回调（None 表示拒绝一切配对请求）
@@ -115,6 +133,37 @@ struct Shared {
 impl Shared {
     fn log(&self, msg: &str) {
         (self.log)(msg);
+    }
+
+    /// 该指纹当前是否允许发起重连（未在退避期内）。
+    fn allow_retry(&self, fp: &str) -> bool {
+        let map = self.backoff.lock().expect("退避表锁不可恢复");
+        match map.get(fp) {
+            Some((_, until)) => *until <= Instant::now(),
+            None => true,
+        }
+    }
+
+    /// 记录一次连接失败，按指数策略延后下一次重试。
+    fn mark_failure(&self, fp: &str) {
+        let mut map = self.backoff.lock().expect("退避表锁不可恢复");
+        let (tries, _) = map.get(fp).copied().unwrap_or((0, Instant::now()));
+        let tries = tries + 1;
+        // 10s → 20s → 40s → … ，封顶 300s
+        let factor = 2u64.saturating_pow(tries.saturating_sub(1) as u32);
+        let secs = BACKOFF_BASE
+            .as_secs()
+            .saturating_mul(factor)
+            .min(BACKOFF_CAP.as_secs());
+        map.insert(fp.to_string(), (tries, Instant::now() + Duration::from_secs(secs)));
+    }
+
+    /// 连接成功后清除该指纹的退避记录。
+    fn clear_backoff(&self, fp: &str) {
+        self.backoff
+            .lock()
+            .expect("退避表锁不可恢复")
+            .remove(fp);
     }
 }
 
@@ -155,6 +204,7 @@ impl SyncService {
             device_name: config.device_name.clone(),
             connected: Mutex::new(HashSet::new()),
             addr_cache: Mutex::new(HashMap::new()),
+            backoff: Mutex::new(HashMap::new()),
             outgoing,
             incoming,
             accept_confirm,
@@ -360,7 +410,7 @@ fn sanitize_instance(name: &str) -> String {
     }
 }
 
-/// 对每个已配对但未连接的设备发起一轮连接。
+/// 对每个已配对但未连接的设备发起一轮连接（带失败退避）。
 async fn connect_missing_peers(shared: &Arc<Shared>, connector: &TlsConnector) {
     for peer in shared.peers.list() {
         let already = shared
@@ -369,6 +419,9 @@ async fn connect_missing_peers(shared: &Arc<Shared>, connector: &TlsConnector) {
             .expect("连接表锁不可恢复")
             .contains(&peer.fingerprint);
         if already {
+            continue;
+        }
+        if !shared.allow_retry(&peer.fingerprint) {
             continue;
         }
         let cached = shared
@@ -384,9 +437,11 @@ async fn connect_missing_peers(shared: &Arc<Shared>, connector: &TlsConnector) {
         };
         let shared = shared.clone();
         let connector = connector.clone();
+        let fp = peer.fingerprint.clone();
         tokio::spawn(async move {
             if let Err(e) = connect_peer(shared.clone(), connector, &peer, &addr).await {
                 shared.log(&format!("连接 {}（{addr}）失败：{e}", peer.name));
+                shared.mark_failure(&fp);
             }
         });
     }
@@ -399,8 +454,9 @@ async fn connect_peer(
     peer: &Peer,
     addr: &str,
 ) -> Result<(), String> {
-    let stream = TcpStream::connect(addr)
+    let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
+        .map_err(|_| format!("连接超时（{}s）: {addr}", CONNECT_TIMEOUT.as_secs()))?
         .map_err(|e| format!("TCP 连接失败: {e}"))?;
     let domain =
         rustls::pki_types::ServerName::try_from("shurufa-device").expect("固定域名不应失败");
@@ -426,6 +482,7 @@ async fn connect_peer(
         return Err("对端未按协议发送 Hello".into());
     };
     let _ = shared.peers.update_addr(&fp, addr);
+    shared.clear_backoff(&fp);
     duplex(shared, tls, fp, name).await
 }
 
@@ -501,8 +558,9 @@ async fn pair_initiate(
     addr: &str,
     confirm: ConfirmFn,
 ) -> Result<Peer, String> {
-    let stream = TcpStream::connect(addr)
+    let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
+        .map_err(|_| format!("连接超时（{}s）: {addr}", CONNECT_TIMEOUT.as_secs()))?
         .map_err(|e| format!("TCP 连接失败: {e}"))?;
     let domain =
         rustls::pki_types::ServerName::try_from("shurufa-device").expect("固定域名不应失败");
@@ -564,6 +622,10 @@ fn peer_fingerprint(conn: &rustls::CommonState) -> Result<String, String> {
 }
 
 /// 数据通道收发循环：出站广播 + 入站转交 + 保活。
+///
+/// 读侧带空闲超时：正常连接每 30 秒必能收到对端 Ping，超过
+/// `READ_IDLE_TIMEOUT` 无数据即视为连接失效并断开，避免僵尸连接
+/// 长期占用 `connected` 集合、阻断重连。
 async fn duplex<S>(
     shared: Arc<Shared>,
     mut tls: S,
@@ -583,63 +645,69 @@ where
     shared.log(&format!("已连接 {peer_name}"));
 
     let mut rx = shared.outgoing.subscribe();
-    let mut ping = tokio::time::interval(Duration::from_secs(30));
+    let mut ping = tokio::time::interval(HEARTBEAT_INTERVAL);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let result = loop {
         tokio::select! {
-            msg = read_msg(&mut tls) => match msg {
-                Ok(Message::ClipText { text, .. }) => {
-                    if text.len() <= MAX_CLIP_TEXT {
-                        let _ = shared
-                            .incoming
-                            .send(Incoming::Clip {
-                                from_name: peer_name.clone(),
-                                text,
-                            })
-                            .await;
-                    }
-                }
-                Ok(Message::ClipImage { data, .. }) => {
-                    match base64::engine::general_purpose::STANDARD.decode(&data) {
-                        Ok(png) if png.len() <= MAX_CLIP_IMAGE_BYTES => {
+            incoming = tokio::time::timeout(READ_IDLE_TIMEOUT, read_msg(&mut tls)) => {
+                match incoming {
+                    Ok(Ok(Message::ClipText { text, .. })) => {
+                        if text.len() <= MAX_CLIP_TEXT {
                             let _ = shared
                                 .incoming
-                                .send(Incoming::Image {
+                                .send(Incoming::Clip {
                                     from_name: peer_name.clone(),
-                                    png,
+                                    text,
                                 })
                                 .await;
                         }
-                        _ => {}
                     }
-                }
-                Ok(Message::ClipFile { name, mime_type, data, .. }) => {
-                    match base64::engine::general_purpose::STANDARD.decode(&data) {
-                        Ok(data)
-                            if !name.is_empty()
-                                && name.len() <= 255
-                                && !mime_type.is_empty()
-                                && mime_type.len() <= 255
-                                && data.len() <= MAX_CLIP_FILE_BYTES =>
-                        {
-                            let _ = shared
-                                .incoming
-                                .send(Incoming::File {
-                                    from_name: peer_name.clone(),
-                                    name,
-                                    mime_type,
-                                    data,
-                                })
-                                .await;
+                    Ok(Ok(Message::ClipImage { data, .. })) => {
+                        match base64::engine::general_purpose::STANDARD.decode(&data) {
+                            Ok(png) if png.len() <= MAX_CLIP_IMAGE_BYTES => {
+                                let _ = shared
+                                    .incoming
+                                    .send(Incoming::Image {
+                                        from_name: peer_name.clone(),
+                                        png,
+                                    })
+                                    .await;
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
+                    Ok(Ok(Message::ClipFile { name, mime_type, data, .. })) => {
+                        match base64::engine::general_purpose::STANDARD.decode(&data) {
+                            Ok(data)
+                                if !name.is_empty()
+                                    && name.len() <= 255
+                                    && !mime_type.is_empty()
+                                    && mime_type.len() <= 255
+                                    && data.len() <= MAX_CLIP_FILE_BYTES =>
+                            {
+                                let _ = shared
+                                    .incoming
+                                    .send(Incoming::File {
+                                        from_name: peer_name.clone(),
+                                        name,
+                                        mime_type,
+                                        data,
+                                    })
+                                    .await;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok(Ok(Message::Ping)) => {}
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => break Err(e),
+                    Err(_) => break Err(format!(
+                        "对端 {peer_name} {} 秒无响应，判定连接失效",
+                        READ_IDLE_TIMEOUT.as_secs()
+                    )),
                 }
-                Ok(Message::Ping) => {}
-                Ok(_) => {}
-                Err(e) => break Err(e),
-            },
+            }
             out = rx.recv() => match out {
                 Ok(Outbound::Text(text)) => {
                     let msg = Message::ClipText {

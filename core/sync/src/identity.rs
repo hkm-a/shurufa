@@ -59,7 +59,12 @@ fn generate() -> Result<(Vec<u8>, Vec<u8>), String> {
     Ok((cert.der().to_vec(), key.serialize_der()))
 }
 
-/// 私钥落盘。Windows 用户目录默认即本人可读；类 Unix 平台收紧到 0600。
+/// 私钥落盘并收紧权限。
+///
+/// Unix 平台设为 0600（仅属主可读写）；Windows 平台为磁盘上的私钥文件
+/// 套用「仅当前用户」的 DACL（阻断继承），防止第三方/低权限读取私钥
+/// 冒名设备。Windows 收紧为 best-effort：任何失败仅记录日志，不影响
+/// 身份可用（用户目录默认即本人可读，属纵深防御）。
 fn write_private(path: &PathBuf, bytes: &[u8]) -> Result<(), String> {
     fs::write(path, bytes).map_err(|e| format!("写入私钥失败: {e}"))?;
     #[cfg(unix)]
@@ -67,12 +72,95 @@ fn write_private(path: &PathBuf, bytes: &[u8]) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
     }
+    #[cfg(windows)]
+    {
+        restrict_private_key(path);
+    }
     Ok(())
 }
+
+/// Windows：把私钥文件 ACL 收紧为仅当前用户，并打掉继承，防止被
+/// 本地其他账户/低权限进程读取。best-effort，任何失败静默降级。
+#[cfg(windows)]
+fn restrict_private_key(path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{LocalFree, GENERIC_ALL};
+    use windows_sys::Win32::Security::Authorization::{
+        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, SE_FILE_OBJECT,
+        SET_ACCESS, TRUSTEE_IS_NAME, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+
+    // Trustee 以名称 "CURRENT_USER" 指代当前交互用户，避免手工映射 SID。
+    let mut current_user: Vec<u16> = "CURRENT_USER".encode_utf16().chain(Some(0)).collect();
+    let trustee = TRUSTEE_W {
+        pMultipleTrustee: std::ptr::null_mut(),
+        TrusteeForm: TRUSTEE_IS_NAME,
+        TrusteeType: TRUSTEE_IS_USER,
+        ptstrName: current_user.as_mut_ptr(),
+        ..Default::default()
+    };
+    let access = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: GENERIC_ALL as u32,
+        grfAccessMode: SET_ACCESS,
+        grfInheritance: 0, // NO_INHERITANCE：不继承父目录 ACL
+        Trustee: trustee,
+        ..Default::default()
+    };
+    let mut new_dacl: *mut ACL = std::ptr::null_mut();
+    // ERROR_SUCCESS 才继续；失败时静默返回，ACL 维持默认。
+    if unsafe { SetEntriesInAclW(1, &access, std::ptr::null(), &mut new_dacl) } != 0 {
+        return;
+    }
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let info: u32 = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+    unsafe {
+        let _ = SetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            info,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            new_dacl,
+            std::ptr::null::<ACL>(),
+        );
+        let _ = LocalFree(new_dacl as _);
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn 私钥acl仅限当前用户() {
+        let dir = tempfile::tempdir().unwrap();
+        DeviceIdentity::load_or_create(dir.path(), "测试机").unwrap();
+        let key = dir.path().join("identity.key.der");
+        let out = std::process::Command::new("icacls")
+            .arg(&key)
+            .output()
+            .expect("运行 icacls 失败");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let user = std::env::var("USERNAME").unwrap_or_default();
+        assert!(!user.is_empty(), "缺少 USERNAME");
+        assert!(
+            stdout.contains(&user),
+            "ACL 应授予当前用户 {user}，实际: {stdout}"
+        );
+        assert!(
+            !stdout.contains("Everyone"),
+            "ACL 不应包含 Everyone，实际: {stdout}"
+        );
+        assert!(
+            !stdout.contains(r"BUILTIN\Users"),
+            "ACL 不应包含 Users 组，实际: {stdout}"
+        );
+    }
 
     #[test]
     fn 身份生成与重载一致() {

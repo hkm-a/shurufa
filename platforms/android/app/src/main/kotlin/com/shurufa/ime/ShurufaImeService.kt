@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -18,13 +19,12 @@ import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
-import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -34,7 +34,10 @@ import androidx.core.view.inputmethod.InputConnectionCompat
 import androidx.core.view.inputmethod.InputContentInfoCompat
 import java.io.File
 import java.io.ByteArrayOutputStream
+import java.net.URL
+import java.net.HttpURLConnection
 import java.net.URLConnection
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 /**
@@ -67,21 +70,29 @@ class ShurufaImeService : InputMethodService() {
     companion object {
         private const val XK_BACKSPACE = 0xff08
         private const val XK_RETURN = 0xff0d
+        // 方案资源变化时递增，确保同一应用版本也会重新解包词典。
+        private const val SCHEMA_BUNDLE_VERSION = "rime-ice-20260801"
+        /// 缩略图采样目标边长（px），仅为展示用，不必保留原图尺寸
+        private const val THUMBNAIL_TARGET = 260
+        /// 预览图采样目标边长（px），兼顾清晰度与内存
+        private const val PREVIEW_TARGET = 2048
+        /// 单张贴纸下载大小上限（字节），防恶意/异常源耗尽存储与内存
+        private const val MAX_STICKER_BYTES = 8L * 1024 * 1024
 
         private val LIGHT = Palette(
-            bg = 0xFFE8EAEE.toInt(),
+            bg = 0xFFF0F1F5.toInt(),
             key = 0xFFFFFFFF.toInt(),
             keyPressed = 0xFFC7CED9.toInt(),
-            keyFunc = 0xFFD3D8E1.toInt(),
+            keyFunc = 0xFFD5DAE3.toInt(),
             funcPressed = 0xFFBFC6D2.toInt(),
             keyText = 0xFF1A1A1A.toInt(),
             funcText = 0xFF33383F.toInt(),
             candidate = 0xFF1A1A1A.toInt(),
-            candidateHl = 0xFFB86A34.toInt(),
+            candidateHl = 0xFF35B982.toInt(),
             preedit = 0xFF8A9099.toInt(),
             syncBg = 0xFFFFF1DE.toInt(),
             syncText = 0xFF6A4A20.toInt(),
-            accent = 0xFFB86A34.toInt(),
+            accent = 0xFF35B982.toInt(),
         )
         private val DARK = Palette(
             bg = 0xFF15171B.toInt(),
@@ -92,11 +103,11 @@ class ShurufaImeService : InputMethodService() {
             keyText = 0xFFECECEC.toInt(),
             funcText = 0xFFCFD3D9.toInt(),
             candidate = 0xFFECECEC.toInt(),
-            candidateHl = 0xFFE6A867.toInt(),
+            candidateHl = 0xFF68D3A0.toInt(),
             preedit = 0xFF8B9199.toInt(),
             syncBg = 0xFF3A331F.toInt(),
             syncText = 0xFFEAD6B0.toInt(),
-            accent = 0xFFE6A867.toInt(),
+            accent = 0xFF68D3A0.toInt(),
         )
 
         @Volatile
@@ -107,11 +118,9 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private lateinit var candidateBar: LinearLayout
-    private lateinit var preeditView: TextView
     private lateinit var keyArea: LinearLayout
-    private var langKey: TextView? = null
+    private var inputRoot: LinearLayout? = null
     private var symbolMode = false
-    private var emojiMode = false
     /// 大写锁定（微信输入法同款 capslock 键：行首图标键）
     private var shiftMode = false
     private var syncBar: TextView? = null
@@ -120,7 +129,17 @@ class ShurufaImeService : InputMethodService() {
     private var pendingSyncImageId: Int? = null
     /// 同步收到的文件历史 id，syncBar 点击时作为附件提交。
     private var pendingSyncFileId: Int? = null
+    private val chineseStickerCatalog by lazy { ChineseStickerCatalog(this) }
     private val syncPoll = Handler(Looper.getMainLooper())
+    private val stickerSearchHandler = Handler(Looper.getMainLooper())
+    /// 受限并发 + 超时的贴纸下载线程池（避免无界线程/挂死）
+    private val stickerIo = Executors.newFixedThreadPool(2) { r ->
+        Thread(r, "sticker-io").apply { isDaemon = true }
+    }
+    private val stickerSuggestionState = StickerSuggestionState()
+    private var pendingStickerSearch: Runnable? = null
+    private var stickerBannerViews: List<View> = emptyList()
+    private var stickerInsertIndex = 0
     private var pendingSyncToken: Long? = null
     private var historyPanel: LinearLayout? = null
     /// 微信输入法 S33 同款图片预览键盘（点图后先预览再保存/发送）
@@ -130,11 +149,6 @@ class ShurufaImeService : InputMethodService() {
 
     /// 当前主题；随系统深色设置在重建输入视图时更新
     private var palette: Palette = LIGHT
-    /// 字符气泡（按键放大预览）
-    private var bubble: PopupWindow? = null
-    private var bubbleText: TextView? = null
-    /// 退格长按连删定时器
-    private val repeatHandler = Handler(Looper.getMainLooper())
 
     /// 附件发送结果：SENT=已投递，COPIED=已复制到剪贴板（需长按粘贴），FAILED=彻底失败
     private enum class SendResult { SENT, COPIED, FAILED }
@@ -181,19 +195,30 @@ class ShurufaImeService : InputMethodService() {
     private fun unpackSchemas(): File {
         val dest = File(filesDir, "schemas")
         val marker = File(dest, ".version")
-        val version = appVersionCode().toString()
+        val version = "${appVersionCode()}-$SCHEMA_BUNDLE_VERSION"
         if (marker.takeIf { it.exists() }?.readText() == version) {
             return dest
         }
         dest.deleteRecursively()
         dest.mkdirs()
-        assets.list("schemas")?.forEach { name ->
-            assets.open("schemas/$name").use { input ->
-                File(dest, name).outputStream().use { input.copyTo(it) }
-            }
-        }
+        copySchemaAssets("schemas", dest)
         marker.writeText(version)
         return dest
+    }
+
+    private fun copySchemaAssets(assetPath: String, destination: File) {
+        val children = assets.list(assetPath).orEmpty()
+        if (children.isEmpty()) {
+            assets.open(assetPath).use { input ->
+                destination.parentFile?.mkdirs()
+                destination.outputStream().use { input.copyTo(it) }
+            }
+            return
+        }
+        destination.mkdirs()
+        children.forEach { child ->
+            copySchemaAssets("$assetPath/$child", File(destination, child))
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -215,6 +240,13 @@ class ShurufaImeService : InputMethodService() {
         (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
 
+    private fun isLandscape(): Boolean =
+        resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    private fun candidateBarHeight(): Int = dp(if (isLandscape()) 36f else 42f)
+
+    private fun candidateItemSize(): Int = dp(if (isLandscape()) 36f else 42f)
+
     /// 圆角按键背景：normal / pressed 两态。每次新建（Drawable 状态不可共享）。
     private fun keyBackground(normal: Int, pressed: Int): StateListDrawable {
         fun round(color: Int) = GradientDrawable().apply {
@@ -227,97 +259,10 @@ class ShurufaImeService : InputMethodService() {
         }
     }
 
-    /// 字符键：圆角、按下态、按下弹放大气泡。
-    private fun charKey(label: String, weight: Float, onTap: () -> Unit): TextView =
-        TextView(this).apply {
-            text = label
-            gravity = Gravity.CENTER
-            textSize = 20f
-            setTextColor(palette.keyText)
-            background = keyBackground(palette.key, palette.keyPressed)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
-                .apply { setMargins(dp(1.5f), dp(2f), dp(1.5f), dp(2f)) }
-            setOnTouchListener { v, ev ->
-                when (ev.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        isPressed = true
-                        showBubble(v, label)
-                        true
-                    }
-                    MotionEvent.ACTION_UP -> {
-                        isPressed = false
-                        hideBubble()
-                        onTap()
-                        performClick()
-                        true
-                    }
-                    MotionEvent.ACTION_CANCEL -> {
-                        isPressed = false
-                        hideBubble()
-                        true
-                    }
-                    else -> false
-                }
-            }
-        }
-
-    /// 功能键：圆角、按下态，无气泡。返回 TextView 供调用方持有（如中英键）。
-    private fun funcKey(label: String, weight: Float, onTap: () -> Unit): TextView =
-        TextView(this).apply {
-            text = label
-            gravity = Gravity.CENTER
-            textSize = 16f
-            setTextColor(palette.funcText)
-            typeface = Typeface.DEFAULT_BOLD
-            background = keyBackground(palette.keyFunc, palette.funcPressed)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
-                .apply { setMargins(dp(1.5f), dp(2f), dp(1.5f), dp(2f)) }
-            setOnClickListener { onTap() }
-        }
-
-    private fun showBubble(anchor: View, label: String) {
-        val w = dp(46f)
-        val h = dp(54f)
-        val tv = bubbleText ?: TextView(this).apply {
-            gravity = Gravity.CENTER
-            textSize = 26f
-            setTextColor(palette.keyText)
-            background = GradientDrawable().apply {
-                setColor(palette.key)
-                cornerRadius = dp(8f).toFloat()
-                setStroke(dp(1f), palette.keyPressed)
-            }
-            bubbleText = this
-        }
-        tv.text = label
-        tv.setTextColor(palette.keyText)
-        val pop = bubble ?: PopupWindow(tv, w, h, false).also {
-            it.isClippingEnabled = false
-            bubble = it
-        }
-        val loc = IntArray(2)
-        anchor.getLocationInWindow(loc)
-        val x = loc[0] + anchor.width / 2 - w / 2
-        val y = loc[1] - h - dp(2f)
-        try {
-            if (pop.isShowing) {
-                pop.update(x, y, w, h)
-            } else {
-                pop.showAtLocation(anchor, Gravity.NO_GRAVITY, x, y)
-            }
-        } catch (e: Throwable) {
-            // 个别 ROM 的 IME 窗口不允许弹窗，降级为无气泡
-        }
-    }
-
-    private fun hideBubble() {
-        try {
-            bubble?.dismiss()
-        } catch (e: Throwable) {
-        }
-    }
-
     // ---------- 键盘视图 ----------
+
+    /** 横屏保持应用内容与键盘同屏，避免系统切换到占据大面积空白的提取编辑模式。 */
+    override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onCreateInputView(): View {
         palette = if (isDark()) DARK else LIGHT
@@ -327,14 +272,7 @@ class ShurufaImeService : InputMethodService() {
             setBackgroundColor(palette.bg)
             setPadding(dp(1f), dp(1f), dp(1f), dp(1f))
         }
-
-        preeditView = TextView(this).apply {
-            setTextColor(palette.preedit)
-            textSize = 13f
-            setPadding(dp(12f), dp(3f), dp(12f), 0)
-            visibility = View.GONE
-        }
-        root.addView(preeditView)
+        inputRoot = root
 
         syncBar = TextView(this).apply {
             background = GradientDrawable().apply {
@@ -375,50 +313,35 @@ class ShurufaImeService : InputMethodService() {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { setMargins(dp(3f), dp(2f), dp(3f), dp(2f)) })
 
-        // 候选栏行（微信输入法布局：顶部整条白底候选栏 + 左侧工具按钮）
+        // 横屏进一步压缩候选栏，把垂直空间优先让给四行可触达的按键。
+        val compactCandidateBar = isLandscape()
+        val clipButtonSize = dp(if (compactCandidateBar) 28f else 32f)
+        val clipVerticalMargin = dp(if (compactCandidateBar) 4f else 5f)
         val topRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            // 微信候选栏：白底与键盘区分
             setBackgroundColor(palette.key)
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(46f)
+                LinearLayout.LayoutParams.MATCH_PARENT, candidateBarHeight()
             )
         }
-        // 候选栏与键盘之间的细分隔线（微信同款层次感）
-        root.addView(View(this).apply {
-            setBackgroundColor(if (isDark()) 0xFF3A3F47.toInt() else 0xFFD8DCE3.toInt())
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1f)))
         val clipButton = TextView(this).apply {
-            text = "⊞"
+            text = "▦"
             contentDescription = "剪贴板历史"
             gravity = Gravity.CENTER
-            textSize = 21f
-            setTextColor(palette.accent)
-            setPadding(dp(14f), 0, dp(14f), 0)
+            textSize = 16f
+            setTextColor(0xFFFFFFFF.toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(palette.accent)
+            }
             setOnClickListener { toggleHistory() }
         }
         topRow.addView(
             clipButton,
             LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
+                clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
-            )
-        )
-        // 斗图键（微信输入法同款入口）：打开图片历史，点图预览后发送
-        val memeButton = TextView(this).apply {
-            text = "🖼"
-            contentDescription = "斗图（图片历史）"
-            gravity = Gravity.CENTER
-            textSize = 19f
-            setPadding(dp(14f), 0, dp(14f), 0)
-            setOnClickListener { toggleImageHistory() }
-        }
-        topRow.addView(
-            memeButton,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            )
+            ).apply { setMargins(dp(8f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
         )
         candidateBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val scroll = HorizontalScrollView(this).apply {
@@ -428,19 +351,25 @@ class ShurufaImeService : InputMethodService() {
         }
         topRow.addView(scroll)
         root.addView(topRow)
+        // 候选栏与键区之间的细分隔线，避免白底候选和浅灰键区粘连。
+        root.addView(View(this).apply {
+            setBackgroundColor(if (isDark()) 0xFF3A3F47.toInt() else 0xFFD8DCE3.toInt())
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1f)))
 
         keyArea = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        // 键盘高度 = 屏幕 39%（微信输入法同款比例）：固定高度让 IME 窗口跟随，任何分辨率都满屏
-        val metrics = resources.displayMetrics
-        val kbHeight = (metrics.heightPixels * 0.39f).toInt()
         root.addView(
             keyArea,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT, // 高度由 WetypeKeyboardView 决定（屏幕 39%）
+                LinearLayout.LayoutParams.WRAP_CONTENT,
             ),
         )
         rebuildKeys()
+
+        // 根视图的实际高度由系统在分屏、自由窗口等场景决定；每次布局后同步键区上限。
+        root.viewTreeObserver.addOnGlobalLayoutListener {
+            resizeKeyboardForInputView(root)
+        }
 
         historyPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -696,12 +625,11 @@ class ShurufaImeService : InputMethodService() {
             showAttachmentError("图片数据缺失")
             return
         }
-        val bmp = BitmapFactory.decodeByteArray(png, 0, png.size)
+        val bmp = decodeSampledBitmap(png, PREVIEW_TARGET)
         if (bmp != null) image.setImageBitmap(bmp)
         previewImageId = id
-        // 隐藏一切可能挤压预览区的元素（同步条/拼音行/历史面板）
+        // 隐藏一切可能挤压预览区的元素（同步条/历史面板）。
         syncBar?.visibility = View.GONE
-        preeditView.visibility = View.GONE
         historyPanel?.visibility = View.GONE
         keyArea.visibility = View.GONE
         panel.visibility = View.VISIBLE
@@ -746,7 +674,7 @@ class ShurufaImeService : InputMethodService() {
                     "图片历史条目状态 历史ID=${entry.id} 声明MIME=$supportedImageMime",
                 )
                 val bmp = try {
-                    ClipStore.imageData(entry.id)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                    ClipStore.imageData(entry.id)?.let { decodeSampledBitmap(it, THUMBNAIL_TARGET) }
                 } catch (e: Throwable) {
                     null
                 }
@@ -1062,18 +990,39 @@ class ShurufaImeService : InputMethodService() {
     private fun rebuildKeys() {
         if (!::keyArea.isInitialized) return
         keyArea.removeAllViews()
-        langKey = null
-        when {
-            emojiMode -> buildEmojiPage()
-            symbolMode -> buildSymbolPage()
-            else -> buildLetterPage()
+        if (symbolMode) buildSymbolPage() else buildLetterPage()
+        inputRoot?.let { root -> root.post { resizeKeyboardForInputView(root) } }
+    }
+
+    private fun resizeKeyboardForInputView(root: LinearLayout) {
+        if (!::keyArea.isInitialized || root.height <= 0) return
+        val keyboard = keyArea.getChildAt(0) as? WetypeKeyboardView ?: return
+        val keyIndex = root.indexOfChild(keyArea)
+        if (keyIndex < 0) return
+        val chromeHeight = root.paddingTop + root.paddingBottom + (0 until keyIndex).sumOf { index ->
+            val child = root.getChildAt(index)
+            if (child.visibility == View.GONE) {
+                0
+            } else {
+                val params = child.layoutParams as? ViewGroup.MarginLayoutParams
+                child.measuredHeight + (params?.topMargin ?: 0) + (params?.bottomMargin ?: 0)
+            }
         }
+        keyboard.setAvailableKeyboardHeight(root.height - chromeHeight)
     }
 
     private fun buildLetterPage() {
         // 微信输入法 S2 键盘整块布局（反编译 JSON 直接渲染）
+        val asciiMode = engineReady && RimeBridge.nativeIsAscii()
         keyArea.addView(
-            WetypeKeyboardView(this, langLabel(), loadKeyboardJson("S2ChineseQwertyKeyboard.json"), isDark()) { onWetypeAction(it) },
+            WetypeKeyboardView(
+                this,
+                KeyboardLayoutSpec.Page.LETTERS,
+                isDark(),
+                asciiMode,
+                asciiMode || shiftMode,
+                onAction = { onWetypeAction(it) },
+            ),
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT),
         )
     }
@@ -1081,18 +1030,22 @@ class ShurufaImeService : InputMethodService() {
     private fun buildSymbolPage() {
         // 微信输入法 S13 数字符号页整块布局（反编译 JSON 直接渲染）
         keyArea.addView(
-            WetypeKeyboardView(this, null, loadKeyboardJson("S13ChineseNumberSymbolKeyboard.json"), isDark()) { onWetypeAction(it) },
+            WetypeKeyboardView(
+                this,
+                KeyboardLayoutSpec.Page.SYMBOLS,
+                isDark(),
+                false,
+                false,
+                onAction = { onWetypeAction(it) },
+            ),
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT),
         )
     }
 
-    private fun loadKeyboardJson(name: String): org.json.JSONObject =
-        org.json.JSONObject(assets.open("keyboard/" + name).bufferedReader().use { it.readText() })
-
     private fun onWetypeAction(a: WetypeKeyboardView.WetypeAction) {
         when (a) {
             is WetypeKeyboardView.WetypeAction.Char -> {
-                val c = a.c
+                val c = a.value
                 if (c.length == 1 && c[0].isLetter()) {
                     onLetter(c[0].lowercaseChar())
                 } else {
@@ -1106,188 +1059,22 @@ class ShurufaImeService : InputMethodService() {
             }
             WetypeKeyboardView.WetypeAction.NumberPage -> {
                 symbolMode = true
-                emojiMode = false
-                rebuildKeys()
-            }
-            WetypeKeyboardView.WetypeAction.EmojiPage -> {
-                emojiMode = true
-                symbolMode = false
                 rebuildKeys()
             }
             WetypeKeyboardView.WetypeAction.BackPage -> {
                 symbolMode = false
-                emojiMode = false
                 rebuildKeys()
             }
-            WetypeKeyboardView.WetypeAction.SymbolMore -> { /* 单页符号，忽略 */ }
             WetypeKeyboardView.WetypeAction.Enter -> onEnter()
             WetypeKeyboardView.WetypeAction.Space -> onSpace()
             WetypeKeyboardView.WetypeAction.Lang -> onToggleLang()
-        }
-    }
-    private fun rowLayout(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        // 行高自适应：4 行均分键盘高度
-        layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-        )
-    }
-
-    private fun buildLetterRow(letters: String, withBackspace: Boolean): LinearLayout {
-        val row = rowLayout()
-        // 微信输入法 S2 行首是 capslock 图标键（不是空白占位）
-        if (letters.length == 9) row.addView(shiftKey(1.2f))
-        letters.forEach { c -> row.addView(charKey(c.toString(), 1f) { onLetter(c) }) }
-        if (withBackspace) {
-            row.addView(backspaceKey(1.2f))
-        } else if (letters.length == 9) {
-            row.addView(spacer(0.5f))
-        }
-        return row
-    }
-
-    /// 大写键（微信输入法 icon_keys_outlinedcapslock 同款）：点一次切大写，再点切回。
-    private fun shiftKey(weight: Float): TextView = funcKey("⇧", weight) {
-        shiftMode = !shiftMode
-        rebuildKeys()
-    }.apply {
-        // 大写态高亮（微信输入法 capslock 按下变色）
-        if (shiftMode) {
-            setTextColor(palette.accent)
-            background = keyBackground(palette.keyFunc, palette.funcPressed)
-        }
-    }
-
-    /// 退格键：轻触删一字，长按连续删除，上滑清空整个输入。
-    private fun backspaceKey(weight: Float): TextView = TextView(this).apply {
-        text = "⌫"
-        gravity = Gravity.CENTER
-        textSize = 19f
-        setTextColor(palette.funcText)
-        background = keyBackground(palette.keyFunc, palette.funcPressed)
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
-            .apply { setMargins(dp(2.5f), dp(3.5f), dp(2.5f), dp(3.5f)) }
-        var downY = 0f
-        var cleared = false
-        var repeated = false
-        val repeat = object : Runnable {
-            override fun run() {
-                onBackspace()
-                repeated = true
-                repeatHandler.postDelayed(this, 55)
-            }
-        }
-        setOnTouchListener { _, ev ->
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    isPressed = true
-                    downY = ev.y
-                    cleared = false
-                    repeated = false
-                    repeatHandler.postDelayed(repeat, 400)
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (!cleared && downY - ev.y > dp(36f)) {
-                        cleared = true
-                        repeatHandler.removeCallbacks(repeat)
-                        onClearAll()
-                    }
-                    true
-                }
-                MotionEvent.ACTION_UP -> {
-                    isPressed = false
-                    repeatHandler.removeCallbacks(repeat)
-                    if (!cleared && !repeated) onBackspace()
-                    performClick()
-                    true
-                }
-                MotionEvent.ACTION_CANCEL -> {
-                    isPressed = false
-                    repeatHandler.removeCallbacks(repeat)
-                    true
-                }
-                else -> false
+            WetypeKeyboardView.WetypeAction.Clear -> {
+                if (engineReady) RimeBridge.nativeReset()
+                currentInputConnection?.finishComposingText()
+                updateCandidates("", emptyList(), 0)
             }
         }
     }
-
-    private fun onClearAll() {
-        val ic = currentInputConnection ?: return
-        ic.beginBatchEdit()
-        if (engineReady) RimeBridge.nativeReset()
-        ic.finishComposingText()
-        ic.deleteSurroundingText(50000, 50000)
-        ic.endBatchEdit()
-        updateCandidates("", emptyList(), 0)
-        syncBar?.visibility = View.GONE
-    }
-
-    private fun spacer(weight: Float): View = View(this).apply {
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
-    }
-
-    /** 表情页（微信输入法同款：表情网格 + 底部功能行，点表情直接上屏） */
-    private fun buildEmojiPage() {
-        listOf(
-            "😀😁😂🤣😊😍😘😜🤪🤔",
-            "👍👎🙏👏🤝💪🔥❤️💔😭",
-            "🎉🎂🎁⭐🌟☀️🌙🌈🍀🎯",
-            "🐶🐱🐼🐯🦊🐸🐵🐷🐮🐔",
-            "🚗🚕🚀✈️🏠💰📱💻🎧🎮",
-            "✅❌❗❓➕➖➗✖️💯🔔",
-        ).forEach { line ->
-            val row = rowLayout()
-            line.forEach { e ->
-                val emoji = e.toString()
-                row.addView(charKey(emoji, 1f) {
-                    currentInputConnection?.commitText(emoji, 1)
-                }.apply {
-                    textSize = 22f
-                    // 表情不需要放大气泡：覆盖触摸为纯点击
-                    setOnTouchListener(null)
-                    setOnClickListener { currentInputConnection?.commitText(emoji, 1) }
-                })
-            }
-            keyArea.addView(row)
-        }
-        keyArea.addView(buildBottomRow())
-    }
-
-    private fun buildBottomRow(): LinearLayout {
-        val row = rowLayout()
-        // 微信输入法 S2 真实底部功能行（反编译 JSON 实证）：
-        //   123 | 表情 | ， | 换行 | 空格(最长) | 中/英
-        // 宽度比 92:92:92:92:103:92
-        row.addView(funcKey(if (symbolMode || emojiMode) "返回" else "123", 1f) {
-            if (symbolMode || emojiMode) {
-                symbolMode = false
-                emojiMode = false
-            } else {
-                // 微信输入法 icon_keys_123 同款：主键盘点 123 切数字/符号页
-                symbolMode = true
-            }
-            shiftMode = false
-            rebuildKeys()
-        })
-        row.addView(funcKey("☺", 1f) {
-            symbolMode = false
-            emojiMode = !emojiMode
-            shiftMode = false
-            rebuildKeys()
-        })
-        row.addView(funcKey("，", 1f) { onPunct("，") })
-        row.addView(funcKey("换行", 1f) { onEnter() })
-        row.addView(charKey("空格", 1.12f) { onSpace() }.apply {
-            // 空格用字符键的底色更醒目，但不需要气泡：覆盖触摸为纯点击
-            setOnTouchListener(null)
-            setOnClickListener { onSpace() }
-        })
-        langKey = funcKey(langLabel(), 1f) { onToggleLang() }
-        row.addView(langKey)
-        return row
-    }
-
     private fun langLabel(): String =
         if (engineReady && RimeBridge.nativeIsAscii()) "英" else "中"
 
@@ -1295,7 +1082,7 @@ class ShurufaImeService : InputMethodService() {
         if (!engineReady) return
         RimeBridge.nativeToggleAscii()
         RimeBridge.nativeReset()
-        if (::keyArea.isInitialized && !emojiMode && !symbolMode) rebuildKeys() // 刷新中英键帽
+        if (::keyArea.isInitialized && !symbolMode) rebuildKeys() // 刷新中英键帽
         sync()
     }
 
@@ -1380,9 +1167,25 @@ class ShurufaImeService : InputMethodService() {
 
     private fun updateCandidates(preedit: String, candidates: List<String>, highlighted: Int) {
         if (!::candidateBar.isInitialized) return
-        preeditView.text = preedit
-        preeditView.visibility = if (preedit.isEmpty()) View.GONE else View.VISIBLE
+        clearStickerSuggestions()
         candidateBar.removeAllViews()
+        // 拼音预编辑与候选共用一行，输入时不会额外抬高整个键盘。
+        if (preedit.isNotEmpty()) {
+            candidateBar.addView(
+                TextView(this).apply {
+                    text = preedit.take(12).let { if (preedit.length > it.length) "$it…" else it }
+                    textSize = 13f
+                    gravity = Gravity.CENTER
+                    setTextColor(palette.preedit)
+                    setPadding(dp(10f), 0, dp(8f), 0)
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
+        stickerInsertIndex = if (preedit.isEmpty()) 0 else 1
         candidates.forEachIndexed { i, text ->
             val item = TextView(this).apply {
                 this.text = text
@@ -1401,6 +1204,158 @@ class ShurufaImeService : InputMethodService() {
                 )
             )
         }
+        scheduleStickerSuggestions(preedit, candidates)
+    }
+
+    /** 立即撤掉旧横幅，并让已排队或后台运行的旧查询失效。 */
+    private fun clearStickerSuggestions() {
+        pendingStickerSearch?.let(stickerSearchHandler::removeCallbacks)
+        pendingStickerSearch = null
+        stickerSuggestionState.invalidate()
+        if (::candidateBar.isInitialized) {
+            stickerBannerViews.forEach(candidateBar::removeView)
+        }
+        stickerBannerViews = emptyList()
+    }
+
+    /** 输入停顿后才在线程中检索；主线程只负责确认请求仍有效并插入已得到的结果。 */
+    private fun scheduleStickerSuggestions(preedit: String, candidates: List<String>) {
+        val request = stickerSuggestionState.replace(preedit, candidates) ?: return
+        if (!chineseStickerCatalog.isLoaded) return
+        val runnable = Runnable {
+            pendingStickerSearch = null
+            thread {
+                val stickers = chineseStickerCatalog.search(request.terms, StickerSuggestionPolicy.visibleLimit)
+                stickerSearchHandler.post {
+                    if (!::candidateBar.isInitialized || !stickerSuggestionState.isCurrent(request)) return@post
+                    val views = stickers.map(::buildStickerCandidate)
+                    stickerBannerViews = views
+                    views.forEachIndexed { offset, view ->
+                        candidateBar.addView(
+                            view,
+                            (stickerInsertIndex + offset).coerceAtMost(candidateBar.childCount),
+                            LinearLayout.LayoutParams(candidateItemSize(), LinearLayout.LayoutParams.MATCH_PARENT),
+                        )
+                    }
+                }
+            }
+        }
+        pendingStickerSearch = runnable
+        stickerSearchHandler.postDelayed(runnable, StickerSuggestionPolicy.delayMillis)
+    }
+
+    private fun buildStickerCandidate(sticker: ChineseStickerSearch.Entry): ImageView = ImageView(this).apply {
+        contentDescription = "表情包：${sticker.name}"
+        scaleType = ImageView.ScaleType.CENTER_CROP
+        background = keyBackground(palette.key, palette.keyPressed)
+        setPadding(dp(3f), dp(3f), dp(3f), dp(3f))
+        setOnClickListener {
+            clearStickerSuggestions()
+            downloadAndSendSticker(sticker)
+        }
+        stickerIo.execute {
+            val file = downloadStickerToCache(sticker)
+            val bitmap = runCatching { file?.let { BitmapFactory.decodeFile(it.absolutePath) } }.getOrNull()
+            if (bitmap != null) syncPoll.post { setImageBitmap(bitmap) }
+        }
+    }
+
+    private fun downloadAndSendSticker(sticker: ChineseStickerSearch.Entry) {
+        Toast.makeText(this, "正在发送表情包…", Toast.LENGTH_SHORT).show()
+        stickerIo.execute {
+            val file = downloadStickerToCache(sticker)
+            syncPoll.post {
+                val f = file
+                if (f == null || !f.isFile || !commitAttachment(f, imageMimeType(f.name))) {
+                    showAttachmentError("表情包发送失败")
+                }
+            }
+        }
+    }
+
+    /**
+     * 下载贴纸到缓存：带连接/读超时与字节上限，经临时文件原子改名落盘。
+     * 失败或超限返回 null。可并发调用（由受限线程池调度）。
+     */
+    private fun downloadStickerToCache(sticker: ChineseStickerSearch.Entry): File? {
+        val file = stickerCacheFile(sticker)
+        if (file.isFile && file.length() in 1..MAX_STICKER_BYTES) return file
+        return try {
+            file.parentFile?.mkdirs()
+            val conn = URL(sticker.url).openConnection() as HttpURLConnection
+            try {
+                conn.connectTimeout = 10_000
+                conn.readTimeout = 15_000
+                conn.setRequestProperty("Accept", "image/*")
+                conn.instanceFollowRedirects = true
+                val input = conn.inputStream
+                val tmp = File(file.parentFile, "${file.name}.part")
+                var total = 0L
+                try {
+                    // 输出流只打开一次；多轮复用，避免每轮重开截断文件
+                    tmp.outputStream().use { out ->
+                        val buf = ByteArray(16 * 1024)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            total += n
+                            if (total > MAX_STICKER_BYTES) return null
+                            out.write(buf, 0, n)
+                        }
+                    }
+                    if (total in 1..MAX_STICKER_BYTES && tmp.renameTo(file)) {
+                        file
+                    } else {
+                        tmp.delete()
+                        null
+                    }
+                } finally {
+                    input.close()
+                }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w("shurufa", "贴纸下载失败：${sticker.name}", e)
+            file.delete()
+            null
+        }
+    }
+
+    /** 按目标边长下采样解码，避免全分辨率大图在主线程 OOM/卡顿。 */
+    private fun decodeSampledBitmap(data: ByteArray, target: Int): Bitmap? {
+        if (data.isEmpty()) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+        var sample = 1
+        val w = bounds.outWidth
+        val h = bounds.outHeight
+        while ((w / (sample * 2)) >= target || (h / (sample * 2)) >= target) {
+            sample *= 2
+        }
+        val opts = BitmapFactory.Options().apply {
+            inJustDecodeBounds = false
+            inSampleSize = sample
+        }
+        return try {
+            BitmapFactory.decodeByteArray(data, 0, data.size, opts)
+        } catch (e: OutOfMemoryError) {
+            // 极少见：极端内存下进一步放大采样
+            opts.inSampleSize = sample * 2
+            BitmapFactory.decodeByteArray(data, 0, data.size, opts)
+        }
+    }
+
+    private fun stickerCacheFile(sticker: ChineseStickerSearch.Entry): File {
+        val extension = sticker.url.substringAfterLast('.', "jpg").substringBefore('?').take(5)
+        return File(cacheDir, "stickers/${sticker.url.hashCode().toUInt().toString(16)}.$extension")
+    }
+
+    private fun imageMimeType(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "png" -> "image/png"
+        "webp" -> "image/webp"
+        "gif" -> "image/gif"
+        else -> "image/jpeg"
     }
 
     override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
@@ -1410,8 +1365,8 @@ class ShurufaImeService : InputMethodService() {
             setInputView(onCreateInputView())
         }
         ensureEngine()
+        chineseStickerCatalog.load { syncPoll.post { sync() } }
         if (engineReady) RimeBridge.nativeReset()
-        langKey?.text = langLabel()
         updateCandidates("", emptyList(), 0)
         historyPanel?.visibility = View.GONE
         keyArea.visibility = View.VISIBLE
@@ -1422,8 +1377,15 @@ class ShurufaImeService : InputMethodService() {
     override fun onFinishInput() {
         super.onFinishInput()
         if (engineReady) RimeBridge.nativeReset()
+        clearStickerSuggestions()
         syncPoll.removeCallbacksAndMessages(null)
-        hideBubble()
+    }
+
+    override fun onDestroy() {
+        clearStickerSuggestions()
+        stickerSearchHandler.removeCallbacksAndMessages(null)
+        stickerIo.shutdownNow()
+        super.onDestroy()
     }
 
     private fun startInboxPolling() {

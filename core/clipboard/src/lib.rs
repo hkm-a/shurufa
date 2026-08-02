@@ -12,8 +12,11 @@ use sha2::{Digest, Sha256};
 
 /// 单条文本上限（字节），超过则拒绝入库
 pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
-/// 单条图片上限（字节）
-pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+/// 单条桌面图片上限（字节）。
+///
+/// 截图历史存原始 BMP；2560×1600 的 24 位截图约 12 MiB，因此不能沿用
+/// 移动端同步帧的 8 MiB 限额。同步层会对超限图片生成缩小的 PNG 副本。
+pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// 条目类别。数据库中以整数存储，顺序不可变更。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

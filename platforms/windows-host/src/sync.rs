@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use sync_core::{ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService};
+use sync_core::{ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService, MAX_CLIP_IMAGE_BYTES};
 
 /// 守护进程内广播的内容：文本或图片。
 enum Broadcast {
@@ -57,7 +57,10 @@ pub fn broadcast_text(text: &str) {
 /// 监听器捕获到本机图片时调用；BMP 转 PNG 后推送已配对设备。
 pub fn broadcast_image(bmp: &[u8]) {
     if let Some(tx) = CLIP_TX.get() {
-        if let Some(png) = bmp_to_png(bmp) {
+        if let Some((png, resized)) = bmp_to_sync_png(bmp) {
+            if resized {
+                crate::log_line("图片超过手机同步帧上限，已生成缩小副本发送");
+            }
             let _ = tx.send(Broadcast::Image(png));
         }
     }
@@ -113,12 +116,35 @@ fn received_file_path(name: &str) -> Option<PathBuf> {
     Some(dir.join(format!("{stamp}_{name}")))
 }
 
-/// BMP 字节转 PNG（跨平台传输格式）；失败返回 None。
-fn bmp_to_png(bmp: &[u8]) -> Option<Vec<u8>> {
-    let img = image::load_from_memory_with_format(bmp, image::ImageFormat::Bmp).ok()?;
-    let mut out = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut out, image::ImageFormat::Png).ok()?;
-    Some(out.into_inner())
+/// BMP 转成可通过手机协议帧的 PNG。
+///
+/// 桌面历史保留完整截图；只有同步副本会按 3/4 比例逐轮缩小，直到落入
+/// 协议上限。这避免高分屏截图既无法入历史又被静默丢弃。
+fn bmp_to_sync_png(bmp: &[u8]) -> Option<(Vec<u8>, bool)> {
+    let mut image = image::load_from_memory_with_format(bmp, image::ImageFormat::Bmp).ok()?;
+    let mut resized = false;
+    loop {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut out, image::ImageFormat::Png).ok()?;
+        let png = out.into_inner();
+        if png.len() <= MAX_CLIP_IMAGE_BYTES {
+            return Some((png, resized));
+        }
+        let (next_width, next_height) = next_sync_dimensions(image.width(), image.height())?;
+        image = image.resize(
+            next_width,
+            next_height,
+            image::imageops::FilterType::Triangle,
+        );
+        resized = true;
+    }
+}
+
+fn next_sync_dimensions(width: u32, height: u32) -> Option<(u32, u32)> {
+    if width <= 1 || height <= 1 {
+        return None;
+    }
+    Some(((width * 3 / 4).max(1), (height * 3 / 4).max(1)))
 }
 
 /// PNG 字节转自包含 BMP（供 clipboard-store 存储，与本机采集格式一致）。
@@ -127,6 +153,18 @@ fn png_to_bmp(png: &[u8]) -> Option<Vec<u8>> {
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageFormat::Bmp).ok()?;
     Some(out.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_sync_dimensions;
+
+    #[test]
+    fn 同步缩放按比例递减且不会归零() {
+        assert_eq!(next_sync_dimensions(2560, 1600), Some((1920, 1200)));
+        assert_eq!(next_sync_dimensions(2, 2), Some((1, 1)));
+        assert_eq!(next_sync_dimensions(1, 2), None);
+    }
 }
 
 /// 在独立线程启动同步服务（run 模式调用一次）。
@@ -179,77 +217,83 @@ pub fn start_daemon() {
                                 service.send_file(&name, &mime_type, &data)
                             }
                         },
-                        Some(incoming) = in_rx.recv() => match incoming {
-                            Incoming::Clip { from_name, text } => {
-                                let store = crate::open_store();
-                                match store.insert_text(&text, &format!("同步·{from_name}")) {
-                                    Ok(_) => {
-                                        if crate::listener::write_remote_text(text.clone()) {
-                                            crate::log_line(&format!(
-                                            "收到 {from_name} 的剪贴板（{} 字符），已写入系统剪贴板",
-                                            text.chars().count()
-                                            ));
-                                        } else {
-                                            crate::log_line(&format!(
-                                                "收到 {from_name} 的文本，但写入系统剪贴板失败"
-                                            ));
-                                        }
-                                    }
-                                    Err(e) => crate::log_line(&format!("同步条目入库失败：{e}")),
-                                }
-                            }
-                            Incoming::Image { from_name, png } => match png_to_bmp(&png) {
-                                Some(bmp) => {
+                        Some(incoming) = in_rx.recv() => {
+                            // 入库/落盘/图片转码/写系统剪贴板均为阻塞或 CPU 密集
+                            // 操作，移到 spawn_blocking，避免占用 tokio worker 线程。
+                            tokio::task::spawn_blocking(move || match incoming {
+                                Incoming::Clip { from_name, text } => {
                                     let store = crate::open_store();
-                                    match store.insert_image(&bmp, &format!("同步·{from_name}")) {
+                                    match store.insert_text(&text, &format!("同步·{from_name}")) {
                                         Ok(_) => {
-                                            if crate::listener::write_remote_image(bmp.clone()) {
+                                            if crate::listener::write_remote_text(text.clone()) {
                                                 crate::log_line(&format!(
-                                                "收到 {from_name} 的图片（{} 字节 PNG），已写入系统剪贴板",
-                                                png.len()
+                                                "收到 {from_name} 的剪贴板（{} 字符），已写入系统剪贴板",
+                                                text.chars().count()
                                                 ));
                                             } else {
                                                 crate::log_line(&format!(
-                                                    "收到 {from_name} 的图片，但写入系统剪贴板失败"
+                                                    "收到 {from_name} 的文本，但写入系统剪贴板失败"
                                                 ));
                                             }
                                         }
-                                        Err(e) => crate::log_line(&format!("同步图片入库失败：{e}")),
+                                        Err(e) => crate::log_line(&format!("同步条目入库失败：{e}")),
                                     }
                                 }
-                                None => crate::log_line("收到图片解码失败"),
-                            },
-                            Incoming::File { from_name, name, data, .. } => {
-                                let Some(path) = received_file_path(&name) else {
-                                    crate::log_line("收到文件名无效");
-                                    continue;
-                                };
-                                match std::fs::write(&path, data) {
-                                    Ok(()) => {
+                                Incoming::Image { from_name, png } => match png_to_bmp(&png) {
+                                    Some(bmp) => {
                                         let store = crate::open_store();
-                                        let paths = vec![path.to_string_lossy().into_owned()];
-                                        match store.insert_files(&paths, &format!("同步·{from_name}")) {
+                                        match store.insert_image(&bmp, &format!("同步·{from_name}")) {
                                             Ok(_) => {
-                                                if crate::listener::write_remote_files(
-                                                    path.to_string_lossy().into_owned(),
-                                                ) {
+                                                if crate::listener::write_remote_image(bmp.clone()) {
                                                     crate::log_line(&format!(
-                                                    "收到 {from_name} 的文件：{name}，已写入系统剪贴板"
+                                                    "收到 {from_name} 的图片（{} 字节 PNG），已写入系统剪贴板",
+                                                    png.len()
                                                     ));
                                                 } else {
                                                     crate::log_line(&format!(
-                                                        "收到 {from_name} 的文件，但写入系统剪贴板失败"
+                                                        "收到 {from_name} 的图片，但写入系统剪贴板失败"
                                                     ));
                                                 }
                                             }
-                                            Err(e) => crate::log_line(&format!("同步文件入库失败：{e}")),
+                                            Err(e) => crate::log_line(&format!("同步图片入库失败：{e}")),
                                         }
                                     }
-                                    Err(e) => crate::log_line(&format!("收到文件落盘失败：{e}")),
+                                    None => crate::log_line("收到图片解码失败"),
+                                },
+                                Incoming::File { from_name, name, data, .. } => {
+                                    let Some(path) = received_file_path(&name) else {
+                                        crate::log_line("收到文件名无效");
+                                        return;
+                                    };
+                                    match std::fs::write(&path, data) {
+                                        Ok(()) => {
+                                            let store = crate::open_store();
+                                            let paths = vec![path.to_string_lossy().into_owned()];
+                                            match store.insert_files(&paths, &format!("同步·{from_name}")) {
+                                                Ok(_) => {
+                                                    if crate::listener::write_remote_files(
+                                                        path.to_string_lossy().into_owned(),
+                                                    ) {
+                                                        crate::log_line(&format!(
+                                                        "收到 {from_name} 的文件：{name}，已写入系统剪贴板"
+                                                        ));
+                                                    } else {
+                                                        crate::log_line(&format!(
+                                                            "收到 {from_name} 的文件，但写入系统剪贴板失败"
+                                                        ));
+                                                    }
+                                                }
+                                                Err(e) => crate::log_line(&format!("同步文件入库失败：{e}")),
+                                            }
+                                        }
+                                        Err(e) => crate::log_line(&format!("收到文件落盘失败：{e}")),
+                                    }
                                 }
-                            }
-                        },
-                        else => break,
+                            })
+                            .await
+                            .ok(); // 处理任务 panic 时忽略该条，不影响后续
+                        }
+                                                else => break,
                     }
                 }
             });

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <!-- 图片上屏经 FileProvider 从 cache/shared 暴露临时 content:// URI -->
+    <!-- 图片与候选表情包均经 FileProvider 暴露临时 content:// URI。 -->
     <cache-path name="shared" path="shared/" />
+    <cache-path name="stickers" path="stickers/" />
     <files-path name="received" path="sync/received/" />
 </paths>

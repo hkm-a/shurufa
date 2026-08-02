@@ -1,0 +1,92 @@
+# Rime schema
+# encoding: utf-8
+
+# 雾凇核心词典的轻量方案：只保留常用拼音能力，避免依赖 Lua 扩展。
+schema:
+  schema_id: rime_ice
+  name: 雾凇拼音
+  version: "2026.08.01"
+  author:
+    - Dvel（雾凇拼音词典）
+    - Shurufa
+  description: |
+    雾凇拼音核心词典，启用本地首选词学习、整句与长词补全。
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 西文 ]
+  - name: full_shape
+    states: [ 半角, 全角 ]
+  - name: ascii_punct
+    states: [ 。，, ．， ]
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+
+translator:
+  dictionary: rime_ice
+  # Rime 本地 userdb 记录用户实际选择，逐渐提升首选词。
+  enable_user_dict: true
+  # 使用原生整句造词，提高连续拼音时的长词和短句命中率。
+  enable_sentence: true
+  max_sentence_length: 8
+  # 完整输入较长拼音时直接提供完整词条，减少逐字选词。
+  enable_word_completion: true
+  initial_quality: 1.2
+  preedit_format:
+    - xform/([nl])v/$1ü/
+    - xform/([nl])ue/$1üe/
+    - xform/([jqxy])v/$1u/
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+  delimiter: " '"
+  algebra:
+    # 仅保留用户选择的 n/l 和前后鼻音模糊音，避免候选范围过度发散。
+    - derive/^l/n/
+    - derive/^n/l/
+    - derive/ang$/an/
+    - derive/an$/ang/
+    - derive/eng$/en/
+    - derive/en$/eng/
+    - derive/in$/ing/
+    - derive/ing$/in/
+    - erase/^hm$/
+    - erase/^m$/
+    - erase/^n$/
+    - erase/^ng$/
+    - abbrev/^([a-z]).+$/$1/
+    - abbrev/^([zcs]h).+$/$1/
+    - derive/^([nl])ve$/$1ue/
+    - derive/^([jqxy])u/$1v/
+    - derive/^([nl])ue$/$1ve/
+    - derive/^([jqxy])v/$1u/
+
+punctuator:
+  import_preset: symbols
+
+key_binder:
+  import_preset: default
+
+recognizer:
+  import_preset: default
+  patterns:
+    punct: "^/([0-9]+[a-z]*|[a-z]+)$"

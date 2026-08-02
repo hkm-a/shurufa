@@ -98,6 +98,17 @@ pub(crate) fn set_clipboard_image(bmp: &[u8]) -> Result<()> {
     set_clipboard_image_with_owner(bmp, None)
 }
 
+/// 写入新产生的图片。它刻意不带历史回填私有标记，让常驻监听器把图片
+/// 当作新截图入库并同步到已配对手机。
+pub(crate) fn set_clipboard_new_image(bmp: &[u8]) -> Result<()> {
+    let png_path = export_png(bmp)?;
+    let hdrop = hdrop_bytes(&png_path.to_string_lossy());
+    with_open_clipboard(None, || unsafe {
+        set_clipboard_bytes(CF_DIB.0 as u32, &bmp[14..])?;
+        set_clipboard_bytes(CF_HDROP.0 as u32, &hdrop)
+    })
+}
+
 pub(crate) fn set_clipboard_image_with_owner(bmp: &[u8], owner: Option<HWND>) -> Result<()> {
     let png_path = export_png(bmp)?;
     let hdrop = hdrop_bytes(&png_path.to_string_lossy());

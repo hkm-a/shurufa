@@ -34,7 +34,7 @@ android {
     }
 
     // 方案数据以仓库根 schemas/ 为唯一来源，构建期拷入 assets，
-    // 叠加 Android 专属 default.yaml（只启用袖珍拼音）
+    // 叠加 Android 专属 default.yaml（只启用雾凇拼音）。
     sourceSets {
         getByName("main") {
             assets.srcDir(layout.buildDirectory.dir("generated/schemaAssets"))
@@ -46,10 +46,12 @@ val syncSchemas = tasks.register<Copy>("syncSchemas") {
     val repoRoot = rootDir.parentFile.parentFile
     from(File(repoRoot, "schemas")) {
         include(
-            "pinyin_simp.schema.yaml",
-            "pinyin_simp.dict.yaml",
-            "stroke.schema.yaml",
-            "stroke.dict.yaml",
+            "rime_ice.schema.yaml",
+            "rime_ice.dict.yaml",
+            "cn_dicts/8105.dict.yaml",
+            "cn_dicts/base.dict.yaml",
+            "cn_dicts/ext.dict.yaml",
+            "cn_dicts/others.dict.yaml",
             "punctuation.yaml",
             "symbols.yaml",
             "key_bindings.yaml",

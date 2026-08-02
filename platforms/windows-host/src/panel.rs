@@ -318,12 +318,19 @@ fn on_key(hwnd: HWND, vk: VIRTUAL_KEY) {
                 let index = (code - 0x31) as usize;
                 (index < count).then_some(Action::Commit(index))
             }
+            // 对图片历史，P 是唯一的贴图入口；不额外增加相册或第二个面板。
+            VIRTUAL_KEY(0x50)
+                if state.entries.get(state.selected).map(|e| e.kind) == Some(ClipKind::Image) =>
+            {
+                Some(Action::Stick(state.selected))
+            }
             _ => None,
         }
     });
     match handled {
         Some(Action::Close) => hide(),
         Some(Action::Commit(i)) => commit(i),
+        Some(Action::Stick(i)) => stick(i),
         Some(Action::Repaint) => unsafe {
             let _ = InvalidateRect(Some(hwnd), None, true);
         },
@@ -334,7 +341,28 @@ fn on_key(hwnd: HWND, vk: VIRTUAL_KEY) {
 enum Action {
     Close,
     Commit(usize),
+    Stick(usize),
     Repaint,
+}
+
+fn stick(index: usize) {
+    let entry = PANEL.with_borrow(|slot| slot.as_ref()?.entries.get(index).cloned());
+    let Some(entry) = entry else {
+        return;
+    };
+    hide();
+    let Ok(exe) = std::env::current_exe() else {
+        crate::log_line("贴图启动失败：无法定位 shurufa-host");
+        return;
+    };
+    match std::process::Command::new(exe)
+        .arg("stick")
+        .arg(entry.id.to_string())
+        .spawn()
+    {
+        Ok(_) => crate::log_line(&format!("已从历史条目 {} 启动原生贴图", entry.id)),
+        Err(e) => crate::log_line(&format!("贴图启动失败：{e}")),
+    }
 }
 
 unsafe fn make_font(height: i32, weight: i32) -> HFONT {
@@ -467,7 +495,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         SetTextColor(hdc, COLORREF(COLOR_DIM));
         draw_line(
             hdc,
-            "回车/数字 粘贴 · ↑↓ 选择 · Esc 关闭",
+            "回车/数字 粘贴 · 图片按 P 贴图 · Esc 关闭",
             padding,
             footer_top,
             width - padding * 2,

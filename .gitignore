@@ -16,3 +16,6 @@
 /platforms/android/app/build/
 /platforms/android/app/src/main/jniLibs/
 /prebuilt-tree.json
+
+# 实验性构建目录（CARGO_TARGET_DIR 别名产物）
+/target-native-capture/
