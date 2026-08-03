@@ -199,7 +199,7 @@ backup_cleanup_warning:
   MessageBox MB_ICONEXCLAMATION "安装已完成，但旧备份仍被系统占用：$PreviousDirectory$\r$\n重启 Windows 后该备份会自动清理。"
 backup_cleanup_done:
   Exec '"$SYSDIR\ctfmon.exe"'
-  Exec '"$INSTDIR\shurufa-host.exe" supervise'
+  ExecShell "open" "$INSTDIR\shurufa-host.exe" "supervise" SW_HIDE
   MessageBox MB_OK "安装完成。Shurufa 拼音已设为默认输入法。"
   Goto install_done
 
