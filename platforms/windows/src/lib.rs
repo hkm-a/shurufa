@@ -8,9 +8,11 @@
 mod candidate_window;
 mod composition;
 mod factory;
+mod ipc_client;
 mod keys;
 mod registry;
 mod service;
+mod skin;
 
 use std::ffi::c_void;
 use std::path::PathBuf;
@@ -18,13 +20,9 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::OnceLock;
 
 use windows::core::{IUnknown, Interface, GUID, HRESULT};
-use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, E_FAIL, HINSTANCE, S_FALSE, S_OK,
-};
+use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_FAIL, HINSTANCE, S_FALSE, S_OK};
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
-
-use ime_bridge::Engine;
 
 /// 文本服务 COM 类标识
 pub const CLSID_SHURUFA: GUID = GUID::from_u128(0x8a5c1b49_3d2e_4f7a_9c61_0b7e2d5a9f13);
@@ -34,7 +32,6 @@ pub const GUID_PROFILE: GUID = GUID::from_u128(0xc4e9d2a7_6b31_4a58_8f0d_1e9a7c3
 pub const IME_NAME: &str = "Shurufa 拼音";
 
 static DLL_INSTANCE: AtomicIsize = AtomicIsize::new(0);
-static ENGINE: OnceLock<Result<Engine, String>> = OnceLock::new();
 
 /// 当前 DLL 的完整路径。
 pub fn dll_path() -> PathBuf {
@@ -44,67 +41,8 @@ pub fn dll_path() -> PathBuf {
     PathBuf::from(String::from_utf16_lossy(&buf[..len]))
 }
 
-/// 共享数据目录：自 DLL 路径向上寻找 schemas 目录（开发期布局），
-/// 找不到则回落到 %APPDATA%\shurufa\schemas（安装期布局）。
-fn shared_data_dir() -> PathBuf {
-    let dll = dll_path();
-    for dir in dll.ancestors() {
-        let candidate = dir.join("schemas");
-        if candidate.join("default.yaml").exists() {
-            return candidate;
-        }
-    }
-    user_config_root().join("schemas")
-}
-
-fn user_config_root() -> PathBuf {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("shurufa")
-}
-
-/// 引擎就绪状态：TSF 回调绝不允许被引擎初始化阻塞。
-pub enum EngineState {
-    Ready(&'static Engine),
-    /// 后台初始化进行中，按键应直通
-    Pending,
-    Failed,
-}
-
-static ENGINE_INIT_STARTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// 非阻塞获取引擎：首次调用启动后台初始化线程（含词典部署，
-/// 可能耗时），完成前返回 Pending。曾冻结系统输入进程导致输入法
-/// 被系统从键盘列表移除，因此禁止在 TSF 回调线程上同步初始化。
-pub fn try_engine() -> EngineState {
-    if let Some(result) = ENGINE.get() {
-        return match result {
-            Ok(engine) => EngineState::Ready(engine),
-            Err(_) => EngineState::Failed,
-        };
-    }
-    if !ENGINE_INIT_STARTED.swap(true, Ordering::SeqCst) {
-        std::thread::spawn(|| {
-            ENGINE.get_or_init(|| {
-                let shared = shared_data_dir();
-                debug_log(&format!("引擎后台初始化开始：shared={}", shared.display()));
-                let started = std::time::Instant::now();
-                let r = Engine::init(&shared, &user_config_root().join("rime"));
-                match &r {
-                    Ok(_) => debug_log(&format!(
-                        "引擎就绪，耗时 {} ms",
-                        started.elapsed().as_millis()
-                    )),
-                    Err(e) => debug_log(&format!("引擎初始化失败：{e}")),
-                }
-                r
-            });
-        });
-    }
-    EngineState::Pending
-}
+/// 引擎已迁出本进程：由独立算法服务（shurufa-algo）提供，本 DLL 只作 IPC 客户端。
+/// （见 core/ime-ipc 与 platforms/windows-algo）
 
 /// 轻量排障日志：写入 %TEMP%\shurufa-tsf.log（AppContainer 有各自的
 /// TEMP，均可写）。失败静默——日志不能反过来影响输入法。
@@ -119,7 +57,11 @@ pub fn debug_log(msg: &str) {
             .unwrap_or_else(|| "?".into())
     });
     let path = std::env::temp_dir().join("shurufa-tsf.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

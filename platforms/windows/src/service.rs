@@ -1,33 +1,32 @@
 //! TextService：TSF 文本输入处理器主体。
 //!
-//! 职责：激活时挂接键盘事件 sink 并建立 librime 会话；每个按键翻译为
-//! keysym 喂给引擎，随后把引擎状态（上屏文本 / 预编辑串 / 候选）
-//! 同步回文档与候选窗。
+//! 职责：激活时挂接键盘事件 sink，把每个按键翻译为 keysym 经 IPC 客户端转发给
+//! 独立算法服务（shurufa-algo），随后把引擎状态（上屏文本 / 预编辑串 / 候选）
+//! 同步回文档与候选窗。引擎不在本进程内 —— 用户词库锁冲突由此消除。
 
 use std::cell::RefCell;
 
 use windows::core::{implement, Interface, Ref, Result, BOOL, GUID};
-use windows_core::IUnknownImpl;
 use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::UI::TextServices::{
-    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
-    ITfContextComposition, ITfInsertAtSelection, ITfKeyEventSink, ITfKeyEventSink_Impl,
-    ITfKeystrokeMgr, ITfTextInputProcessorEx,
-    ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl, ITfThreadMgr,
-    INSERT_TEXT_AT_SELECTION_FLAGS, TF_ANCHOR_END, TF_IAS_QUERYONLY, TF_SELECTION,
-    TF_SELECTIONSTYLE, TF_AE_NONE, TF_ST_CORRECTION,
+    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
+    ITfInsertAtSelection, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr,
+    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
+    ITfThreadMgr, INSERT_TEXT_AT_SELECTION_FLAGS, TF_AE_NONE, TF_ANCHOR_END, TF_IAS_QUERYONLY,
+    TF_SELECTION, TF_SELECTIONSTYLE, TF_ST_CORRECTION,
 };
-
-use ime_bridge::Session;
+use windows_core::IUnknownImpl;
 
 use crate::candidate_window::CandidateUi;
 use crate::composition::edit_session;
+use crate::ipc_client::ImeClient;
 use crate::keys;
 
 pub struct Inner {
     thread_mgr: Option<ITfThreadMgr>,
     client_id: u32,
-    session: Option<Session<'static>>,
+    /// 经 IPC 的引擎会话客户端（懒连接）。
+    client: ImeClient,
     composition: Option<ITfComposition>,
     ui: CandidateUi,
     /// OnTestKeyDown 已处理的键及其结论，供紧随其后的 OnKeyDown 复用
@@ -47,7 +46,7 @@ impl TextService {
             inner: RefCell::new(Inner {
                 thread_mgr: None,
                 client_id: 0,
-                session: None,
+                client: ImeClient::new(),
                 composition: None,
                 ui: CandidateUi::new(),
                 pending_key: None,
@@ -58,28 +57,6 @@ impl TextService {
 }
 
 impl Inner {
-    /// 懒建引擎会话：激活阶段绝不碰引擎；初始化在后台线程进行，
-    /// 就绪前返回 None，按键直通（临时表现为英文直输）。
-    fn ensure_session(&mut self) -> Option<&Session<'static>> {
-        if self.session.is_none() {
-            match crate::try_engine() {
-                crate::EngineState::Ready(engine) => match engine.create_session() {
-                    Ok(s) => {
-                        crate::debug_log("引擎会话已建立");
-                        self.session = Some(s);
-                    }
-                    Err(e) => {
-                        crate::debug_log(&format!("创建引擎会话失败：{e}"));
-                        return None;
-                    }
-                },
-                crate::EngineState::Pending => return None,
-                crate::EngineState::Failed => return None,
-            }
-        }
-        self.session.as_ref()
-    }
-
     /// 喂键给引擎并同步文档/候选窗；返回该键是否被输入法吃掉。
     fn handle_key(
         &mut self,
@@ -96,22 +73,17 @@ impl Inner {
         let Some(keysym) = keys::vk_to_keysym(wparam.0 as u32, shift) else {
             return false;
         };
-        if self.ensure_session().is_none() {
+        let Some((eaten, commit, ctx)) = self.client.process_key(keysym, modifiers) else {
+            crate::debug_log("引擎 IPC 不可用，按键直通");
             return false;
-        }
-        let session = self.session.as_ref().expect("ensure_session 已保证存在");
+        };
 
-        let eaten = session.process_key(keysym, modifiers);
-
-        // 引擎可能产生上屏文本（如空格确认候选、顶字上屏）
-        let commit = session.commit();
-        let ctx_snapshot = session.context();
         crate::debug_log(&format!(
             "键 vk=0x{:X} keysym=0x{:X} eaten={} commit={:?} preedit={:?}",
-            wparam.0, keysym, eaten, commit, ctx_snapshot.preedit
+            wparam.0, keysym, eaten, commit, ctx.preedit
         ));
 
-        let has_preedit = !ctx_snapshot.preedit.is_empty();
+        let has_preedit = !ctx.preedit.is_empty();
         let client_id = self.client_id;
 
         // 文档更新必须进入编辑会话
@@ -135,7 +107,7 @@ impl Inner {
                         *composition_slot = Some(start_composition(context, ec, sink)?);
                     }
                     if let Some(comp) = composition_slot.as_ref() {
-                        set_composition_text(comp, ec, &ctx_snapshot.preedit)?;
+                        set_composition_text(comp, ec, &ctx.preedit)?;
                     }
                 } else if let Some(comp) = composition_slot.take() {
                     // 引擎已无组合（如 Esc 清空），结束并清除文档中的预编辑
@@ -144,11 +116,11 @@ impl Inner {
                 }
 
                 // 3. 候选窗：跟随组合文本位置
-                if has_preedit && !ctx_snapshot.candidates.is_empty() {
+                if has_preedit && !ctx.candidates.is_empty() {
                     let anchor = composition_slot
                         .as_ref()
                         .and_then(|comp| composition_anchor(context, comp, ec));
-                    ui.show(&ctx_snapshot, anchor);
+                    ui.show(&ctx, anchor);
                 } else {
                     ui.hide();
                 }
@@ -163,10 +135,8 @@ impl Inner {
     }
 
     fn abort_composition(&mut self) {
-        if let Some(session) = self.session.as_ref() {
-            // 清空引擎侧组合状态；文档侧组合由 TSF 生命周期回调负责
-            session.simulate("{Escape}");
-        }
+        // 清空引擎侧组合状态；文档侧组合由 TSF 生命周期回调负责
+        self.client.simulate("{Escape}");
         self.composition = None;
         self.ui.hide();
         self.pending_key = None;
@@ -208,7 +178,11 @@ unsafe fn set_composition_text(comp: &ITfComposition, ec: u32, text: &str) -> Re
     Ok(())
 }
 
-unsafe fn set_selection(context: &ITfContext, ec: u32, range: &windows::Win32::UI::TextServices::ITfRange) -> Result<()> {
+unsafe fn set_selection(
+    context: &ITfContext,
+    ec: u32,
+    range: &windows::Win32::UI::TextServices::ITfRange,
+) -> Result<()> {
     let selection = TF_SELECTION {
         range: std::mem::ManuallyDrop::new(Some(range.clone())),
         style: TF_SELECTIONSTYLE {
@@ -244,7 +218,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
         crate::debug_log("Activate");
         let thread_mgr = ptim.ok()?.clone();
 
-        // 只挂接键盘 sink。引擎初始化推迟到首个按键：激活路径上的任何
+        // 只挂接键盘 sink。引擎/服务连接推迟到首个按键：激活路径上的任何
         // 失败都会让 TSF 禁用本输入法，代价过高。
         let key_sink: ITfKeyEventSink = self.to_interface();
         let keystroke_mgr: ITfKeystrokeMgr = thread_mgr.cast()?;
@@ -253,7 +227,6 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
         let mut inner = self.inner.borrow_mut();
         inner.thread_mgr = Some(thread_mgr);
         inner.client_id = tid;
-        inner.session = None;
         Ok(())
     }
 
@@ -268,7 +241,6 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 }
             }
         }
-        inner.session = None;
         inner.ui.destroy();
         Ok(())
     }
@@ -304,12 +276,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         Ok(eaten.into())
     }
 
-    fn OnKeyDown(
-        &self,
-        pic: Ref<'_, ITfContext>,
-        wparam: WPARAM,
-        _lparam: LPARAM,
-    ) -> Result<BOOL> {
+    fn OnKeyDown(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
         let mut inner = self.inner.borrow_mut();
         if let Some((vk, eaten)) = inner.pending_key.take() {
             if vk == wparam.0 as u32 {
@@ -332,12 +299,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         Ok(false.into())
     }
 
-    fn OnKeyUp(
-        &self,
-        _pic: Ref<'_, ITfContext>,
-        _wparam: WPARAM,
-        _lparam: LPARAM,
-    ) -> Result<BOOL> {
+    fn OnKeyUp(&self, _pic: Ref<'_, ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
         Ok(false.into())
     }
 

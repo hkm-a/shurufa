@@ -16,6 +16,8 @@ $avdName = "shurufa_attachment_api35"
 $androidPort = 48632
 $forwardPort = 48633
 $windowsPort = 48634
+$testListenerTitle = "shurufa-background-sync-$windowsPort"
+$testWorkerMutex = "Global\shurufa-background-sync-worker-$windowsPort"
 
 function Find-ExistingPath {
     param([string[]]$Candidates)
@@ -92,6 +94,47 @@ function Write-PeerFile {
 function Get-AndroidLogs {
     param([string]$Adb, [string]$Serial)
     return (& $Adb -s $Serial logcat -d -v time "shurufa-sync:I" "shurufa-sync-test:I" "AndroidRuntime:E" "*:S") -join "`n"
+}
+
+function Request-TestImage {
+    param(
+        [string]$HostExe,
+        [string]$ListenerTitle,
+        [int]$Width,
+        [int]$Height
+    )
+    $oldTitle = $env:SHURUFA_TEST_LISTENER_TITLE
+    try {
+        $env:SHURUFA_TEST_LISTENER_TITLE = $ListenerTitle
+        & $HostExe test-set-image $Width $Height 2>$null | Out-Null
+        return $LASTEXITCODE -eq 0
+    } finally {
+        if ($null -eq $oldTitle) {
+            Remove-Item Env:SHURUFA_TEST_LISTENER_TITLE -ErrorAction SilentlyContinue
+        } else {
+            $env:SHURUFA_TEST_LISTENER_TITLE = $oldTitle
+        }
+    }
+}
+
+function Get-TestImageInspection {
+    param(
+        [string]$HostExe,
+        [string]$ListenerTitle
+    )
+    $oldTitle = $env:SHURUFA_TEST_LISTENER_TITLE
+    try {
+        $env:SHURUFA_TEST_LISTENER_TITLE = $ListenerTitle
+        $inspection = & $HostExe test-inspect-image 2>$null
+        if ($LASTEXITCODE -eq 0) { return $inspection }
+        return $null
+    } finally {
+        if ($null -eq $oldTitle) {
+            Remove-Item Env:SHURUFA_TEST_LISTENER_TITLE -ErrorAction SilentlyContinue
+        } else {
+            $env:SHURUFA_TEST_LISTENER_TITLE = $oldTitle
+        }
+    }
 }
 
 $claudeCache = Join-Path $env:LOCALAPPDATA "Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local"
@@ -199,6 +242,8 @@ try {
         SHURUFA_SYNC_PORT = "$windowsPort"
         SHURUFA_DB_PATH = $hostDb
         SHURUFA_LOG_PATH = $hostLog
+        SHURUFA_TEST_LISTENER_TITLE = $testListenerTitle
+        SHURUFA_TEST_WORKER_MUTEX = $testWorkerMutex
     }
     $oldSyncDir = $env:SHURUFA_SYNC_DIR
     try {
@@ -254,7 +299,8 @@ try {
     Wait-Until {
         $logs = Get-AndroidLogs $adb $serial
         $hostText = if (Test-Path $hostLog) { Get-Content $hostLog -Raw } else { "" }
-        $logs -match "已连接|同步服务" -or $hostText -match "已连接"
+        # 只接受真实连接事件，不能把“请求启动后台同步服务”当作握手完成。
+        $logs -match "已连接" -or $hostText -match "同步：已连接"
     } 30 "Windows 与 Android 三十秒内未建立同步连接"
 
     $imeState = (& $adb -s $serial shell dumpsys input_method) -join "`n"
@@ -264,8 +310,7 @@ try {
 
     # Windows -> Android：真实 CF_DIB 经同步服务到 Android image/* URI 剪贴板。
     Wait-Until {
-        & $hostExe test-set-image 41 29 2>$null | Out-Null
-        $LASTEXITCODE -eq 0
+        Request-TestImage $hostExe $testListenerTitle 41 29
     } 15 "Windows 常驻监听窗口未接受测试图片请求"
     Wait-Until {
         $logs = Get-AndroidLogs $adb $serial
@@ -281,7 +326,7 @@ try {
         (Get-AndroidLogs $adb $serial) -match "检查剪贴板成功 .*解析=image/png.*宽=41 高=29"
     } 15 "Windows 图片到 Android 后不是 41x29 的 image/png"
     $clipboardInspection = Get-AndroidLogs $adb $serial
-    if ($clipboardInspection -notmatch "检查剪贴板成功 URI=content://media/external/images/media/") {
+    if ($clipboardInspection -notmatch "检查剪贴板成功 .*URI=content://media/external/images/media/") {
         throw "Windows 图片未落入 Android MediaStore 图片 URI：`n$clipboardInspection"
     }
     $clipboardInspection | Set-Content -LiteralPath (Join-Path $artifacts "windows-to-android.log") -Encoding utf8
@@ -295,10 +340,10 @@ try {
         "-n", "com.shurufa.attachmenttest/.MainActivity"
     ) "发布 Android 图片剪贴板失败"
     Wait-Until {
-        $inspection = & $hostExe test-inspect-image 2>$null
-        $LASTEXITCODE -eq 0 -and $inspection -match "图片=37x23"
+        $inspection = Get-TestImageInspection $hostExe $testListenerTitle
+        $inspection -match "图片=37x23"
     } 30 "Android 图片未同步为 Windows 37x23 位图剪贴板"
-    $windowsInspection = & $hostExe test-inspect-image
+    $windowsInspection = Get-TestImageInspection $hostExe $testListenerTitle
     if ($windowsInspection -notmatch "图片=37x23") {
         throw "Windows 剪贴板图片检查失败：$windowsInspection"
     }

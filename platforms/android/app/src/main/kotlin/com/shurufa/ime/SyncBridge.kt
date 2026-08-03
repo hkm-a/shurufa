@@ -26,6 +26,7 @@ object SyncBridge {
     external fun nativePairBegin(addr: String): Boolean
     external fun nativePairCode(): String
     external fun nativePairRespond(accept: Boolean)
+    external fun nativeSetRelayAddr(configDir: String, relayAddr: String): Boolean
 
     @Volatile
     private var started = false
@@ -34,12 +35,24 @@ object SyncBridge {
     @Synchronized
     fun ensureStarted(context: Context): Boolean {
         if (started) return true
-        val dir = File(context.filesDir, "sync").apply { mkdirs() }
+        val dir = syncDir(context)
         started = nativeStart(dir.absolutePath, deviceName())
         return started
     }
 
     fun deviceName(): String = Build.MODEL ?: "Android 设备"
+
+    /** 保存中继地址；传空串或 off 可关闭。服务重启后会读取该配置。 */
+    fun setRelayAddr(context: Context, relayAddr: String): Boolean =
+        nativeSetRelayAddr(syncDir(context).absolutePath, relayAddr)
+
+    /** 当前已保存的中继地址，仅用于配置页回显。 */
+    fun relayAddr(context: Context): String =
+        runCatching {
+            File(syncDir(context), "relay.addr").takeIf { it.isFile }?.readText()?.trim().orEmpty()
+        }.getOrDefault("")
+
+    private fun syncDir(context: Context): File = File(context.filesDir, "sync").apply { mkdirs() }
 
     /** 与 Rust 同步核心保持一致的单张 PNG 上限。 */
     fun maxImageBytes(): Int = nativeMaxImageBytes().takeIf { it > 0 } ?: 8 * 1024 * 1024

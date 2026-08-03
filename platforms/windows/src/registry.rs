@@ -1,16 +1,17 @@
 //! TSF 注册与反注册：CLSID 注册表项 + 输入处理器语言配置 + 类别声明。
 
 use windows::core::{Interface, Result, GUID};
-use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
-    ITfInputProcessorProfileMgr, ITfInputProcessorProfiles,
-    GUID_TFCAT_TIPCAP_COMLESS, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
-    GUID_TFCAT_TIPCAP_SECUREMODE, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, GUID_TFCAT_TIP_KEYBOARD,
+    ITfInputProcessorProfileMgr, ITfInputProcessorProfiles, GUID_TFCAT_TIPCAP_COMLESS,
+    GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, GUID_TFCAT_TIPCAP_SECUREMODE,
+    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, GUID_TFCAT_TIP_KEYBOARD,
+    TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE, TF_IPPMF_FORSESSION, TF_PROFILETYPE_INPUTPROCESSOR,
 };
 
 use crate::{dll_path, CLSID_SHURUFA, GUID_PROFILE, IME_NAME};
@@ -73,6 +74,15 @@ pub fn register() -> Result<()> {
             0,
             true,
             0,
+        )?;
+        // 注册后立即在当前会话激活，避免要求用户注销或手动切换输入法。
+        profile_mgr.ActivateProfile(
+            TF_PROFILETYPE_INPUTPROCESSOR,
+            LANGID_ZH_CN,
+            &CLSID_SHURUFA,
+            &GUID_PROFILE,
+            HKL::default(),
+            TF_IPPMF_FORSESSION | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE,
         )?;
 
         // 3. 类别声明：键盘类 TIP，支持沉浸式应用与系统托盘

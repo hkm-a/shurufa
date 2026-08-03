@@ -152,7 +152,6 @@ class ClipboardSyncService : Service(), ClipboardManager.OnPrimaryClipChangedLis
                     setUriClipboard(file, mime, "Shurufa 同步·${incoming.from}·${file.name}")
                 }
             }
-            SyncInbox.save(this, incoming.kind, incoming.from, incoming.payload)
             Log.i(TAG, "已接收 ${incoming.from} 的${kindLabel(incoming.kind)}并写入系统剪贴板")
         } catch (e: Throwable) {
             Log.e(TAG, "入站内容写入系统剪贴板失败", e)

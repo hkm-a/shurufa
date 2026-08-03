@@ -120,11 +120,7 @@ pub(crate) fn set_clipboard_image_with_owner(bmp: &[u8], owner: Option<HWND>) ->
 }
 
 #[cfg(debug_assertions)]
-pub(crate) fn set_test_clipboard_image_with_owner(
-    width: u32,
-    height: u32,
-    owner: Option<HWND>,
-) -> Result<()> {
+pub(crate) fn make_test_bmp(width: u32, height: u32) -> Result<Vec<u8>> {
     let mut image = image::RgbaImage::new(width.max(1), height.max(1));
     for (x, y, pixel) in image.enumerate_pixels_mut() {
         *pixel = image::Rgba([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8, 255]);
@@ -133,10 +129,20 @@ pub(crate) fn set_test_clipboard_image_with_owner(
     image::DynamicImage::ImageRgba8(image)
         .write_to(&mut bmp, image::ImageFormat::Bmp)
         .map_err(|_| windows::core::Error::from_hresult(E_FAIL))?;
-    let bmp = bmp.into_inner();
+    Ok(bmp.into_inner())
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn set_test_clipboard_image_with_owner(
+    width: u32,
+    height: u32,
+    owner: Option<HWND>,
+) -> Result<Vec<u8>> {
+    let bmp = make_test_bmp(width, height)?;
     with_open_clipboard(owner, || unsafe {
         set_clipboard_bytes(CF_DIB.0 as u32, &bmp[14..])
-    })
+    })?;
+    Ok(bmp)
 }
 
 #[cfg(debug_assertions)]

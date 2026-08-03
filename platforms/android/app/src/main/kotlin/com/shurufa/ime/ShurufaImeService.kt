@@ -34,10 +34,7 @@ import androidx.core.view.inputmethod.InputConnectionCompat
 import androidx.core.view.inputmethod.InputContentInfoCompat
 import java.io.File
 import java.io.ByteArrayOutputStream
-import java.net.URL
-import java.net.HttpURLConnection
 import java.net.URLConnection
-import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 /**
@@ -45,13 +42,13 @@ import kotlin.concurrent.thread
  * 剪贴板历史面板，双向同步接收。视觉支持浅色/深色主题、圆角按键
  * 与按下态、字符气泡、退格长按连删。
  *
- * 引擎在后台线程初始化（首次含词典部署），就绪前按键英文直通，
- * 与桌面端策略一致。
+ * 引擎在后台线程初始化（首次含词典部署）。初始化期间，当前输入框的
+ * 按键会短暂缓存并在引擎就绪后自动回放，避免用户首次使用误输入英文。
  */
 class ShurufaImeService : InputMethodService() {
 
     /** 一套主题配色（ARGB）。 */
-    private data class Palette(
+    internal data class Palette(
         val bg: Int,
         val key: Int,
         val keyPressed: Int,
@@ -62,8 +59,6 @@ class ShurufaImeService : InputMethodService() {
         val candidate: Int,
         val candidateHl: Int,
         val preedit: Int,
-        val syncBg: Int,
-        val syncText: Int,
         val accent: Int,
     )
 
@@ -76,39 +71,6 @@ class ShurufaImeService : InputMethodService() {
         private const val THUMBNAIL_TARGET = 260
         /// 预览图采样目标边长（px），兼顾清晰度与内存
         private const val PREVIEW_TARGET = 2048
-        /// 单张贴纸下载大小上限（字节），防恶意/异常源耗尽存储与内存
-        private const val MAX_STICKER_BYTES = 8L * 1024 * 1024
-
-        private val LIGHT = Palette(
-            bg = 0xFFF0F1F5.toInt(),
-            key = 0xFFFFFFFF.toInt(),
-            keyPressed = 0xFFC7CED9.toInt(),
-            keyFunc = 0xFFD5DAE3.toInt(),
-            funcPressed = 0xFFBFC6D2.toInt(),
-            keyText = 0xFF1A1A1A.toInt(),
-            funcText = 0xFF33383F.toInt(),
-            candidate = 0xFF1A1A1A.toInt(),
-            candidateHl = 0xFF35B982.toInt(),
-            preedit = 0xFF8A9099.toInt(),
-            syncBg = 0xFFFFF1DE.toInt(),
-            syncText = 0xFF6A4A20.toInt(),
-            accent = 0xFF35B982.toInt(),
-        )
-        private val DARK = Palette(
-            bg = 0xFF15171B.toInt(),
-            key = 0xFF2B2F36.toInt(),
-            keyPressed = 0xFF474D57.toInt(),
-            keyFunc = 0xFF373C44.toInt(),
-            funcPressed = 0xFF4A5059.toInt(),
-            keyText = 0xFFECECEC.toInt(),
-            funcText = 0xFFCFD3D9.toInt(),
-            candidate = 0xFFECECEC.toInt(),
-            candidateHl = 0xFF68D3A0.toInt(),
-            preedit = 0xFF8B9199.toInt(),
-            syncBg = 0xFF3A331F.toInt(),
-            syncText = 0xFFEAD6B0.toInt(),
-            accent = 0xFF68D3A0.toInt(),
-        )
 
         @Volatile
         private var engineReady = false
@@ -119,53 +81,45 @@ class ShurufaImeService : InputMethodService() {
 
     private lateinit var candidateBar: LinearLayout
     private lateinit var keyArea: LinearLayout
+    private var voice: VoiceInputController? = null
+    /// 键盘内置的语音状态条（不受系统 Toast 抑制，必现）。
+    private var voiceStatusBar: TextView? = null
     private var inputRoot: LinearLayout? = null
     private var symbolMode = false
     /// 大写锁定（微信输入法同款 capslock 键：行首图标键）
     private var shiftMode = false
-    private var syncBar: TextView? = null
-    private var pendingSyncText: String? = null
-    /// 同步收到的图片历史 id，syncBar 点击时上屏
-    private var pendingSyncImageId: Int? = null
-    /// 同步收到的文件历史 id，syncBar 点击时作为附件提交。
-    private var pendingSyncFileId: Int? = null
-    private val chineseStickerCatalog by lazy { ChineseStickerCatalog(this) }
-    private val syncPoll = Handler(Looper.getMainLooper())
-    private val stickerSearchHandler = Handler(Looper.getMainLooper())
-    /// 受限并发 + 超时的贴纸下载线程池（避免无界线程/挂死）
-    private val stickerIo = Executors.newFixedThreadPool(2) { r ->
-        Thread(r, "sticker-io").apply { isDaemon = true }
-    }
-    private val stickerSuggestionState = StickerSuggestionState()
-    private var pendingStickerSearch: Runnable? = null
-    private var stickerBannerViews: List<View> = emptyList()
-    private var stickerInsertIndex = 0
-    private var pendingSyncToken: Long? = null
     private var historyPanel: LinearLayout? = null
     /// 微信输入法 S33 同款图片预览键盘（点图后先预览再保存/发送）
     private var previewKeyboard: LinearLayout? = null
     /// 预览键盘当前展示的图片历史 id
     private var previewImageId: Int? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var inputGeneration = 0L
+    private val warmupQueue = EngineWarmupQueue<PendingInput>()
 
     /// 当前主题；随系统深色设置在重建输入视图时更新
-    private var palette: Palette = LIGHT
+    private var palette: Palette = paletteFromSkin(SkinPalette.lightDefault())
 
     /// 附件发送结果：SENT=已投递，COPIED=已复制到剪贴板（需长按粘贴），FAILED=彻底失败
     private enum class SendResult { SENT, COPIED, FAILED }
 
-    /// 收起 syncBar 并清空待发送状态
-    private fun dismissSyncBar() {
-        pendingSyncToken?.let { SyncInbox.clear(this, it) }
-        pendingSyncText = null
-        pendingSyncImageId = null
-        pendingSyncFileId = null
-        pendingSyncToken = null
-        syncBar?.visibility = View.GONE
+    private sealed class PendingInput {
+        data class Letter(val value: Char) : PendingInput()
+        object Backspace : PendingInput()
+        object Space : PendingInput()
+        object Enter : PendingInput()
+        data class Punct(val value: String) : PendingInput()
     }
 
     override fun onCreate() {
         super.onCreate()
         ClipboardSyncService.start(applicationContext)
+        voice = VoiceInputController(applicationContext).apply {
+            onResult = { text -> commitVoiceResult(text, showBar = true) }
+            onCommit = { text -> commitVoiceResult(text, showBar = false) }
+            onPartial = { text -> updateVoicePreview(text) }
+            onStatus = { s -> updateVoiceStatus(s) }
+        }
         ensureEngine()
         thread(name = "sync-start") {
             try {
@@ -176,20 +130,74 @@ class ShurufaImeService : InputMethodService() {
         }
     }
 
+    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(attribute, restarting)
+        inputGeneration += 1
+        warmupQueue.clear()
+    }
+
+    override fun onFinishInput() {
+        inputGeneration += 1
+        warmupQueue.clear()
+        super.onFinishInput()
+    }
+
     private fun ensureEngine() {
         if (engineReady || engineStarting) return
         engineStarting = true
         thread(name = "rime-init") {
+            var initialized = false
             try {
                 val schemas = unpackSchemas()
                 val userDir = File(filesDir, "rime").apply { mkdirs() }
-                engineReady = RimeBridge.nativeInit(schemas.absolutePath, userDir.absolutePath)
+                initialized = RimeBridge.nativeInit(schemas.absolutePath, userDir.absolutePath)
+                engineReady = initialized
             } catch (e: Exception) {
                 android.util.Log.e("shurufa", "引擎初始化失败", e)
             } finally {
                 engineStarting = false
+                mainHandler.post {
+                    flushWarmupInput(initialized)
+                    if (::keyArea.isInitialized && !symbolMode) rebuildKeys()
+                }
             }
         }
+    }
+
+    private fun enqueueDuringWarmup(input: PendingInput) {
+        warmupQueue.enqueue(inputGeneration, input)
+        showStatus("正在准备中文输入…", palette.accent)
+        ensureEngine()
+    }
+
+    private fun flushWarmupInput(initialized: Boolean) {
+        warmupQueue.drain(inputGeneration).forEach { input ->
+            if (initialized) {
+                when (input) {
+                    is PendingInput.Letter -> onLetter(input.value)
+                    PendingInput.Backspace -> onBackspace()
+                    PendingInput.Space -> onSpace()
+                    PendingInput.Enter -> onEnter()
+                    is PendingInput.Punct -> onPunct(input.value)
+                }
+            } else {
+                fallbackPendingInput(input)
+            }
+        }
+    }
+
+    private fun fallbackPendingInput(input: PendingInput) {
+        when (input) {
+            is PendingInput.Letter -> currentInputConnection?.commitText(input.value.toString(), 1)
+            PendingInput.Backspace -> currentInputConnection?.deleteSurroundingText(1, 0)
+            PendingInput.Space -> currentInputConnection?.commitText(" ", 1)
+            PendingInput.Enter -> currentInputConnection?.apply {
+                sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+                sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+            }
+            is PendingInput.Punct -> currentInputConnection?.commitText(input.value, 1)
+        }
+        showStatus("中文输入初始化失败，已保留原始输入", 0xFF8B3A3A.toInt())
     }
 
     private fun unpackSchemas(): File {
@@ -197,12 +205,14 @@ class ShurufaImeService : InputMethodService() {
         val marker = File(dest, ".version")
         val version = "${appVersionCode()}-$SCHEMA_BUNDLE_VERSION"
         if (marker.takeIf { it.exists() }?.readText() == version) {
+            CloudDictionaryUpdater.applyOverlay(applicationContext, dest)
             return dest
         }
         dest.deleteRecursively()
         dest.mkdirs()
         copySchemaAssets("schemas", dest)
         marker.writeText(version)
+        CloudDictionaryUpdater.applyOverlay(applicationContext, dest)
         return dest
     }
 
@@ -240,12 +250,33 @@ class ShurufaImeService : InputMethodService() {
         (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
 
+    /** 将跨端皮肤配置适配为现有输入法视图所用的颜色集。 */
+    private fun loadPalette(): Palette {
+        return paletteFromSkin(SkinConfig.load(this, isDark()))
+    }
+
+    /** 保持既有输入视图 API，同时让默认颜色只有共享皮肤模型一个来源。 */
+    private fun paletteFromSkin(skin: SkinPalette): Palette {
+        return Palette(
+            bg = skin.bg,
+            key = skin.key,
+            keyPressed = skin.keyPressed,
+            keyFunc = skin.keyFunc,
+            funcPressed = skin.funcPressed,
+            keyText = skin.keyText,
+            funcText = skin.funcText,
+            candidate = skin.candidate,
+            candidateHl = skin.candidateHl,
+            preedit = skin.preedit,
+            accent = skin.accent,
+        )
+    }
+
     private fun isLandscape(): Boolean =
         resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     private fun candidateBarHeight(): Int = dp(if (isLandscape()) 36f else 42f)
 
-    private fun candidateItemSize(): Int = dp(if (isLandscape()) 36f else 42f)
 
     /// 圆角按键背景：normal / pressed 两态。每次新建（Drawable 状态不可共享）。
     private fun keyBackground(normal: Int, pressed: Int): StateListDrawable {
@@ -265,7 +296,7 @@ class ShurufaImeService : InputMethodService() {
     override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onCreateInputView(): View {
-        palette = if (isDark()) DARK else LIGHT
+        palette = loadPalette()
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -274,61 +305,60 @@ class ShurufaImeService : InputMethodService() {
         }
         inputRoot = root
 
-        syncBar = TextView(this).apply {
-            background = GradientDrawable().apply {
-                setColor(palette.syncBg)
-                cornerRadius = dp(8f).toFloat()
-            }
-            setTextColor(palette.syncText)
-            textSize = 14f
-            setPadding(dp(14f), dp(10f), dp(14f), dp(10f))
-            visibility = View.GONE
-            setOnClickListener {
-                val imgId = pendingSyncImageId
-                val fileId = pendingSyncFileId
-                when {
-                    // 微信输入法同款：点图先进预览键盘，再保存/发送
-                    imgId != null -> {
-                        dismissSyncBar()
-                        openImagePreview(imgId)
-                    }
-                    fileId != null -> when (commitFile(fileId)) {
-                        SendResult.SENT -> dismissSyncBar()
-                        SendResult.COPIED -> {
-                            text = "文件已复制到剪贴板，长按输入框粘贴即可发送"
-                        }
-                        SendResult.FAILED -> showAttachmentError("文件发送失败")
-                    }
-                    else -> {
-                        val sent = pendingSyncText?.let {
-                            currentInputConnection?.commitText(it, 1)
-                            true
-                        } ?: false
-                        if (sent) dismissSyncBar() else showAttachmentError("无可发送内容")
-                    }
-                }
-            }
-        }
-        root.addView(syncBar, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { setMargins(dp(3f), dp(2f), dp(3f), dp(2f)) })
 
-        // 横屏进一步压缩候选栏，把垂直空间优先让给四行可触达的按键。
-        val compactCandidateBar = isLandscape()
-        val clipButtonSize = dp(if (compactCandidateBar) 28f else 32f)
-        val clipVerticalMargin = dp(if (compactCandidateBar) 4f else 5f)
-        val topRow = LinearLayout(this).apply {
+        // 语音状态条：位于键盘最顶部，录音/识别过程必然可见（不受 Toast 抑制影响）。
+        voiceStatusBar = TextView(this).apply {
+            text = "🎤 正在聆听…（松开结束 / 上滑取消）"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(palette.accent)
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(34f),
+            )
+        }
+        root.addView(voiceStatusBar)
+
+        // 候选词行（单独成行）：背景不带功能键，提升候选可读性与命中面积。
+        val candidateRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(palette.key)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, candidateBarHeight()
             )
         }
+        candidateBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val scroll = HorizontalScrollView(this).apply {
+            addView(candidateBar)
+            isHorizontalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
+            )
+        }
+        candidateRow.addView(scroll)
+        root.addView(candidateRow)
+
+        // 功能行：候选不再占用本行，改为承载剪贴板历史 / 表情入口等功能键。
+        val compactFunctionRow = isLandscape()
+        val functionRowHeight = dp(if (compactFunctionRow) 30f else 38f)
+        val clipButtonSize = dp(if (compactFunctionRow) 24f else 30f)
+        val clipVerticalMargin = dp(if (compactFunctionRow) 4f else 5f)
+        val functionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(palette.key)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, functionRowHeight
+            )
+        }
         val clipButton = TextView(this).apply {
-            text = "▦"
+            text = "▾▦"
             contentDescription = "剪贴板历史"
             gravity = Gravity.CENTER
-            textSize = 16f
+            textSize = 15f
             setTextColor(0xFFFFFFFF.toInt())
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
@@ -336,22 +366,15 @@ class ShurufaImeService : InputMethodService() {
             }
             setOnClickListener { toggleHistory() }
         }
-        topRow.addView(
+        functionRow.addView(
             clipButton,
             LinearLayout.LayoutParams(
                 clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
             ).apply { setMargins(dp(8f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
         )
-        candidateBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val scroll = HorizontalScrollView(this).apply {
-            addView(candidateBar)
-            isHorizontalScrollBarEnabled = false
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-        }
-        topRow.addView(scroll)
-        root.addView(topRow)
-        // 候选栏与键区之间的细分隔线，避免白底候选和浅灰键区粘连。
+        root.addView(functionRow)
+        // 功能行与键区之间的细分隔线，避免浅灰功能行和浅灰键区粘连。
         root.addView(View(this).apply {
             setBackgroundColor(if (isDark()) 0xFF3A3F47.toInt() else 0xFFD8DCE3.toInt())
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1f)))
@@ -628,8 +651,7 @@ class ShurufaImeService : InputMethodService() {
         val bmp = decodeSampledBitmap(png, PREVIEW_TARGET)
         if (bmp != null) image.setImageBitmap(bmp)
         previewImageId = id
-        // 隐藏一切可能挤压预览区的元素（同步条/历史面板）。
-        syncBar?.visibility = View.GONE
+        // 隐藏一切可能挤压预览区的元素。
         historyPanel?.visibility = View.GONE
         keyArea.visibility = View.GONE
         panel.visibility = View.VISIBLE
@@ -637,8 +659,6 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun closeImagePreview() {
-        // 同步条会挤压预览区，关闭时一并收起（发送反馈已用 toast）
-        dismissSyncBar()
         previewKeyboard?.visibility = View.GONE
         previewImageId = null
         keyArea.visibility = View.VISIBLE
@@ -980,8 +1000,6 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun showAttachmentError(message: String) {
-        syncBar?.text = message
-        syncBar?.visibility = View.VISIBLE
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
@@ -1008,7 +1026,11 @@ class ShurufaImeService : InputMethodService() {
                 child.measuredHeight + (params?.topMargin ?: 0) + (params?.bottomMargin ?: 0)
             }
         }
-        keyboard.setAvailableKeyboardHeight(root.height - chromeHeight)
+        val keyspace = root.height - chromeHeight
+
+        // 仅当确有余量时才压缩键区；root 尚未撑开（keyspace<=0）时保留键盘默认高度，
+        // 由屏幕比例撑起键盘，避免一次性把可用高度压成 0 死锁。
+        if (keyspace > 0) keyboard.setAvailableKeyboardHeight(keyspace)
     }
 
     private fun buildLetterPage() {
@@ -1019,6 +1041,7 @@ class ShurufaImeService : InputMethodService() {
                 this,
                 KeyboardLayoutSpec.Page.LETTERS,
                 isDark(),
+                palette,
                 asciiMode,
                 asciiMode || shiftMode,
                 onAction = { onWetypeAction(it) },
@@ -1034,6 +1057,7 @@ class ShurufaImeService : InputMethodService() {
                 this,
                 KeyboardLayoutSpec.Page.SYMBOLS,
                 isDark(),
+                palette,
                 false,
                 false,
                 onAction = { onWetypeAction(it) },
@@ -1067,13 +1091,47 @@ class ShurufaImeService : InputMethodService() {
             }
             WetypeKeyboardView.WetypeAction.Enter -> onEnter()
             WetypeKeyboardView.WetypeAction.Space -> onSpace()
+            WetypeKeyboardView.WetypeAction.VoiceStart -> onVoiceStart()
+            WetypeKeyboardView.WetypeAction.VoiceCancel -> {
+                voice?.cancel()
+                // 上滑取消：删掉已实时上屏的预览文字（微信式撤销）。
+                currentInputConnection?.setComposingText("", 1)
+                voiceStatusBar?.visibility = View.GONE
+            }
+            WetypeKeyboardView.WetypeAction.VoiceEnd -> {
+                voice?.end()
+                voiceStatusBar?.visibility = View.GONE
+            }
             WetypeKeyboardView.WetypeAction.Lang -> onToggleLang()
             WetypeKeyboardView.WetypeAction.Clear -> {
                 if (engineReady) RimeBridge.nativeReset()
-                currentInputConnection?.finishComposingText()
+                currentInputConnection?.apply {
+                    // 真正清空输入框：删除光标前后全部内容（上滑清空不能只提示不干活）。
+                    val before = getTextBeforeCursor(Int.MAX_VALUE, 0)?.length ?: 0
+                    val after = getTextAfterCursor(Int.MAX_VALUE, 0)?.length ?: 0
+                    deleteSurroundingText(before, after)
+                    finishComposingText()
+                }
                 updateCandidates("", emptyList(), 0)
             }
+            WetypeKeyboardView.WetypeAction.BackspaceStart -> showStatus("🔍 长按删除中 — 上滑清空", 0xFF4A5059.toInt())
+            WetypeKeyboardView.WetypeAction.BackspaceClear -> showStatus("✓ 已清空", 0xFF2F6B4B.toInt())
+            WetypeKeyboardView.WetypeAction.BackspaceEnd -> voiceStatusBar?.visibility = View.GONE
         }
+    }
+
+    /** 统一的顶部状态条（语音 / 删除反馈共用），短提示自动消失。 */
+    private fun showStatus(text: String, color: Int) {
+        val bar = voiceStatusBar ?: return
+        bar.removeCallbacks(barRunnable)
+        bar.text = text
+        bar.setBackgroundColor(color)
+        bar.visibility = View.VISIBLE
+        bar.postDelayed(barRunnable, 1400L)
+    }
+
+    private val barRunnable = Runnable {
+        voiceStatusBar?.visibility = View.GONE
     }
     private fun langLabel(): String =
         if (engineReady && RimeBridge.nativeIsAscii()) "英" else "中"
@@ -1097,8 +1155,7 @@ class ShurufaImeService : InputMethodService() {
             return
         }
         if (!engineReady) {
-            ensureEngine()
-            currentInputConnection?.commitText(c.toString(), 1)
+            enqueueDuringWarmup(PendingInput.Letter(c))
             return
         }
         val eaten = RimeBridge.nativeProcessKey(c.code, 0)
@@ -1107,18 +1164,30 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun onBackspace() {
+        if (!engineReady) {
+            enqueueDuringWarmup(PendingInput.Backspace)
+            return
+        }
         val eaten = engineReady && RimeBridge.nativeProcessKey(XK_BACKSPACE, 0)
         if (!eaten) currentInputConnection?.deleteSurroundingText(1, 0)
         sync()
     }
 
     private fun onSpace() {
+        if (!engineReady) {
+            enqueueDuringWarmup(PendingInput.Space)
+            return
+        }
         val eaten = engineReady && RimeBridge.nativeProcessKey(0x20, 0)
         if (!eaten) currentInputConnection?.commitText(" ", 1)
         sync()
     }
 
     private fun onEnter() {
+        if (!engineReady) {
+            enqueueDuringWarmup(PendingInput.Enter)
+            return
+        }
         val eaten = engineReady && RimeBridge.nativeProcessKey(XK_RETURN, 0)
         if (!eaten) {
             currentInputConnection?.apply {
@@ -1129,7 +1198,67 @@ class ShurufaImeService : InputMethodService() {
         sync()
     }
 
+    private fun onVoiceStart() {
+        // IME 中无法直接弹系统权限框，VoiceInputController 借透明 Activity 请求。
+        voiceStatusBar?.apply {
+            text = "🎤 麦克风…请允许录音"
+            visibility = View.VISIBLE
+        }
+        voice?.startOrRequestPermission()
+    }
+
+    /** 语音状态条反馈：1=聆听中，0=结束/空闲，2=已取消。 */
+    private fun updateVoiceStatus(status: Int) {
+        val bar = voiceStatusBar ?: return
+        when (status) {
+            1 -> {
+                bar.text = "🎤 麦克风聆听中…松开结束 / 上滑取消"
+                bar.visibility = View.VISIBLE
+            }
+            0 -> bar.postDelayed({ bar.visibility = View.GONE }, if (bar.text.contains("聆")) 0L else 1200L)
+            else -> {
+                bar.text = "已取消"
+                bar.setBackgroundColor(0xFF888888.toInt())
+                bar.postDelayed({ bar.visibility = View.GONE }, 800L)
+            }
+        }
+    }
+
+    /** 微信式实时预览：识别过程中的 partial 结果用 composition 上屏，可被后续结果替换。 */
+    private fun updateVoicePreview(text: String) {
+        if (text.isEmpty()) {
+            currentInputConnection?.finishComposingText()
+            return
+        }
+        currentInputConnection?.setComposingText(text, 1)
+    }
+
+    /**
+     * 语音结果上屏。
+     * @param showBar 是否在顶部状态条短暂展示结果反馈（轮转固化时静默，松手时显示）。
+     */
+    private fun commitVoiceResult(text: String, showBar: Boolean) {
+        if (text.isEmpty()) return
+        // composition 已实时显示本段文字，这里固化并清空引擎现场避免混排。
+        if (engineReady) RimeBridge.nativeReset()
+        currentInputConnection?.commitText(text, 1)
+        sync()
+        if (!showBar) return
+        voiceStatusBar?.visibility = View.GONE
+        // 短暂展示识别结果作为最终反馈。
+        val bar = voiceStatusBar
+        if (bar != null) {
+            bar.text = "🎤 $text"
+            bar.visibility = View.VISIBLE
+            bar.postDelayed({ bar.visibility = View.GONE }, 1500L)
+        }
+    }
+
     private fun onPunct(s: String) {
+        if (!engineReady) {
+            enqueueDuringWarmup(PendingInput.Punct(s))
+            return
+        }
         if (engineReady && RimeBridge.nativeContext().isNotEmpty()) {
             RimeBridge.nativeProcessKey(0x20, 0)
             sync()
@@ -1167,25 +1296,25 @@ class ShurufaImeService : InputMethodService() {
 
     private fun updateCandidates(preedit: String, candidates: List<String>, highlighted: Int) {
         if (!::candidateBar.isInitialized) return
-        clearStickerSuggestions()
         candidateBar.removeAllViews()
-        // 拼音预编辑与候选共用一行，输入时不会额外抬高整个键盘。
-        if (preedit.isNotEmpty()) {
+        // 拼音预编辑由系统输入框承载（setComposingText），候选行只渲染候选词，
+        // 不再把拼音当作候选显示；仅在“有输入但无匹配”时给出一行轻提示。
+        if (candidates.isEmpty() && preedit.isNotEmpty()) {
             candidateBar.addView(
                 TextView(this).apply {
-                    text = preedit.take(12).let { if (preedit.length > it.length) "$it…" else it }
+                    text = "未匹配到候选"
                     textSize = 13f
                     gravity = Gravity.CENTER
                     setTextColor(palette.preedit)
-                    setPadding(dp(10f), 0, dp(8f), 0)
+                    setPadding(dp(12f), 0, dp(12f), 0)
                 },
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.MATCH_PARENT,
                 ),
             )
+            return
         }
-        stickerInsertIndex = if (preedit.isEmpty()) 0 else 1
         candidates.forEachIndexed { i, text ->
             val item = TextView(this).apply {
                 this.text = text
@@ -1204,125 +1333,15 @@ class ShurufaImeService : InputMethodService() {
                 )
             )
         }
-        scheduleStickerSuggestions(preedit, candidates)
-    }
-
-    /** 立即撤掉旧横幅，并让已排队或后台运行的旧查询失效。 */
-    private fun clearStickerSuggestions() {
-        pendingStickerSearch?.let(stickerSearchHandler::removeCallbacks)
-        pendingStickerSearch = null
-        stickerSuggestionState.invalidate()
-        if (::candidateBar.isInitialized) {
-            stickerBannerViews.forEach(candidateBar::removeView)
-        }
-        stickerBannerViews = emptyList()
-    }
-
-    /** 输入停顿后才在线程中检索；主线程只负责确认请求仍有效并插入已得到的结果。 */
-    private fun scheduleStickerSuggestions(preedit: String, candidates: List<String>) {
-        val request = stickerSuggestionState.replace(preedit, candidates) ?: return
-        if (!chineseStickerCatalog.isLoaded) return
-        val runnable = Runnable {
-            pendingStickerSearch = null
-            thread {
-                val stickers = chineseStickerCatalog.search(request.terms, StickerSuggestionPolicy.visibleLimit)
-                stickerSearchHandler.post {
-                    if (!::candidateBar.isInitialized || !stickerSuggestionState.isCurrent(request)) return@post
-                    val views = stickers.map(::buildStickerCandidate)
-                    stickerBannerViews = views
-                    views.forEachIndexed { offset, view ->
-                        candidateBar.addView(
-                            view,
-                            (stickerInsertIndex + offset).coerceAtMost(candidateBar.childCount),
-                            LinearLayout.LayoutParams(candidateItemSize(), LinearLayout.LayoutParams.MATCH_PARENT),
-                        )
-                    }
-                }
-            }
-        }
-        pendingStickerSearch = runnable
-        stickerSearchHandler.postDelayed(runnable, StickerSuggestionPolicy.delayMillis)
-    }
-
-    private fun buildStickerCandidate(sticker: ChineseStickerSearch.Entry): ImageView = ImageView(this).apply {
-        contentDescription = "表情包：${sticker.name}"
-        scaleType = ImageView.ScaleType.CENTER_CROP
-        background = keyBackground(palette.key, palette.keyPressed)
-        setPadding(dp(3f), dp(3f), dp(3f), dp(3f))
-        setOnClickListener {
-            clearStickerSuggestions()
-            downloadAndSendSticker(sticker)
-        }
-        stickerIo.execute {
-            val file = downloadStickerToCache(sticker)
-            val bitmap = runCatching { file?.let { BitmapFactory.decodeFile(it.absolutePath) } }.getOrNull()
-            if (bitmap != null) syncPoll.post { setImageBitmap(bitmap) }
-        }
-    }
-
-    private fun downloadAndSendSticker(sticker: ChineseStickerSearch.Entry) {
-        Toast.makeText(this, "正在发送表情包…", Toast.LENGTH_SHORT).show()
-        stickerIo.execute {
-            val file = downloadStickerToCache(sticker)
-            syncPoll.post {
-                val f = file
-                if (f == null || !f.isFile || !commitAttachment(f, imageMimeType(f.name))) {
-                    showAttachmentError("表情包发送失败")
-                }
-            }
-        }
-    }
-
-    /**
-     * 下载贴纸到缓存：带连接/读超时与字节上限，经临时文件原子改名落盘。
-     * 失败或超限返回 null。可并发调用（由受限线程池调度）。
-     */
-    private fun downloadStickerToCache(sticker: ChineseStickerSearch.Entry): File? {
-        val file = stickerCacheFile(sticker)
-        if (file.isFile && file.length() in 1..MAX_STICKER_BYTES) return file
-        return try {
-            file.parentFile?.mkdirs()
-            val conn = URL(sticker.url).openConnection() as HttpURLConnection
-            try {
-                conn.connectTimeout = 10_000
-                conn.readTimeout = 15_000
-                conn.setRequestProperty("Accept", "image/*")
-                conn.instanceFollowRedirects = true
-                val input = conn.inputStream
-                val tmp = File(file.parentFile, "${file.name}.part")
-                var total = 0L
-                try {
-                    // 输出流只打开一次；多轮复用，避免每轮重开截断文件
-                    tmp.outputStream().use { out ->
-                        val buf = ByteArray(16 * 1024)
-                        while (true) {
-                            val n = input.read(buf)
-                            if (n < 0) break
-                            total += n
-                            if (total > MAX_STICKER_BYTES) return null
-                            out.write(buf, 0, n)
-                        }
-                    }
-                    if (total in 1..MAX_STICKER_BYTES && tmp.renameTo(file)) {
-                        file
-                    } else {
-                        tmp.delete()
-                        null
-                    }
-                } finally {
-                    input.close()
-                }
-            } finally {
-                conn.disconnect()
-            }
-        } catch (e: Throwable) {
-            android.util.Log.w("shurufa", "贴纸下载失败：${sticker.name}", e)
-            file.delete()
-            null
-        }
     }
 
     /** 按目标边长下采样解码，避免全分辨率大图在主线程 OOM/卡顿。 */
+    override fun onDestroy() {
+        super.onDestroy()
+        voice?.cancel()
+        voice = null
+    }
+
     private fun decodeSampledBitmap(data: ByteArray, target: Int): Bitmap? {
         if (data.isEmpty()) return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -1346,86 +1365,4 @@ class ShurufaImeService : InputMethodService() {
         }
     }
 
-    private fun stickerCacheFile(sticker: ChineseStickerSearch.Entry): File {
-        val extension = sticker.url.substringAfterLast('.', "jpg").substringBefore('?').take(5)
-        return File(cacheDir, "stickers/${sticker.url.hashCode().toUInt().toString(16)}.$extension")
-    }
-
-    private fun imageMimeType(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
-        "png" -> "image/png"
-        "webp" -> "image/webp"
-        "gif" -> "image/gif"
-        else -> "image/jpeg"
-    }
-
-    override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
-        super.onStartInputView(info, restarting)
-        // 系统深色设置变化后重建输入视图，刷新主题
-        if ((palette === DARK) != isDark()) {
-            setInputView(onCreateInputView())
-        }
-        ensureEngine()
-        chineseStickerCatalog.load { syncPoll.post { sync() } }
-        if (engineReady) RimeBridge.nativeReset()
-        updateCandidates("", emptyList(), 0)
-        historyPanel?.visibility = View.GONE
-        keyArea.visibility = View.VISIBLE
-        refreshSyncInbox()
-        startInboxPolling()
-    }
-
-    override fun onFinishInput() {
-        super.onFinishInput()
-        if (engineReady) RimeBridge.nativeReset()
-        clearStickerSuggestions()
-        syncPoll.removeCallbacksAndMessages(null)
-    }
-
-    override fun onDestroy() {
-        clearStickerSuggestions()
-        stickerSearchHandler.removeCallbacksAndMessages(null)
-        stickerIo.shutdownNow()
-        super.onDestroy()
-    }
-
-    private fun startInboxPolling() {
-        syncPoll.removeCallbacksAndMessages(null)
-        val tick = object : Runnable {
-            override fun run() {
-                refreshSyncInbox()
-                syncPoll.postDelayed(this, 500)
-            }
-        }
-        syncPoll.postDelayed(tick, 500)
-    }
-
-    private fun refreshSyncInbox() {
-        val event = SyncInbox.load(this) ?: return
-        if (event.token == pendingSyncToken) return
-        pendingSyncToken = event.token
-        when (event.kind) {
-            "text" -> if (event.payload.isNotEmpty()) {
-                pendingSyncText = event.payload
-                pendingSyncImageId = null
-                pendingSyncFileId = null
-                val preview = event.payload.replace('\n', ' ').take(30)
-                syncBar?.text = "来自 ${event.from}：$preview（点此上屏）"
-                syncBar?.visibility = View.VISIBLE
-            }
-            "image" -> event.payload.toIntOrNull()?.let { id ->
-                pendingSyncImageId = id
-                pendingSyncText = null
-                pendingSyncFileId = null
-                syncBar?.text = "来自 ${event.from}：收到图片（点此发送）"
-                syncBar?.visibility = View.VISIBLE
-            }
-            "file" -> event.payload.toIntOrNull()?.let { id ->
-                pendingSyncFileId = id
-                pendingSyncText = null
-                pendingSyncImageId = null
-                syncBar?.text = "来自 ${event.from}：收到文件（点此发送）"
-                syncBar?.visibility = View.VISIBLE
-            }
-        }
-    }
 }

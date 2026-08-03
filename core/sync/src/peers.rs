@@ -111,11 +111,16 @@ mod tests {
         store.upsert(peer.clone()).unwrap();
         assert!(store.contains(&peer.fingerprint));
 
-        store.update_addr(&peer.fingerprint, "192.168.1.5:48632").unwrap();
+        store
+            .update_addr(&peer.fingerprint, "192.168.1.5:48632")
+            .unwrap();
 
         // 另一个实例（模拟独立进程）应立即看到写入
         let other = PeerStore::open(dir.path()).unwrap();
-        assert_eq!(other.list()[0].last_addr.as_deref(), Some("192.168.1.5:48632"));
+        assert_eq!(
+            other.list()[0].last_addr.as_deref(),
+            Some("192.168.1.5:48632")
+        );
 
         assert!(other.remove(&peer.fingerprint[..12]).unwrap());
         assert!(!store.contains(&peer.fingerprint));

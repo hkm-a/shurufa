@@ -3,6 +3,10 @@ rem Unregister the TSF IME and remove the deployed copy. Run as Administrator.
 setlocal
 set DEST=%ProgramData%\shurufa
 
+if exist "%DEST%\shurufa-host.exe" (
+    "%DEST%\shurufa-host.exe" stop >nul 2>nul
+)
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v shurufa-host /f >nul 2>nul
 if exist "%DEST%\shurufa_tsf.dll" (
     regsvr32 /u "%DEST%\shurufa_tsf.dll"
 ) else (

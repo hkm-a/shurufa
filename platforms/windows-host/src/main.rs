@@ -5,6 +5,7 @@
 
 mod annotation;
 mod capture;
+mod dict_update;
 mod editor;
 mod listener;
 mod ocr;
@@ -15,7 +16,10 @@ mod record;
 mod recording_indicator;
 mod region;
 mod scroll;
+mod supervis;
 mod sync;
+#[cfg(debug_assertions)]
+mod tsf_probe;
 
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore, RetentionPolicy};
 use std::path::PathBuf;
@@ -46,15 +50,19 @@ pub fn log_line(msg: &str) {
     }
 }
 
-fn db_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("SHURUFA_DB_PATH") {
-        return PathBuf::from(path);
-    }
+/// shurufa 应用数据目录：%APPDATA%\shurufa（无 APPDATA 时回退临时目录）。
+pub fn app_data_dir() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
         .join("shurufa")
-        .join("clipboard.db")
+}
+
+fn db_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("SHURUFA_DB_PATH") {
+        return PathBuf::from(path);
+    }
+    app_data_dir().join("clipboard.db")
 }
 
 fn open_store() -> ClipboardStore {
@@ -74,10 +82,24 @@ fn main() {
     match cmd {
         "run" => {
             // 崩溃必须留痕：面板/监听均为回调驱动，控制台通常不可见
-            std::panic::set_hook(Box::new(|info| {
-                log_line(&format!("PANIC：{info}"));
-            }));
             hide_own_console();
+            // 单实例强制：同一时刻只允许一个 worker。已有实例（如未走
+            // supervisor 的手动 run）在跑时直接退出，避免抢端口/热键冲突。
+            let worker_mutex = supervis::worker_mutex_name();
+            match supervis::acquire_singleton(&worker_mutex) {
+                Ok(None) => {
+                    eprintln!("已有剪贴板监听实例在运行（可用 status 查看，或 stop 后再启）。");
+                    std::process::exit(1);
+                }
+                Ok(Some(h)) => {
+                    // 保持持有直至进程退出
+                    std::mem::forget(h);
+                }
+                Err(e) => {
+                    eprintln!("创建 worker 单实例锁失败：{e}");
+                    std::process::exit(1);
+                }
+            }
             sync::start_daemon();
             // 高分屏下面板按真实 DPI 布局渲染，而非被系统位图拉伸
             unsafe {
@@ -94,6 +116,13 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "supervise" => {
+            // 登录自启动进入 supervisor；独占控制台时立即隐藏，避免用户看到黑窗口。
+            hide_own_console();
+            supervis::supervise()
+        }
+        "status" => supervis::cmd_status(),
+        "stop" => supervis::cmd_stop(),
         "list" => {
             let n = parse_arg(&args, 1).unwrap_or(20);
             print_entries(&open_store().list(n, 0).unwrap_or_default());
@@ -279,6 +308,20 @@ fn main() {
             };
             sync::cli_unpair(fp);
         }
+        "relay" => {
+            let Some(value) = args.get(1) else {
+                eprintln!("用法：shurufa-host relay <中继主机:端口|off>");
+                std::process::exit(2);
+            };
+            sync::cli_relay(value);
+        }
+        "dict-update" => {
+            let Some(url) = args.get(1) else {
+                eprintln!("用法：shurufa-host dict-update <HTTPS 词库清单地址>");
+                std::process::exit(2);
+            };
+            dict_update::cli_update(url);
+        }
         "retention" => {
             let n = open_store()
                 .apply_retention(&RetentionPolicy::default())
@@ -313,10 +356,18 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        #[cfg(debug_assertions)]
+        "tsf-native-probe" => match tsf_probe::run() {
+            Ok(text) => println!("原生编辑控件 TSF 验收通过：{text}"),
+            Err(error) => exit_with_error(&format!("原生编辑控件 TSF 验收失败：{error}")),
+        },
         _ => {
             println!(
                 "用法：shurufa-host <子命令>\n\
-                 \x20 run             启动剪贴板监听（常驻）\n\
+                 \x20 run             启动剪贴板监听（常驻 worker）\n\
+                 \x20 supervise       常驻监管：看护 worker，崩溃自动重启\n\
+                 \x20 status          查看监管与运行状态\n\
+                 \x20 stop            停止 supervisor\n\
                  \x20 list [N]        最近 N 条历史（默认 20）\n\
                  \x20 search <关键词>  搜索文本与文件名\n\
                  \x20 pin/unpin <id>  置顶/取消置顶\n\
@@ -330,7 +381,9 @@ fn main() {
                  \x20 ocr <id>        识别历史图片中的中文文字\n\
                  \x20 delete <id>     删除单条\n\
                  \x20 clear           清空未置顶记录\n\
-                 \x20 retention       立即执行留存清理"
+                 \x20 retention       立即执行留存清理
+                 \x20 relay <地址|off> 配置或关闭自托管同步中继
+                 \x20 dict-update <HTTPS地址> 更新自托管云词库"
             );
         }
     }
@@ -361,11 +414,13 @@ fn exit_with_error(message: &str) -> ! {
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "shurufa-host";
 
-/// 开机自启：当前用户 Run 键指向本 exe 的 run 子命令。
-/// 登录时控制台会闪现一瞬，随即被 hide_own_console 隐藏。
+/// 开机自启：当前用户 Run 键指向本 exe 的 supervise 子命令。
+/// 由 supervisor 看护 worker（崩溃自动重启、status/stop 统一管理），
+/// 而不是裸 run（裸 run 崩溃无人接管）。登录时控制台会闪现一瞬，
+/// 随即被 hide_own_console 隐藏。
 fn install_autostart() -> Result<String, Box<dyn std::error::Error>> {
     let exe = std::env::current_exe()?;
-    let cmd = format!("\"{}\" run", exe.display());
+    let cmd = format!("\"{}\" supervise", exe.display());
     windows_registry::CURRENT_USER
         .create(RUN_KEY)?
         .set_string(RUN_VALUE, &cmd)?;
@@ -386,12 +441,28 @@ fn hide_own_console() {
     use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
     unsafe {
         let mut pids = [0u32; 2];
-        if GetConsoleProcessList(&mut pids) == 1 {
+        if should_hide_console(GetConsoleProcessList(&mut pids)) {
             let hwnd = GetConsoleWindow();
             if !hwnd.is_invalid() {
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
         }
+    }
+}
+
+fn should_hide_console(process_count: u32) -> bool {
+    process_count == 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_hide_console;
+
+    #[test]
+    fn 只有进程独占控制台时才隐藏() {
+        assert!(should_hide_console(1));
+        assert!(!should_hide_console(0));
+        assert!(!should_hide_console(2));
     }
 }
 

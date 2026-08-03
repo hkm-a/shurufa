@@ -11,15 +11,17 @@
 mod identity;
 mod peers;
 mod protocol;
+mod relay;
 mod service;
 mod tls;
 
 pub use identity::DeviceIdentity;
 pub use peers::{Peer, PeerStore};
 pub use protocol::Message;
+pub use relay::{accept_via_relay, connect_via_relay, run_relay};
 pub use service::{
-    ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService, MAX_CLIP_FILE_BYTES,
-    MAX_CLIP_IMAGE_BYTES,
+    load_relay_addr, save_relay_addr, ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService,
+    MAX_CLIP_FILE_BYTES, MAX_CLIP_IMAGE_BYTES,
 };
 
 use sha2::{Digest, Sha256};

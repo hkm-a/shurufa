@@ -55,6 +55,8 @@ val syncSchemas = tasks.register<Copy>("syncSchemas") {
             "punctuation.yaml",
             "symbols.yaml",
             "key_bindings.yaml",
+            "shurufa-skin.json",
+            "rime-ice-2026.06.30.json",
         )
     }
     from(File(projectDir, "schemas-overlay"))
@@ -78,5 +80,6 @@ tasks.matching { it.name == "assembleDebug" }.configureEach {
 dependencies {
     // FileProvider 与 InputConnectionCompat.commitContent（图片上屏）
     implementation("androidx.core:core:1.13.1")
+    implementation("org.json:json:20240303")
     testImplementation("junit:junit:4.13.2")
 }

@@ -14,6 +14,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -33,6 +34,8 @@ class PairActivity : Activity() {
     private lateinit var discoveredBox: LinearLayout
     private lateinit var ipInput: EditText
     private lateinit var pairButton: Button
+    private lateinit var relayInput: EditText
+    private lateinit var dictionaryInput: EditText
     private lateinit var codeArea: LinearLayout
     private lateinit var codeText: TextView
 
@@ -81,6 +84,32 @@ class PairActivity : Activity() {
         }
         root.addView(pairButton)
 
+        root.addView(subtitle("自托管中继（跨网段可选）"))
+        root.addView(hint("已配对设备在直连失败时会回退到此地址，如 relay.example.com:48633。首次配对仍需直连。"))
+        relayInput = EditText(this).apply {
+            hint = "中继主机:端口；留空或 off 关闭"
+            setSingleLine()
+            setText(SyncBridge.relayAddr(applicationContext))
+        }
+        root.addView(relayInput)
+        root.addView(Button(this).apply {
+            text = "保存中继配置"
+            setOnClickListener { saveRelay() }
+        })
+
+        root.addView(subtitle("云词库更新（可选）"))
+        root.addView(hint("默认 rime-ice 使用已验证的雾凇拼音稳定词典；也可填写自托管 HTTPS 清单。所有词典会按 SHA-256 校验；更新后请完全重启输入法。"))
+        dictionaryInput = EditText(this).apply {
+            hint = "rime-ice 或 https://dict.example.com/manifest.json"
+            setSingleLine()
+            setText(CloudDictionaryUpdater.source(applicationContext))
+        }
+        root.addView(dictionaryInput)
+        root.addView(Button(this).apply {
+            text = "更新云词库"
+            setOnClickListener { updateCloudDictionary() }
+        })
+
         status = hint("")
         root.addView(status)
 
@@ -91,7 +120,7 @@ class PairActivity : Activity() {
         deviceList = hint("")
         root.addView(deviceList)
 
-        setContentView(root)
+        setContentView(ScrollView(this).apply { addView(root) })
         refreshDevices()
     }
 
@@ -210,6 +239,42 @@ class PairActivity : Activity() {
                 pairButton.isEnabled = true
                 status.text = if (ok) "配对成功" else "配对失败：检查网络或对方是否确认"
                 refreshDevices()
+            }
+        }
+    }
+
+    private fun saveRelay() {
+        val value = relayInput.text.toString().trim()
+        if (!SyncBridge.setRelayAddr(applicationContext, value)) {
+            Toast.makeText(this, "中继地址无效，应为主机名或 IP 加端口", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val message = if (value.isEmpty() || value.equals("off", ignoreCase = true)) {
+            "已关闭中继。请完全重启输入法后生效。"
+        } else {
+            "已保存中继。请完全重启输入法后生效。"
+        }
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    private fun updateCloudDictionary() {
+        val url = dictionaryInput.text.toString().trim()
+        if (!url.equals("rime-ice", ignoreCase = true) && !url.startsWith("https://")) {
+            Toast.makeText(this, "请输入 rime-ice 或 HTTPS 词库清单地址", Toast.LENGTH_SHORT).show()
+            return
+        }
+        status.text = "正在下载并校验云词库…"
+        thread(name = "cloud-dict-update") {
+            val result = CloudDictionaryUpdater.update(applicationContext, url)
+            main.post {
+                result.fold(
+                    onSuccess = { revision ->
+                        status.text = "云词库已更新到 $revision，请完全重启输入法后生效"
+                    },
+                    onFailure = { error ->
+                        status.text = "云词库更新失败：${error.message ?: "未知错误"}"
+                    },
+                )
             }
         }
     }

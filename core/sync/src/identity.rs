@@ -86,8 +86,8 @@ fn restrict_private_key(path: &Path) {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{LocalFree, GENERIC_ALL};
     use windows_sys::Win32::Security::Authorization::{
-        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, SE_FILE_OBJECT,
-        SET_ACCESS, TRUSTEE_IS_NAME, TRUSTEE_IS_USER, TRUSTEE_W,
+        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, SET_ACCESS, SE_FILE_OBJECT,
+        TRUSTEE_IS_NAME, TRUSTEE_IS_USER, TRUSTEE_W,
     };
     use windows_sys::Win32::Security::{
         ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
@@ -129,7 +129,6 @@ fn restrict_private_key(path: &Path) {
         let _ = LocalFree(new_dacl as _);
     }
 }
-
 
 #[cfg(test)]
 mod tests {

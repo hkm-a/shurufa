@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use clipboard_store::{ClipboardStore, RetentionPolicy};
-use windows::core::{w, Result, PCWSTR};
+use windows::core::{w, Result, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::{
     AddClipboardFormatListener, CloseClipboard, GetClipboardData, GetClipboardOwner,
@@ -88,10 +88,11 @@ pub fn run(store: ClipboardStore) -> Result<()> {
             ..Default::default()
         };
         RegisterClassW(&class);
+        let window_title = listener_window_title();
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class_name,
-            w!(""),
+            &window_title,
             WINDOW_STYLE(0),
             0,
             0,
@@ -203,8 +204,13 @@ fn register_record_hotkey() -> &'static str {
         .is_ok()
         {
             "Ctrl+Shift+2（开始/停止）"
-        } else if RegisterHotKey(None, RECORD_HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, VK_R.0 as u32)
-            .is_ok()
+        } else if RegisterHotKey(
+            None,
+            RECORD_HOTKEY_ID,
+            MOD_CONTROL | MOD_SHIFT,
+            VK_R.0 as u32,
+        )
+        .is_ok()
         {
             "Ctrl+Shift+2 已被占用，回退为 Ctrl+Shift+R（开始/停止）"
         } else {
@@ -299,12 +305,19 @@ unsafe extern "system" fn wnd_proc(
     }
     #[cfg(debug_assertions)]
     if msg == WM_TEST_SET_IMAGE {
-        let result = crate::paste::set_test_clipboard_image_with_owner(
-            wparam.0 as u32,
-            lparam.0 as u32,
-            Some(hwnd),
-        );
-        return LRESULT(if result.is_ok() { 1 } else { 0 });
+        let result = crate::paste::make_test_bmp(wparam.0 as u32, lparam.0 as u32);
+        // 自动化会话可能不拥有系统剪贴板。测试源直接进入正式广播队列，
+        // Android→Windows 方向仍由脚本验证真实系统剪贴板写入。
+        return match result {
+            Ok(bmp) => {
+                crate::sync::broadcast_image(&bmp);
+                LRESULT(1)
+            }
+            Err(error) => {
+                crate::log_line(&format!("测试图片写入剪贴板失败：{error}"));
+                LRESULT(0)
+            }
+        };
     }
     if msg == WM_WRITE_CLIPBOARD {
         let command = WRITE_QUEUE
@@ -359,13 +372,38 @@ fn listener_window() -> Option<HWND> {
     {
         use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
 
-        return unsafe { FindWindowW(w!("ShurufaClipboardListener"), PCWSTR::null()).ok() };
+        let title = listener_window_title();
+        let title = if title.is_empty() {
+            PCWSTR::null()
+        } else {
+            PCWSTR(title.as_ptr())
+        };
+        return unsafe { FindWindowW(w!("ShurufaClipboardListener"), title).ok() };
     }
 
     #[cfg(not(debug_assertions))]
     {
         None
     }
+}
+
+fn listener_window_title() -> HSTRING {
+    #[cfg(debug_assertions)]
+    {
+        return HSTRING::from(debug_listener_title(
+            std::env::var("SHURUFA_TEST_LISTENER_TITLE").ok(),
+        ));
+    }
+
+    #[cfg(not(debug_assertions))]
+    HSTRING::new()
+}
+
+#[cfg(debug_assertions)]
+fn debug_listener_title(value: Option<String>) -> String {
+    value
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_default()
 }
 
 fn request_write(command: ClipboardWrite) -> bool {
@@ -676,6 +714,16 @@ mod tests {
     #[test]
     fn 截图与录制使用不同的热键标识() {
         assert_ne!(CAPTURE_HOTKEY_ID, RECORD_HOTKEY_ID);
+    }
+
+    #[test]
+    fn 调试监听窗口标题仅接受非空隔离标识() {
+        assert_eq!(debug_listener_title(None), "");
+        assert_eq!(debug_listener_title(Some("   ".to_owned())), "");
+        assert_eq!(
+            debug_listener_title(Some("background-sync-48634".to_owned())),
+            "background-sync-48634"
+        );
     }
 }
 

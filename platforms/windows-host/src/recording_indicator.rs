@@ -61,12 +61,12 @@ fn run_window() -> Result<(), String> {
             lpfnWndProc: Some(wnd_proc),
             hInstance: instance.into(),
             lpszClassName: class_name,
-        // 不设光标会导致悬停时一直显示忙碌转圈
-        hCursor: windows::Win32::UI::WindowsAndMessaging::LoadCursorW(
-            None,
-            windows::Win32::UI::WindowsAndMessaging::IDC_ARROW,
-        )
-        .unwrap_or_default(),
+            // 不设光标会导致悬停时一直显示忙碌转圈
+            hCursor: windows::Win32::UI::WindowsAndMessaging::LoadCursorW(
+                None,
+                windows::Win32::UI::WindowsAndMessaging::IDC_ARROW,
+            )
+            .unwrap_or_default(),
             ..Default::default()
         };
         RegisterClassW(&class);

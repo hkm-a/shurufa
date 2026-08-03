@@ -36,8 +36,7 @@ pub fn edit_session(
         action: RefCell::new(action),
     }
     .into();
-    let hr = unsafe {
-        context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READWRITE)
-    }?;
+    let hr =
+        unsafe { context.RequestEditSession(client_id, &session, TF_ES_SYNC | TF_ES_READWRITE) }?;
     hr.ok()
 }

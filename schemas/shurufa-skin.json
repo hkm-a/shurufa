@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "light": {
+    "keyboard": {
+      "background": "#F0F1F5",
+      "key": "#FFFFFF",
+      "key_pressed": "#C7CED9",
+      "function_key": "#D5DAE3",
+      "function_key_pressed": "#BFC6D2",
+      "text": "#1A1A1A",
+      "function_text": "#33383F",
+      "muted_text": "#8A9099",
+      "accent": "#35B982"
+    },
+    "candidate": {
+      "background": "#FAFAFA",
+      "highlight_background": "#F5E6D8",
+      "text": "#202020",
+      "preedit": "#888888",
+      "label": "#B06030"
+    }
+  },
+  "dark": {
+    "keyboard": {
+      "background": "#15171B",
+      "key": "#2B2F36",
+      "key_pressed": "#474D57",
+      "function_key": "#373C44",
+      "function_key_pressed": "#4A5059",
+      "text": "#ECECEC",
+      "function_text": "#CFD3D9",
+      "muted_text": "#8B9199",
+      "accent": "#68D3A0"
+    },
+    "candidate": {
+      "background": "#20242A",
+      "highlight_background": "#38434D",
+      "text": "#ECECEC",
+      "preedit": "#9AA1AB",
+      "label": "#68D3A0"
+    }
+  }
+}

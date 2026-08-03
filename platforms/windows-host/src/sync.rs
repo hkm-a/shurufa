@@ -62,7 +62,12 @@ pub fn broadcast_image(bmp: &[u8]) {
                 crate::log_line("图片超过手机同步帧上限，已生成缩小副本发送");
             }
             let _ = tx.send(Broadcast::Image(png));
+            crate::log_line("已将图片加入同步发送队列");
+        } else {
+            crate::log_line("图片编码为 PNG 失败，未加入同步发送队列");
         }
+    } else {
+        crate::log_line("同步发送队列尚未初始化，图片未发送");
     }
 }
 
@@ -383,6 +388,26 @@ pub fn cli_devices() {
             }
         }
         Err(e) => println!("读取配对表失败：{e}"),
+    }
+}
+
+/// `relay` 子命令：持久化自托管中继地址；下次启动守护进程时生效。
+pub fn cli_relay(value: &str) {
+    let value = value.trim();
+    let relay = if value.eq_ignore_ascii_case("off") {
+        None
+    } else {
+        Some(value)
+    };
+    match sync_core::save_relay_addr(&sync_config_dir(), relay) {
+        Ok(()) if relay.is_some() => {
+            println!("已保存自托管中继：{value}。重启 shurufa-host 后生效。")
+        }
+        Ok(()) => println!("已关闭自托管中继。重启 shurufa-host 后生效。"),
+        Err(e) => {
+            eprintln!("保存中继配置失败：{e}");
+            std::process::exit(1);
+        }
     }
 }
 

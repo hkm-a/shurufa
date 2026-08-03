@@ -13,6 +13,11 @@ if not exist "%SRC%\target\debug\shurufa_tsf.dll" (
     pause
     exit /b 1
 )
+if not exist "%SRC%\target\debug\shurufa-algo.exe" (
+    echo [error] build first: cargo build -p shurufa-algo
+    pause
+    exit /b 1
+)
 if not exist "%SRC%\third_party\librime\dist\lib\rime.dll" (
     echo [error] missing third_party\librime, see README for the download command
     pause

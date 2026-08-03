@@ -1,0 +1,14 @@
+[package]
+name = "shurufa-relay"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Shurufa 自托管透明中继服务"
+
+[[bin]]
+name = "shurufa-relay"
+path = "src/main.rs"
+
+[dependencies]
+sync-core = { path = "../../core/sync" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -30,6 +30,7 @@ internal class WetypeKeyboardView(
     context: Context,
     page: KeyboardLayoutSpec.Page,
     private val dark: Boolean,
+    private val palette: ShurufaImeService.Palette,
     private val asciiMode: Boolean,
     private val uppercaseLetters: Boolean,
     private val onAction: (WetypeAction) -> Unit,
@@ -45,16 +46,24 @@ internal class WetypeKeyboardView(
         object Space : WetypeAction()
         object Lang : WetypeAction()
         object Clear : WetypeAction()
+        /** 空格键长按语音：发出 / 取消 / 结束（松手上屏）。 */
+        object VoiceStart : WetypeAction()
+        object VoiceCancel : WetypeAction()
+        object VoiceEnd : WetypeAction()
+        /** 删除键长按开始连删；上滑清空。二者提示由 Service 状态条统一显示。 */
+        object BackspaceStart : WetypeAction()
+        object BackspaceClear : WetypeAction()
+        object BackspaceEnd : WetypeAction()
     }
 
-    private val keyColor = if (dark) 0xFF2B2F36.toInt() else 0xFFFFFFFF.toInt()
-    private val keyPressedColor = if (dark) 0xFF474D57.toInt() else 0xFFC7CED9.toInt()
-    private val funcColor = if (dark) 0xFF373C44.toInt() else 0xFFD5DAE3.toInt()
-    private val funcPressedColor = if (dark) 0xFF4A5059.toInt() else 0xFFBFC6D2.toInt()
-    private val textColor = if (dark) 0xFFE6E8EB.toInt() else 0xFF1A1A1A.toInt()
-    private val funcTextColor = if (dark) 0xFFE6E8EB.toInt() else 0xFF33383F.toInt()
-    private val languageActiveColor = if (dark) 0xFF68D3A0.toInt() else 0xFF35B982.toInt()
-    private val languageInactiveColor = if (dark) 0xFF98A1AD.toInt() else 0xFF8E97A3.toInt()
+    private val keyColor = palette.key
+    private val keyPressedColor = palette.keyPressed
+    private val funcColor = palette.keyFunc
+    private val funcPressedColor = palette.funcPressed
+    private val textColor = palette.keyText
+    private val funcTextColor = palette.funcText
+    private val languageActiveColor = palette.accent
+    private val languageInactiveColor = palette.preedit
     private val rows: List<KeyboardLayoutSpec.Row> = when (page) {
         KeyboardLayoutSpec.Page.LETTERS -> KeyboardLayoutSpec.letterRows(
             uppercaseLetters,
@@ -77,11 +86,12 @@ internal class WetypeKeyboardView(
 
     init {
         orientation = VERTICAL
+
         renderRows(renderedKeyboardHeight)
     }
 
     /**
-     * 以 IME 输入视图的实际余量限制键区高度。
+     * 以 IME 输入实际的实际余量限制键区高度。
      *
      * 不能直接依赖完整显示屏高度：分屏、自由窗口和系统受限输入区都会比它小。
      */
@@ -165,8 +175,10 @@ internal class WetypeKeyboardView(
                     var downY = 0f
                     var cleared = false
                     var repeated = false
-                    val repeatDelete = object : Runnable {
+                    // 长按重复触发后：连续删除；提示由 Service 顶部状态条统一显示。
+                    val startRepeat = object : Runnable {
                         override fun run() {
+                            if (!repeated) onAction(WetypeAction.BackspaceStart)
                             onAction(repeatAction ?: action)
                             repeated = true
                             postDelayed(this, BackspaceGestureSpec.REPEAT_INTERVAL_MILLIS)
@@ -179,7 +191,7 @@ internal class WetypeKeyboardView(
                                 cleared = false
                                 repeated = false
                                 if (repeatAction != null) {
-                                    view.postDelayed(repeatDelete, BackspaceGestureSpec.REPEAT_DELAY_MILLIS)
+                                    view.postDelayed(startRepeat, BackspaceGestureSpec.REPEAT_DELAY_MILLIS)
                                 }
                                 true
                             }
@@ -191,13 +203,15 @@ internal class WetypeKeyboardView(
                                     )
                                 ) {
                                     cleared = true
-                                    view.removeCallbacks(repeatDelete)
+                                    view.removeCallbacks(startRepeat)
                                     onAction(WetypeAction.Clear)
+                                    onAction(WetypeAction.BackspaceClear)
                                 }
                                 true
                             }
                             MotionEvent.ACTION_UP -> {
-                                view.removeCallbacks(repeatDelete)
+                                view.removeCallbacks(startRepeat)
+                                onAction(WetypeAction.BackspaceEnd)
                                 view.performClick()
                                 if (BackspaceGestureSpec.shouldDeleteOnRelease(cleared, repeated)) {
                                     onAction(action)
@@ -205,11 +219,98 @@ internal class WetypeKeyboardView(
                                 true
                             }
                             MotionEvent.ACTION_CANCEL -> {
-                                view.removeCallbacks(repeatDelete)
+                                view.removeCallbacks(startRepeat)
+                                onAction(WetypeAction.BackspaceEnd)
                                 true
                             }
                             else -> true
                         }
+                    }
+                }
+            }
+        } else if (key.kind == KeyboardLayoutSpec.Kind.SPACE) {
+            // 空格键：单击输出空格；长按启动语音输入（提示走 Service 顶部状态条）。
+            // 上滑取消；松手上屏识别结果。键面常驻一个小麦克风图标。
+            FrameLayout(context).apply {
+                this.background = background
+                contentDescription = key.description
+                // 键面中央：常驻麦克风图标；语音聆听中切换为状态文（最可靠的视觉反馈）。
+                val micIcon = TextView(context).apply {
+                    text = "🎤"
+                    textSize = 15f
+                    gravity = Gravity.CENTER
+                    setTextColor(if (dark) 0xFF8E949D.toInt() else 0xFF6B7280.toInt())
+                }
+                addView(micIcon, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                val subHint = TextView(context).apply {
+                    text = "按住说话"
+                    textSize = 9f
+                    gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                    setTextColor(if (dark) 0x669BA2AC.toInt() else 0x669AA0AA.toInt())
+                    setPadding(0, 0, 0, dp(4f))
+                }
+                addView(subHint, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                var downY = 0f
+                var voiceActive = false
+                var cancelled = false
+                val startVoice = object : Runnable {
+                    override fun run() {
+                        if (voiceActive) return
+                        voiceActive = true
+                        cancelled = false
+                        micIcon.text = "🎤 聆听中…"
+                        micIcon.setTextColor(if (dark) 0xFF78D5A6.toInt() else 0xFF2FA360.toInt())
+                        subHint.visibility = View.GONE
+                        onAction(WetypeAction.VoiceStart)
+                    }
+                }
+                fun restoreMicFace() {
+                    micIcon.text = "🎤"
+                    micIcon.setTextColor(if (dark) 0xFF8E949D.toInt() else 0xFF6B7280.toInt())
+                    subHint.visibility = View.VISIBLE
+                }
+                setOnTouchListener { view, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            downY = event.y
+                            voiceActive = false
+                            cancelled = false
+                            view.postDelayed(startVoice, VoiceGestureSpec.LONG_PRESS_MILLIS)
+                            true
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            if (voiceActive && !cancelled && VoiceGestureSpec.shouldCancel(
+                                    downY,
+                                    event.y,
+                                    dp(VoiceGestureSpec.CANCEL_SWIPE_DP).toFloat(),
+                                )
+                            ) {
+                                cancelled = true
+                                restoreMicFace()
+                                onAction(WetypeAction.VoiceCancel)
+                            }
+                            true
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            view.removeCallbacks(startVoice)
+                            restoreMicFace()
+                            if (voiceActive && !cancelled) {
+                                onAction(WetypeAction.VoiceEnd)
+                            } else if (!voiceActive) {
+                                // 短按：普通空格。
+                                onAction(WetypeAction.Space)
+                            }
+                            true
+                        }
+                        MotionEvent.ACTION_CANCEL -> {
+                            view.removeCallbacks(startVoice)
+                            restoreMicFace()
+                            if (voiceActive && !cancelled) {
+                                onAction(WetypeAction.VoiceCancel)
+                            }
+                            true
+                        }
+                        else -> true
                     }
                 }
             }
@@ -326,7 +427,9 @@ internal object KeyboardHeightSpec {
         max(normalHeightPx.coerceAtLeast(0), rowCount.coerceAtLeast(0) * minimumRowHeightPx.coerceAtLeast(0))
 
     fun resolve(normalHeightPx: Int, availableHeightPx: Int): Int =
-        min(normalHeightPx.coerceAtLeast(0), availableHeightPx.coerceAtLeast(0))
+        // 可用余量不足时回退到自然高度，避免被一次性压成 0：键盘需要刷新到满尺寸。
+        if (availableHeightPx <= 0) normalHeightPx.coerceAtLeast(0)
+        else min(normalHeightPx.coerceAtLeast(0), availableHeightPx.coerceAtLeast(0))
 }
 
 /** 键盘页面与键位语义的纯规格，便于单元测试验证视觉顺序不会影响输入功能。 */
@@ -445,4 +548,13 @@ internal object BackspaceGestureSpec {
         downY - currentY > thresholdPx
 
     fun shouldDeleteOnRelease(cleared: Boolean, repeated: Boolean): Boolean = !cleared && !repeated
+}
+
+/** 空格键语音手势；长按阈值与上滑取消距离。 */
+internal object VoiceGestureSpec {
+    const val LONG_PRESS_MILLIS = 380L
+    const val CANCEL_SWIPE_DP = 40f
+
+    fun shouldCancel(downY: Float, currentY: Float, thresholdPx: Float): Boolean =
+        downY - currentY > thresholdPx
 }

@@ -135,7 +135,9 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                                         &png,
                                         &format!("同步·{from_name}"),
                                     ) {
-                                        Some(id) => ("image".to_string(), from_name, id.to_string()),
+                                        Some(id) => {
+                                            ("image".to_string(), from_name, id.to_string())
+                                        }
                                         None => return,
                                     }
                                 }
@@ -188,6 +190,31 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                 }
                 Err(_) => 0,
             }
+        },
+        0,
+    )
+}
+
+/// 保存自托管中继地址。已启动的 `SyncService` 由 OnceLock 持有，配置将在
+/// 下次重启输入法进程后读取并生效。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSetRelayAddr(
+    mut env: JNIEnv,
+    _class: JClass,
+    config_dir: JString,
+    relay_addr: JString,
+) -> jboolean {
+    crate::jni_catch(
+        || {
+            let dir = PathBuf::from(jstr(&mut env, &config_dir));
+            let relay_addr = jstr(&mut env, &relay_addr);
+            let relay_addr = relay_addr.trim();
+            let relay = if relay_addr.is_empty() || relay_addr.eq_ignore_ascii_case("off") {
+                None
+            } else {
+                Some(relay_addr)
+            };
+            sync_core::save_relay_addr(&dir, relay).is_ok() as jboolean
         },
         0,
     )

@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 
-use windows::core::{implement, IUnknown, Interface, Ref, Result, GUID, BOOL};
+use windows::core::{implement, IUnknown, Interface, Ref, Result, BOOL, GUID};
 use windows::Win32::Foundation::{CLASS_E_NOAGGREGATION, E_POINTER};
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 

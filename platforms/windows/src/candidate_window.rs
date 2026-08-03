@@ -9,22 +9,23 @@ use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-    GetDC, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, SelectObject, SetBkMode,
-    SetTextColor, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HBRUSH, HDC,
-    HFONT, HGDIOBJ, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
+    GetTextExtentPoint32W, InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
+    DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HBRUSH, HDC, HFONT, HGDIOBJ,
+    PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, LoadCursorW, MoveWindow,
     RegisterClassW, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW,
-    SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-    SW_SHOWNOACTIVATE, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
+    WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
-use ime_bridge::Context;
+use ime_ipc::Context;
+
+use crate::skin::{load_candidate_colors, CandidateColors};
 
 const CLASS_NAME: PCWSTR = w!("ShurufaCandidateWindow");
 
@@ -38,13 +39,6 @@ const BASE_HL_PAD: i32 = 7;
 const BASE_FONT_HEIGHT: i32 = 26;
 const BASE_PREEDIT_FONT_HEIGHT: i32 = 18;
 const BASE_MIN_WIDTH: i32 = 96;
-
-// 配色（COLORREF 为 0x00BBGGRR）
-const COLOR_BG: u32 = 0x00FA_FAFA;
-const COLOR_HIGHLIGHT_BG: u32 = 0x00F5_E6D8;
-const COLOR_TEXT: u32 = 0x0020_2020;
-const COLOR_PREEDIT: u32 = 0x0088_8888;
-const COLOR_LABEL: u32 = 0x00B0_6030;
 
 /// 单个候选的横向布局槽位（坐标为窗口客户区像素）
 struct Item {
@@ -60,6 +54,7 @@ struct PaintData {
     preedit: String,
     items: Vec<Item>,
     dpi: u32,
+    colors: CandidateColors,
 }
 
 // 绘制数据挂在线程本地：窗口与 TSF 回调同属宿主 UI 线程
@@ -68,6 +63,7 @@ thread_local! {
         preedit: String::new(),
         items: Vec::new(),
         dpi: 96,
+        colors: CandidateColors::default(),
     });
     static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) };
 }
@@ -107,11 +103,15 @@ unsafe fn text_width(hdc: HDC, text: &str) -> i32 {
 
 pub struct CandidateUi {
     hwnd: Option<HWND>,
+    colors: CandidateColors,
 }
 
 impl CandidateUi {
     pub fn new() -> Self {
-        CandidateUi { hwnd: None }
+        CandidateUi {
+            hwnd: None,
+            colors: load_candidate_colors(),
+        }
     }
 
     fn ensure_window(&mut self) -> Option<HWND> {
@@ -219,6 +219,7 @@ impl CandidateUi {
             data.preedit = ctx.preedit.clone();
             data.items = items;
             data.dpi = dpi;
+            data.colors = self.colors;
         });
 
         unsafe {
@@ -287,8 +288,9 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let hl_pad = scale(BASE_HL_PAD, dpi);
         let preedit_h = scale(BASE_PREEDIT_HEIGHT, dpi);
         let row_h = scale(BASE_ROW_HEIGHT, dpi);
+        let colors = data.colors;
 
-        let bg = CreateSolidBrush(COLORREF(COLOR_BG));
+        let bg = CreateSolidBrush(COLORREF(colors.background));
         FillRect(hdc, rc, bg);
         let _ = DeleteObject(HGDIOBJ(bg.0));
         SetBkMode(hdc, TRANSPARENT);
@@ -296,7 +298,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         // 预编辑串（小号灰字，第一行）
         let preedit_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
         let old_font = SelectObject(hdc, HGDIOBJ(preedit_font.0));
-        SetTextColor(hdc, COLORREF(COLOR_PREEDIT));
+        SetTextColor(hdc, COLORREF(colors.preedit));
         draw_line(
             hdc,
             &data.preedit,
@@ -313,7 +315,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         for item in &data.items {
             let item_end = item.x + item.label_w + label_gap + item.text_w;
             if item.highlighted {
-                let hl = CreateSolidBrush(COLORREF(COLOR_HIGHLIGHT_BG));
+                let hl = CreateSolidBrush(COLORREF(colors.highlight_background));
                 let hl_rect = RECT {
                     left: item.x - hl_pad,
                     top: row_top,
@@ -324,10 +326,17 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 let _ = DeleteObject(HGDIOBJ(hl.0));
             }
 
-            SetTextColor(hdc, COLORREF(COLOR_LABEL));
-            draw_line(hdc, &item.label, item.x, row_top, item.x + item.label_w, row_h);
+            SetTextColor(hdc, COLORREF(colors.label));
+            draw_line(
+                hdc,
+                &item.label,
+                item.x,
+                row_top,
+                item.x + item.label_w,
+                row_h,
+            );
 
-            SetTextColor(hdc, COLORREF(COLOR_TEXT));
+            SetTextColor(hdc, COLORREF(colors.text));
             draw_line(
                 hdc,
                 &item.text,

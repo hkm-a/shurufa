@@ -1,7 +1,7 @@
 //! 剪贴板历史面板：全局热键呼出的置顶弹窗。
 //!
-//! 交互：Ctrl+Shift+V（冲突时回落 Alt+V）呼出 → ↑/↓ 或数字键选择 →
-//! 回车写回剪贴板并向原前台窗口模拟 Ctrl+V 完成粘贴，Esc 或失焦关闭。
+//! 交互：Ctrl+Shift+V（冲突时回落 Alt+V）呼出 → 直接键入筛选、↑/↓ 或数字键
+//! 选择 → 回车写回剪贴板并向原前台窗口模拟 Ctrl+V 完成粘贴，Esc 或失焦关闭。
 //! 面板与监听器同属一条 UI 线程，状态挂 thread_local。
 
 use std::cell::RefCell;
@@ -19,14 +19,14 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, VIRTUAL_KEY, VK_CONTROL, VK_DOWN, VK_ESCAPE,
-    VK_RETURN, VK_SHIFT, VK_UP,
+    KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DOWN,
+    VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
     GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW, MoveWindow, RegisterClassW,
     SetForegroundWindow, ShowWindow, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO, IDC_ARROW, SM_CXSCREEN,
-    SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_KEYDOWN, WM_KILLFOCUS, WM_PAINT, WNDCLASSW,
+    SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_CHAR, WM_KEYDOWN, WM_KILLFOCUS, WM_PAINT, WNDCLASSW,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
@@ -51,6 +51,7 @@ const COLOR_LABEL: u32 = 0x00B0_6030;
 struct PanelState {
     hwnd: HWND,
     entries: Vec<ClipEntry>,
+    query: String,
     selected: usize,
     /// 呼出面板时的前台窗口，粘贴目标
     target: HWND,
@@ -106,6 +107,7 @@ pub fn show(entries: Vec<ClipEntry>) {
         *slot = Some(PanelState {
             hwnd,
             entries,
+            query: String::new(),
             selected: 0,
             target,
             dpi,
@@ -288,6 +290,10 @@ unsafe extern "system" fn wnd_proc(
             on_key(hwnd, VIRTUAL_KEY(wparam.0 as u16));
             LRESULT(0)
         }
+        WM_CHAR => {
+            on_char(hwnd, wparam.0 as u32);
+            LRESULT(0)
+        }
         WM_KILLFOCUS => {
             hide();
             LRESULT(0)
@@ -313,6 +319,12 @@ fn on_key(hwnd: HWND, vk: VIRTUAL_KEY) {
                 state.selected = (state.selected + 1) % count;
                 Some(Action::Repaint)
             }
+            VK_BACK if !state.query.is_empty() => {
+                state.query.pop();
+                state.entries = entries_for_query(&state.query);
+                state.selected = 0;
+                Some(Action::Repaint)
+            }
             // 数字键 1-9 直接选择
             VIRTUAL_KEY(code @ 0x31..=0x39) => {
                 let index = (code - 0x31) as usize;
@@ -335,6 +347,45 @@ fn on_key(hwnd: HWND, vk: VIRTUAL_KEY) {
             let _ = InvalidateRect(Some(hwnd), None, true);
         },
         None => {}
+    }
+}
+
+fn on_char(hwnd: HWND, code: u32) {
+    let Some(character) = char::from_u32(code) else {
+        return;
+    };
+    let changed = PANEL.with_borrow_mut(|slot| {
+        let Some(state) = slot.as_mut() else {
+            return false;
+        };
+        if !append_filter_character(&mut state.query, character) {
+            return false;
+        }
+        state.entries = entries_for_query(&state.query);
+        state.selected = 0;
+        true
+    });
+    if changed {
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, true);
+        }
+    }
+}
+
+fn append_filter_character(query: &mut String, character: char) -> bool {
+    if character.is_control() {
+        return false;
+    }
+    query.push(character);
+    true
+}
+
+fn entries_for_query(query: &str) -> Vec<ClipEntry> {
+    let store = crate::open_store();
+    if query.is_empty() {
+        store.list(MAX_ROWS as u32, 0).unwrap_or_default()
+    } else {
+        store.search(query, MAX_ROWS as u32).unwrap_or_default()
     }
 }
 
@@ -408,7 +459,11 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
             SetTextColor(hdc, COLORREF(COLOR_DIM));
             draw_line(
                 hdc,
-                "（历史为空）",
+                if state.query.is_empty() {
+                    "（历史为空）"
+                } else {
+                    "（无匹配条目）"
+                },
                 padding,
                 padding,
                 width - padding * 2,
@@ -493,9 +548,17 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let footer_top = padding + state.entries.len().max(1) as i32 * row_h;
         SelectObject(hdc, HGDIOBJ(small.0));
         SetTextColor(hdc, COLORREF(COLOR_DIM));
+        let footer = if state.query.is_empty() {
+            "直接键入筛选 · 回车/数字 粘贴 · 图片按 P 贴图 · Esc 关闭".to_owned()
+        } else {
+            format!(
+                "筛选：{} · 退格修改 · 回车/数字 粘贴 · Esc 关闭",
+                crate::single_line_preview(&state.query, 18)
+            )
+        };
         draw_line(
             hdc,
-            "回车/数字 粘贴 · 图片按 P 贴图 · Esc 关闭",
+            &footer,
             padding,
             footer_top,
             width - padding * 2,
@@ -507,6 +570,20 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let _ = DeleteObject(HGDIOBJ(bold.0));
         let _ = DeleteObject(HGDIOBJ(small.0));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_filter_character;
+
+    #[test]
+    fn 筛选条件接受_unicode_并忽略控制字符() {
+        let mut query = "会议".to_owned();
+        assert!(append_filter_character(&mut query, '纪'));
+        assert!(append_filter_character(&mut query, '要'));
+        assert!(!append_filter_character(&mut query, '\u{8}'));
+        assert_eq!(query, "会议纪要");
+    }
 }
 
 unsafe fn draw_line(hdc: HDC, text: &str, x: i32, y: i32, w: i32, h: i32) {
