@@ -76,7 +76,7 @@ $required = @(
     (Join-Path $targetDir 'shurufa_tsf.dll'),
     (Join-Path $targetDir 'shurufa-algo.exe'),
     (Join-Path $targetDir 'shurufa-host.exe'),
-    (Join-Path $targetDir 'shurufa-settings.exe'),
+    (Join-Path $targetDir 'Shurufa.exe'),
     (Join-Path $librime 'lib\rime.dll'),
     (Join-Path $librime 'bin\rime_deployer.exe'),
     (Join-Path $sourceRoot 'installer\register-host-startup.ps1')
@@ -97,7 +97,7 @@ try {
     Copy-Item (Join-Path $targetDir 'shurufa_tsf.dll') $staging
     Copy-Item (Join-Path $targetDir 'shurufa-algo.exe') $staging
     Copy-Item (Join-Path $targetDir 'shurufa-host.exe') $staging
-    Copy-Item (Join-Path $targetDir 'shurufa-settings.exe') $staging
+    Copy-Item (Join-Path $targetDir 'Shurufa.exe') $staging
     Copy-Item (Join-Path $librime 'lib\rime.dll') $staging
     Copy-Item (Join-Path $librime 'bin\rime_deployer.exe') $staging
     Copy-Item (Join-Path $sourceRoot 'installer\register-host-startup.ps1') $staging

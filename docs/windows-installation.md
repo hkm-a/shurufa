@@ -47,7 +47,7 @@ TSF 注册或登录启动配置失败，
 
 ## Shurufa 设置页
 
-运行 `%ProgramData%\shurufa\shurufa-settings.exe` 可打开原生设置页。它可保存或
+从开始菜单或桌面运行 `Shurufa.exe` 可打开原生控制中心。它可保存或
 关闭自托管中继地址、启动后台服务、触发内置热门词库 `rime-ice` 更新，并打开
 Windows 的输入法设置。中继设置会在后台服务下次启动时生效。
 

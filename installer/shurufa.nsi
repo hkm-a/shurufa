@@ -102,7 +102,7 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   File "..\target\release\shurufa_tsf.dll"
   File "..\target\release\shurufa-algo.exe"
   File "..\target\release\shurufa-host.exe"
-  File "..\target\release\shurufa-settings.exe"
+  File "..\target\release\Shurufa.exe"
   File "activate-default-ime.ps1"
   File "register-host-startup.ps1"
   File "..\third_party\librime\dist\lib\rime.dll"
@@ -130,6 +130,9 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   MessageBox MB_ICONSTOP "无法配置 Shurufa 后台服务的登录启动，已恢复旧版本。"
   Goto install_failed
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+  CreateDirectory "$SMPROGRAMS\Shurufa"
+  CreateShortcut "$SMPROGRAMS\Shurufa\Shurufa.lnk" "$INSTDIR\Shurufa.exe"
+  CreateShortcut "$DESKTOP\Shurufa.lnk" "$INSTDIR\Shurufa.exe"
   WriteRegStr HKLM "${PRODUCT_REGISTRY_KEY}" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKLM "${PRODUCT_REGISTRY_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
   WriteRegStr HKLM "${PRODUCT_REGISTRY_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
@@ -156,6 +159,9 @@ Section "Uninstall"
   IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 +2
   ExecWait '"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"' $0
   DeleteRegKey HKLM "${PRODUCT_REGISTRY_KEY}"
+  Delete "$SMPROGRAMS\Shurufa\Shurufa.lnk"
+  RMDir "$SMPROGRAMS\Shurufa"
+  Delete "$DESKTOP\Shurufa.lnk"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir /r "$INSTDIR"
   IfErrors 0 uninstall_done

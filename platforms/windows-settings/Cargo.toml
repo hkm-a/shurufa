@@ -6,7 +6,7 @@ license.workspace = true
 description = "Shurufa Windows 原生设置页"
 
 [[bin]]
-name = "shurufa-settings"
+name = "Shurufa"
 path = "src/main.rs"
 
 [dependencies]

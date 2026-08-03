@@ -32,7 +32,7 @@ $required = @(
     (Join-Path $sourceRoot 'target\release\shurufa_tsf.dll'),
     (Join-Path $sourceRoot 'target\release\shurufa-algo.exe'),
     (Join-Path $sourceRoot 'target\release\shurufa-host.exe'),
-    (Join-Path $sourceRoot 'target\release\shurufa-settings.exe'),
+    (Join-Path $sourceRoot 'target\release\Shurufa.exe'),
     (Join-Path $sourceRoot 'third_party\librime\dist\lib\rime.dll'),
     (Join-Path $sourceRoot 'third_party\librime\dist\bin\rime_deployer.exe')
 )

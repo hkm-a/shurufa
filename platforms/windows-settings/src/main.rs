@@ -1,4 +1,4 @@
-//! Shurufa Windows 设置页。
+//! Shurufa Windows 控制中心。
 //!
 //! 这个轻量原生窗口只管理应用已有的配置和操作入口：中继地址持久化、守护
 //! 进程启动、固定热门词库更新，以及跳转系统的输入法设置。避免再引入第二套
@@ -77,7 +77,7 @@ fn show_message(hwnd: HWND, text: &str, error: bool) {
         let _ = MessageBoxW(
             Some(hwnd),
             &HSTRING::from(text),
-            w!("Shurufa 设置"),
+            w!("Shurufa"),
             if error {
                 MB_ICONERROR
             } else {
@@ -291,7 +291,7 @@ fn main() {
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class,
-            w!("Shurufa 设置"),
+            w!("Shurufa 控制中心"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,

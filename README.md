@@ -33,7 +33,7 @@ Shurufa 把中文输入和设备剪贴板放在同一条工作流里：输入法
    ```
 
 2. 以管理员身份运行生成的 `dist\Shurufa-Setup.exe`。
-3. 安装器会部署 TSF、算法服务、后台同步和默认雾凇拼音方案。
+3. 安装器会部署 TSF、算法服务、后台同步和默认雾凇拼音方案，并创建 `Shurufa.exe` 的开始菜单与桌面快捷方式。
 
 完整的升级、卸载和失败恢复说明见[Windows 安装指南](docs/windows-installation.md)。
 
