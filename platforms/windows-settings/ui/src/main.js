@@ -1,0 +1,216 @@
+import "./styles.css";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  ArrowUpRight,
+  BookOpenText,
+  CircleDot,
+  ClipboardList,
+  Copy,
+  createIcons,
+  FolderOpen,
+  Image,
+  Info,
+  Keyboard,
+  Languages,
+  LayoutDashboard,
+  Lightbulb,
+  MonitorSmartphone,
+  Play,
+  RadioTower,
+  RefreshCw,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles
+} from "lucide";
+
+const controlCenterIcons = {
+  ArrowUpRight,
+  BookOpenText,
+  CircleDot,
+  ClipboardList,
+  Copy,
+  FolderOpen,
+  Image,
+  Info,
+  Keyboard,
+  Languages,
+  LayoutDashboard,
+  Lightbulb,
+  MonitorSmartphone,
+  Play,
+  RadioTower,
+  RefreshCw,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles
+};
+
+const pages = [
+  { id: "workspace", label: "工作台", icon: "layout-dashboard" },
+  { id: "input", label: "输入", icon: "keyboard" },
+  { id: "dictionary", label: "词库", icon: "book-open-text" },
+  { id: "sync", label: "跨设备", icon: "monitor-smartphone" },
+  { id: "settings", label: "偏好", icon: "sliders-horizontal" }
+];
+
+let activePage = "workspace";
+let dashboard = {
+  relay: "",
+  service_status: "待启动",
+  data_directory: ""
+};
+
+const app = document.querySelector("#app");
+
+function navTemplate() {
+  return pages
+    .map(
+      (page) => `
+        <button class="nav-item ${page.id === activePage ? "active" : ""}" data-page="${page.id}">
+          <i data-lucide="${page.icon}"></i>
+          <span>${page.label}</span>
+        </button>`
+    )
+    .join("");
+}
+
+function statusPill() {
+  const running = dashboard.service_status === "运行中";
+  return `<span class="status-pill ${running ? "online" : "idle"}"><span></span>${dashboard.service_status}</span>`;
+}
+
+function workspacePage() {
+  return `
+    <section class="page workspace-page">
+      <header class="page-header">
+        <div><p class="eyebrow">SHURUFA CONTROL CENTER</p><h1>工作台</h1></div>
+        ${statusPill()}
+      </header>
+      <div class="hero-card">
+        <div class="hero-copy"><p class="eyebrow accent">输入与剪贴板</p><h2>专注表达，内容随手可达</h2><p>拼音、热门词库和跨设备剪贴板在同一处管理。</p></div>
+        <button class="primary-action" data-action="start-service"><i data-lucide="play"></i>启动后台服务</button>
+      </div>
+      <div class="metric-grid">
+        <article class="metric-card"><div class="metric-icon teal"><i data-lucide="keyboard"></i></div><span>输入方案</span><strong>雾凇拼音</strong><p>原生 TSF 输入体验</p></article>
+        <article class="metric-card"><div class="metric-icon blue"><i data-lucide="clipboard-list"></i></div><span>剪贴板历史</span><strong>Ctrl+Shift+V</strong><p>快速呼出与粘贴</p></article>
+        <article class="metric-card"><div class="metric-icon coral"><i data-lucide="book-open-text"></i></div><span>热门词库</span><strong>rime-ice</strong><p>随时更新到最新</p></article>
+      </div>
+    </section>`;
+}
+
+function inputPage() {
+  return `
+    <section class="page settings-page">
+      <header class="page-header"><div><p class="eyebrow">INPUT</p><h1>输入</h1></div>${statusPill()}</header>
+      <article class="setting-panel">
+        <div class="setting-row selected"><div class="row-icon"><i data-lucide="circle-dot"></i></div><div><h3>拼音输入</h3><p>雾凇拼音方案已部署</p></div><span class="row-state">已启用</span></div>
+        <div class="divider"></div>
+        <div class="setting-row"><div class="row-icon dim"><i data-lucide="sparkles"></i></div><div><h3>候选与历史</h3><p>使用 Ctrl+Shift+V 呼出剪贴板历史</p></div><span class="shortcut">Ctrl+Shift+V</span></div>
+      </article>
+      <article class="hint-card"><i data-lucide="lightbulb"></i><p>后台服务负责剪贴板历史与跨设备同步。它会以隐藏窗口运行。</p></article>
+    </section>`;
+}
+
+function dictionaryPage() {
+  return `
+    <section class="page settings-page">
+      <header class="page-header"><div><p class="eyebrow">DICTIONARY</p><h1>词库</h1></div></header>
+      <article class="setting-panel dictionary-panel">
+        <div class="setting-row"><div class="row-icon coral"><i data-lucide="book-open-text"></i></div><div><h3>热门云词库</h3><p>rime-ice · 常用词与流行表达</p></div><button class="outline-action" data-action="update-dictionary"><i data-lucide="refresh-cw"></i>更新词库</button></div>
+        <div class="divider"></div>
+        <div class="setting-row"><div class="row-icon"><i data-lucide="shield-check"></i></div><div><h3>本地校验</h3><p>下载完成后校验内容，再替换本地词典</p></div><span class="row-state">已保护</span></div>
+      </article>
+      <article class="hint-card"><i data-lucide="info"></i><p>更新完成后，重启输入法即可应用新词库。</p></article>
+    </section>`;
+}
+
+function syncPage() {
+  return `
+    <section class="page settings-page">
+      <header class="page-header"><div><p class="eyebrow">CROSS DEVICE</p><h1>跨设备</h1></div>${statusPill()}</header>
+      <article class="setting-panel relay-panel">
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="radio-tower"></i></div><div><h3>自托管中继</h3><p>跨网段时使用；留空则关闭</p></div></div>
+        <label class="field-label" for="relay">中继地址</label>
+        <div class="field-action"><input id="relay" value="${escapeHtml(dashboard.relay)}" placeholder="relay.example.com:48633" /><button class="primary-action compact" data-action="save-relay">保存</button></div>
+        <p class="field-note">保存后会在后台服务下次启动时生效。</p>
+      </article>
+      <div class="metric-grid sync-metrics"><article class="metric-card"><div class="metric-icon teal"><i data-lucide="copy"></i></div><span>文本</span><strong>双向同步</strong></article><article class="metric-card"><div class="metric-icon blue"><i data-lucide="image"></i></div><span>图片</span><strong>双向同步</strong></article></div>
+    </section>`;
+}
+
+function settingsPage() {
+  return `
+    <section class="page settings-page">
+      <header class="page-header"><div><p class="eyebrow">PREFERENCES</p><h1>偏好</h1></div></header>
+      <article class="setting-panel">
+        <div class="setting-row"><div class="row-icon"><i data-lucide="settings-2"></i></div><div><h3>系统输入法</h3><p>管理语言、输入法和默认输入法</p></div><button class="outline-action" data-action="open-settings"><i data-lucide="arrow-up-right"></i>打开设置</button></div>
+        <div class="divider"></div>
+        <div class="setting-row"><div class="row-icon dim"><i data-lucide="folder-open"></i></div><div><h3>本地数据</h3><p class="path-value">${escapeHtml(dashboard.data_directory)}</p></div></div>
+      </article>
+    </section>`;
+}
+
+function pageTemplate() {
+  switch (activePage) {
+    case "input": return inputPage();
+    case "dictionary": return dictionaryPage();
+    case "sync": return syncPage();
+    case "settings": return settingsPage();
+    default: return workspacePage();
+  }
+}
+
+function render() {
+  app.innerHTML = `
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark"><i data-lucide="languages"></i></div><div><strong>Shurufa</strong><span>拼音与剪贴板</span></div></div>
+      <nav>${navTemplate()}</nav>
+      <div class="sidebar-footer"><span class="footer-dot"></span><span>后台服务 ${dashboard.service_status}</span></div>
+    </aside>
+    <main class="content">${pageTemplate()}</main>
+    <div id="toast" aria-live="polite"></div>`;
+  createIcons({ icons: controlCenterIcons });
+  document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => { activePage = button.dataset.page; render(); }));
+  document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button)));
+}
+
+async function refreshDashboard() {
+  dashboard = await invoke("dashboard_state");
+}
+
+async function handleAction(button) {
+  const action = button.dataset.action;
+  const actions = {
+    "start-service": ["start_service", undefined, "后台服务已在后台启动"],
+    "update-dictionary": ["update_dictionary", undefined, "词库更新已在后台启动"],
+    "open-settings": ["open_system_settings", undefined, "已打开 Windows 输入法设置"],
+    "save-relay": ["save_relay", { relay: document.querySelector("#relay").value }, "中继设置已保存"]
+  };
+  const [command, args, success] = actions[action];
+  button.disabled = true;
+  try {
+    await invoke(command, args);
+    await refreshDashboard();
+    render();
+    showToast(success);
+  } catch (error) {
+    showToast(String(error), true);
+    button.disabled = false;
+  }
+}
+
+function showToast(message, error = false) {
+  const toast = document.querySelector("#toast");
+  if (!toast) return;
+  toast.textContent = message;
+  toast.className = error ? "show error" : "show";
+  window.setTimeout(() => { toast.className = ""; }, 2600);
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
+}
+
+refreshDashboard().catch((error) => showToast(String(error), true)).finally(render);

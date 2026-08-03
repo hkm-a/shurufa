@@ -3,18 +3,17 @@ name = "shurufa-settings"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "Shurufa Windows 原生设置页"
+description = "Shurufa Tauri 控制中心"
+build = "build.rs"
 
 [[bin]]
 name = "Shurufa"
 path = "src/main.rs"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 sync-core = { path = "../../core/sync" }
-windows = { version = "0.62", features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_System_LibraryLoader",
-    "Win32_UI_Controls",
-    "Win32_UI_WindowsAndMessaging",
-] }
+tauri = { version = "2", features = [] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
