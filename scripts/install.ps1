@@ -23,49 +23,27 @@ function Invoke-Native([string]$File, [string[]]$Arguments) {
     }
 }
 
-function Restore-PreviousDeployment([string]$Destination, [string]$Backup, [string]$StartupState) {
-    $startupScript = Join-Path $Destination 'register-host-startup.ps1'
-    if (
-        -not [string]::IsNullOrWhiteSpace($StartupState) -and
-        (Test-Path -LiteralPath $startupScript -PathType Leaf) -and
-        (Test-Path -LiteralPath $StartupState -PathType Leaf)
-    ) {
-        try {
-            & $startupScript -Restore -StatePath $StartupState
-        }
-        catch {
-            Write-Warning "恢复后台服务登录启动配置失败：$($_.Exception.Message)"
-        }
-    }
-    if (Test-Path -LiteralPath $Destination) {
-        Remove-Item -LiteralPath $Destination -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $Backup) {
-        Move-Item -LiteralPath $Backup -Destination $Destination
-        $dll = Join-Path $Destination 'shurufa_tsf.dll'
-        if (Test-Path -LiteralPath $dll) {
-            & regsvr32.exe /s $dll
-        }
-    }
-}
-
 Assert-Administrator
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $profile = $Configuration.ToLowerInvariant()
 $targetDir = Join-Path $sourceRoot "target\$profile"
 $destination = Join-Path $env:ProgramData 'shurufa'
-$staging = "$destination.installing"
-$backup = "$destination.previous"
 $librime = Join-Path $sourceRoot 'third_party\librime\dist'
 
 if (-not $SkipBuild) {
-    $cargoArgs = @('build', '-p', 'shurufa-tsf', '-p', 'shurufa-algo', '-p', 'shurufa-host', '-p', 'shurufa-settings')
+    $cargoArgs = @('build', '-p', 'shurufa-tsf', '-p', 'shurufa-algo', '-p', 'shurufa-host')
     if ($Configuration -eq 'Release') {
         $cargoArgs += '--release'
     }
     Push-Location $sourceRoot
     try {
         Invoke-Native 'cargo' $cargoArgs
+        if ($Configuration -eq 'Release') {
+            Invoke-Native 'npm' @('--prefix', 'platforms/windows-settings', 'run', 'tauri', '--', 'build', '--no-bundle')
+        }
+        else {
+            Invoke-Native 'cargo' @('build', '-p', 'shurufa-settings')
+        }
     }
     finally {
         Pop-Location
@@ -87,35 +65,31 @@ foreach ($file in $required) {
     }
 }
 
-Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path $staging | Out-Null
-$switched = $false
-$startupState = $null
+if (Test-Path -LiteralPath (Join-Path $destination 'shurufa-host.exe') -PathType Leaf) {
+    & (Join-Path $destination 'shurufa-host.exe') stop
+}
+Get-Process -Name ctfmon, TextInputHost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+$oldDll = Join-Path $destination 'shurufa_tsf.dll'
+if (Test-Path -LiteralPath $oldDll -PathType Leaf) {
+    & regsvr32.exe /u /s $oldDll
+}
+Start-Sleep -Seconds 1
 
 try {
-    Copy-Item (Join-Path $targetDir 'shurufa_tsf.dll') $staging
-    Copy-Item (Join-Path $targetDir 'shurufa-algo.exe') $staging
-    Copy-Item (Join-Path $targetDir 'shurufa-host.exe') $staging
-    Copy-Item (Join-Path $targetDir 'Shurufa.exe') $staging
-    Copy-Item (Join-Path $librime 'lib\rime.dll') $staging
-    Copy-Item (Join-Path $librime 'bin\rime_deployer.exe') $staging
-    Copy-Item (Join-Path $sourceRoot 'installer\register-host-startup.ps1') $staging
-    Copy-Item (Join-Path $sourceRoot 'schemas') (Join-Path $staging 'schemas') -Recurse
+    New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    Copy-Item (Join-Path $targetDir 'shurufa_tsf.dll') $destination -Force
+    Copy-Item (Join-Path $targetDir 'shurufa-algo.exe') $destination -Force
+    Copy-Item (Join-Path $targetDir 'shurufa-host.exe') $destination -Force
+    Copy-Item (Join-Path $targetDir 'Shurufa.exe') $destination -Force
+    Copy-Item (Join-Path $librime 'lib\rime.dll') $destination -Force
+    Copy-Item (Join-Path $librime 'bin\rime_deployer.exe') $destination -Force
+    Copy-Item (Join-Path $sourceRoot 'installer\register-host-startup.ps1') $destination -Force
+    Copy-Item (Join-Path $sourceRoot 'schemas') (Join-Path $destination 'schemas') -Recurse -Force
 
-    $deployer = Join-Path $staging 'rime_deployer.exe'
-    $schemas = Join-Path $staging 'schemas'
+    $deployer = Join-Path $destination 'rime_deployer.exe'
+    $schemas = Join-Path $destination 'schemas'
     Invoke-Native $deployer @('--build', $schemas, $schemas, (Join-Path $schemas 'build'))
 
-    if (Test-Path -LiteralPath $destination) {
-        Move-Item -LiteralPath $destination -Destination $backup
-        $switched = $true
-        $oldDll = Join-Path $backup 'shurufa_tsf.dll'
-        if (Test-Path -LiteralPath $oldDll) {
-            & regsvr32.exe /u /s $oldDll
-        }
-    }
-    Move-Item -LiteralPath $staging -Destination $destination
     Invoke-Native 'icacls.exe' @($destination, '/grant', '*S-1-15-2-1:(OI)(CI)(RX)', '/t', '/c')
     Invoke-Native 'regsvr32.exe' @('/s', (Join-Path $destination 'shurufa_tsf.dll'))
     Set-WinDefaultInputMethodOverride -InputTip '0804:{8A5C1B49-3D2E-4F7A-9C61-0B7E2D5A9F13}{C4E9D2A7-6B31-4A58-8F0D-1E9A7C3B5D26}'
@@ -124,16 +98,9 @@ try {
     Remove-Item -LiteralPath $startupState -Force
 }
 catch {
-    if ($switched) {
-        Restore-PreviousDeployment $destination $backup $startupState
-    }
-    else {
-        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
-    }
     throw
 }
 
-Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
 if (-not $NoStartHost) {
     Start-Process -FilePath (Join-Path $destination 'shurufa-host.exe') -ArgumentList 'supervise' -WindowStyle Hidden
 }
