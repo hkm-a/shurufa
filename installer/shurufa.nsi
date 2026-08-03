@@ -13,6 +13,7 @@ ShowInstDetails show
 ShowUninstDetails show
 
 Var PreviousDirectory
+Var AlternatePreviousDirectory
 Var BackupCreated
 Var RegistrationTool
 Var InputMethodTool
@@ -23,6 +24,7 @@ Function .onInit
   SetShellVarContext all
   StrCpy $INSTDIR "$APPDATA\shurufa"
   StrCpy $PreviousDirectory "$APPDATA\shurufa.previous"
+  StrCpy $AlternatePreviousDirectory "$APPDATA\shurufa.previous.next"
   StrCpy $BackupCreated "0"
   InitPluginsDir
   StrCpy $InputMethodState "$PLUGINSDIR\previous-input-tip.txt"
@@ -94,8 +96,19 @@ backup_remove_stale:
   Goto backup_current
 
 backup_remove_failed:
-  MessageBox MB_ICONSTOP "无法删除旧部署备份：$PreviousDirectory$\r$\n请关闭占用该目录的程序后重试。"
+  MessageBox MB_ICONEXCLAMATION|MB_YESNO "旧部署备份仍被系统占用：$PreviousDirectory$\r$\n是否保留该备份并使用新的回滚目录继续安装？重启 Windows 后系统会清理旧备份。\r$\n选择“否”将取消安装。" IDYES backup_use_alternate IDNO backup_cancel
   Goto backup_cancel
+
+backup_use_alternate:
+  ClearErrors
+  RMDir /r /REBOOTOK "$PreviousDirectory"
+  ClearErrors
+  IfFileExists "$AlternatePreviousDirectory\*.*" 0 alternate_ready
+  MessageBox MB_ICONSTOP "新的回滚目录也已存在：$AlternatePreviousDirectory$\r$\n请先完成上一次安装或重启 Windows 后再试。"
+  Goto backup_cancel
+alternate_ready:
+  StrCpy $PreviousDirectory "$AlternatePreviousDirectory"
+  Goto backup_current
 
 backup_restore_failed:
   MessageBox MB_ICONSTOP "无法恢复旧部署备份到：$INSTDIR$\r$\n请检查目录权限后重试。"
