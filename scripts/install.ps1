@@ -29,6 +29,8 @@ $profile = $Configuration.ToLowerInvariant()
 $targetDir = Join-Path $sourceRoot "target\$profile"
 $destination = Join-Path $env:ProgramData 'shurufa'
 $librime = Join-Path $sourceRoot 'third_party\librime\dist'
+$productVersion = (Get-Content -LiteralPath (Join-Path $sourceRoot 'platforms\windows-settings\tauri.conf.json') -Raw | ConvertFrom-Json).version
+$tsfDllName = "shurufa_tsf-$productVersion.dll"
 
 if (-not $SkipBuild) {
     $cargoArgs = @('build', '-p', 'shurufa-tsf', '-p', 'shurufa-algo', '-p', 'shurufa-host')
@@ -69,15 +71,21 @@ if (Test-Path -LiteralPath (Join-Path $destination 'shurufa-host.exe') -PathType
     & (Join-Path $destination 'shurufa-host.exe') stop
 }
 Get-Process -Name ctfmon, TextInputHost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-$oldDll = Join-Path $destination 'shurufa_tsf.dll'
-if (Test-Path -LiteralPath $oldDll -PathType Leaf) {
-    & regsvr32.exe /u /s $oldDll
+$versionedDll = Join-Path $destination $tsfDllName
+if (Test-Path -LiteralPath $versionedDll -PathType Leaf) {
+    & regsvr32.exe /u /s $versionedDll
+}
+$legacyDll = Join-Path $destination 'shurufa_tsf.dll'
+if (Test-Path -LiteralPath $legacyDll -PathType Leaf) {
+    & regsvr32.exe /u /s $legacyDll
 }
 Start-Sleep -Seconds 1
 
 try {
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
-    Copy-Item (Join-Path $targetDir 'shurufa_tsf.dll') $destination -Force
+    if (-not (Test-Path -LiteralPath $versionedDll -PathType Leaf)) {
+        Copy-Item (Join-Path $targetDir 'shurufa_tsf.dll') $versionedDll
+    }
     Copy-Item (Join-Path $targetDir 'shurufa-algo.exe') $destination -Force
     Copy-Item (Join-Path $targetDir 'shurufa-host.exe') $destination -Force
     Copy-Item (Join-Path $targetDir 'Shurufa.exe') $destination -Force
@@ -91,7 +99,7 @@ try {
     Invoke-Native $deployer @('--build', $schemas, $schemas, (Join-Path $schemas 'build'))
 
     Invoke-Native 'icacls.exe' @($destination, '/grant', '*S-1-15-2-1:(OI)(CI)(RX)', '/t', '/c')
-    Invoke-Native 'regsvr32.exe' @('/s', (Join-Path $destination 'shurufa_tsf.dll'))
+    Invoke-Native 'regsvr32.exe' @('/s', $versionedDll)
     Set-WinDefaultInputMethodOverride -InputTip '0804:{8A5C1B49-3D2E-4F7A-9C61-0B7E2D5A9F13}{C4E9D2A7-6B31-4A58-8F0D-1E9A7C3B5D26}'
     $startupState = Join-Path $destination '.startup-state.json'
     & (Join-Path $destination 'register-host-startup.ps1') -InstallDir $destination -StatePath $startupState

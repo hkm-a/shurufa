@@ -4,9 +4,10 @@ RequestExecutionLevel admin
 !include "MUI2.nsh"
 
 !define PRODUCT_NAME "Shurufa 拼音"
-!define PRODUCT_VERSION "0.4.0"
+!define PRODUCT_VERSION "0.4.1"
 !define PRODUCT_PUBLISHER "Shurufa"
 !define PRODUCT_REGISTRY_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Shurufa"
+!define TSF_DLL_FILE "shurufa_tsf-${PRODUCT_VERSION}.dll"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "..\dist\Shurufa-Setup.exe"
@@ -71,6 +72,8 @@ Function PrepareInPlaceUpdate
   IfFileExists "$INSTDIR\shurufa-host.exe" 0 +2
   !insertmacro RunHidden '"$INSTDIR\shurufa-host.exe" stop'
   Call StopInputProcesses
+  IfFileExists "$INSTDIR\${TSF_DLL_FILE}" 0 +2
+  !insertmacro RunHidden '"$RegistrationTool" /s /u "$INSTDIR\${TSF_DLL_FILE}"'
   IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 +2
   !insertmacro RunHidden '"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"'
   Sleep 1000
@@ -79,7 +82,9 @@ FunctionEnd
 Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   Call PrepareInPlaceUpdate
   SetOutPath "$INSTDIR"
-  File "..\target\release\shurufa_tsf.dll"
+  SetOverwrite off
+  File /oname=${TSF_DLL_FILE} "..\target\release\shurufa_tsf.dll"
+  SetOverwrite on
   File "..\target\release\shurufa-algo.exe"
   File "..\target\release\shurufa-host.exe"
   File "..\target\release\Shurufa.exe"
@@ -97,7 +102,7 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   IntCmp $0 0 +3
   MessageBox MB_ICONSTOP "无法授予输入法宿主读取权限。现有安装目录不会被删除，请关闭占用程序后重试。"
   Goto install_failed
-  !insertmacro RunHidden '"$RegistrationTool" /s "$INSTDIR\shurufa_tsf.dll"'
+  !insertmacro RunHidden '"$RegistrationTool" /s "$INSTDIR\${TSF_DLL_FILE}"'
   IntCmp $0 0 +3
   MessageBox MB_ICONSTOP "TSF 注册失败。现有安装目录不会被删除，请关闭占用程序后重试。"
   Goto install_failed
@@ -133,6 +138,8 @@ Section "Uninstall"
   !insertmacro RunHidden '"$INSTDIR\shurufa-host.exe" stop'
   IfFileExists "$INSTDIR\register-host-startup.ps1" 0 +2
   !insertmacro RunHidden '"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -Remove'
+  IfFileExists "$INSTDIR\${TSF_DLL_FILE}" 0 +2
+  !insertmacro RunHidden '"$RegistrationTool" /s /u "$INSTDIR\${TSF_DLL_FILE}"'
   IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 +2
   !insertmacro RunHidden '"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"'
   DeleteRegKey HKLM "${PRODUCT_REGISTRY_KEY}"
