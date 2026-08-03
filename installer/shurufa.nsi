@@ -68,7 +68,15 @@ Function StopInputProcesses
   Sleep 1000
 FunctionEnd
 
+Function StopControlCenter
+  ; 覆盖桌面端 EXE 前必须释放 WebView 与主进程的文件句柄。
+  ; 未运行时 taskkill 返回非零，不影响后续原位安装。
+  !insertmacro RunHidden '"$SYSDIR\taskkill.exe" /f /im Shurufa.exe'
+  Sleep 500
+FunctionEnd
+
 Function PrepareInPlaceUpdate
+  Call StopControlCenter
   IfFileExists "$INSTDIR\shurufa-host.exe" 0 +2
   !insertmacro RunHidden '"$INSTDIR\shurufa-host.exe" stop'
   Call StopInputProcesses
