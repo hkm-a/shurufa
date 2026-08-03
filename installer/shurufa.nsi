@@ -63,6 +63,10 @@ backup_current:
   Return
 
 backup_exists:
+  IfFileExists "$PreviousDirectory\shurufa-host.exe" 0 previous_host_stopped
+  ExecWait '"$PreviousDirectory\shurufa-host.exe" stop' $0
+  Sleep 1000
+previous_host_stopped:
   IfFileExists "$INSTDIR\*.*" backup_conflict
   Rename "$PreviousDirectory" "$INSTDIR"
   IfErrors backup_restore_failed
@@ -73,6 +77,9 @@ backup_conflict:
   Goto backup_cancel
 
 backup_remove_stale:
+  IfFileExists "$INSTDIR\shurufa-host.exe" 0 +2
+  ExecWait '"$INSTDIR\shurufa-host.exe" stop' $0
+  Sleep 1000
   ClearErrors
   RMDir /r "$PreviousDirectory"
   IfErrors backup_remove_failed
