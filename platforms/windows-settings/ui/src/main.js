@@ -21,6 +21,7 @@ import {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
+  Square,
   Sparkles
 } from "lucide";
 
@@ -44,6 +45,7 @@ const controlCenterIcons = {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
+  Square,
   Sparkles
 };
 
@@ -82,20 +84,23 @@ function statusPill() {
 }
 
 function workspacePage() {
+  const serviceAction = dashboard.service_status === "运行中"
+    ? `<button class="outline-action" data-action="stop-service"><i data-lucide="square"></i>停止后台服务</button>`
+    : `<button class="primary-action" data-action="start-service"><i data-lucide="play"></i>启动后台服务</button>`;
   return `
     <section class="page workspace-page">
       <header class="page-header">
         <div><p class="eyebrow">SHURUFA CONTROL CENTER</p><h1>工作台</h1></div>
-        ${statusPill()}
+        <div class="header-actions">${statusPill()}<button class="icon-action" data-action="refresh" title="刷新后台状态"><i data-lucide="refresh-cw"></i></button></div>
       </header>
       <div class="hero-card">
         <div class="hero-copy"><p class="eyebrow accent">输入与剪贴板</p><h2>专注表达，内容随手可达</h2><p>拼音、热门词库和跨设备剪贴板在同一处管理。</p></div>
-        <button class="primary-action" data-action="start-service"><i data-lucide="play"></i>启动后台服务</button>
+        ${serviceAction}
       </div>
       <div class="metric-grid">
-        <article class="metric-card"><div class="metric-icon teal"><i data-lucide="keyboard"></i></div><span>输入方案</span><strong>雾凇拼音</strong><p>原生 TSF 输入体验</p></article>
-        <article class="metric-card"><div class="metric-icon blue"><i data-lucide="clipboard-list"></i></div><span>剪贴板历史</span><strong>Ctrl+Shift+V</strong><p>快速呼出与粘贴</p></article>
-        <article class="metric-card"><div class="metric-icon coral"><i data-lucide="book-open-text"></i></div><span>热门词库</span><strong>rime-ice</strong><p>随时更新到最新</p></article>
+        <button class="metric-card metric-link" data-page="input"><div class="metric-icon teal"><i data-lucide="keyboard"></i></div><span>输入方案</span><strong>雾凇拼音</strong><p>查看输入与历史设置</p></button>
+        <button class="metric-card metric-link" data-page="sync"><div class="metric-icon blue"><i data-lucide="clipboard-list"></i></div><span>剪贴板历史</span><strong>Ctrl+Shift+V</strong><p>管理跨设备同步</p></button>
+        <button class="metric-card metric-link" data-page="dictionary"><div class="metric-icon coral"><i data-lucide="book-open-text"></i></div><span>热门词库</span><strong>rime-ice</strong><p>检查并更新词库</p></button>
       </div>
     </section>`;
 }
@@ -105,7 +110,7 @@ function inputPage() {
     <section class="page settings-page">
       <header class="page-header"><div><p class="eyebrow">INPUT</p><h1>输入</h1></div>${statusPill()}</header>
       <article class="setting-panel">
-        <div class="setting-row selected"><div class="row-icon"><i data-lucide="circle-dot"></i></div><div><h3>拼音输入</h3><p>雾凇拼音方案已部署</p></div><span class="row-state">已启用</span></div>
+        <div class="setting-row selected"><div class="row-icon"><i data-lucide="circle-dot"></i></div><div><h3>拼音输入</h3><p>雾凇拼音方案已部署</p></div><button class="outline-action" data-action="open-settings"><i data-lucide="arrow-up-right"></i>系统设置</button></div>
         <div class="divider"></div>
         <div class="setting-row"><div class="row-icon dim"><i data-lucide="sparkles"></i></div><div><h3>候选与历史</h3><p>使用 Ctrl+Shift+V 呼出剪贴板历史</p></div><span class="shortcut">Ctrl+Shift+V</span></div>
       </article>
@@ -147,7 +152,7 @@ function settingsPage() {
       <article class="setting-panel">
         <div class="setting-row"><div class="row-icon"><i data-lucide="settings-2"></i></div><div><h3>系统输入法</h3><p>管理语言、输入法和默认输入法</p></div><button class="outline-action" data-action="open-settings"><i data-lucide="arrow-up-right"></i>打开设置</button></div>
         <div class="divider"></div>
-        <div class="setting-row"><div class="row-icon dim"><i data-lucide="folder-open"></i></div><div><h3>本地数据</h3><p class="path-value">${escapeHtml(dashboard.data_directory)}</p></div></div>
+        <div class="setting-row"><div class="row-icon dim"><i data-lucide="folder-open"></i></div><div><h3>本地数据</h3><p class="path-value">${escapeHtml(dashboard.data_directory)}</p></div><button class="outline-action" data-action="open-data-directory"><i data-lucide="folder-open"></i>打开目录</button></div>
       </article>
     </section>`;
 }
@@ -183,15 +188,19 @@ async function refreshDashboard() {
 async function handleAction(button) {
   const action = button.dataset.action;
   const actions = {
-    "start-service": ["start_service", undefined, "后台服务已在后台启动"],
+    "start-service": ["start_service", undefined, "已发送后台服务启动请求", 900],
+    "stop-service": ["stop_service", undefined, "已发送后台服务停止请求", 900],
     "update-dictionary": ["update_dictionary", undefined, "词库更新已在后台启动"],
     "open-settings": ["open_system_settings", undefined, "已打开 Windows 输入法设置"],
-    "save-relay": ["save_relay", { relay: document.querySelector("#relay").value }, "中继设置已保存"]
+    "open-data-directory": ["open_data_directory", undefined, "已打开本地数据目录"],
+    "save-relay": ["save_relay", { relay: document.querySelector("#relay").value }, "中继设置已保存"],
+    refresh: [undefined, undefined, "后台状态已刷新"]
   };
-  const [command, args, success] = actions[action];
+  const [command, args, success, delay] = actions[action];
   button.disabled = true;
   try {
-    await invoke(command, args);
+    if (command) await invoke(command, args);
+    if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
     await refreshDashboard();
     render();
     showToast(success);

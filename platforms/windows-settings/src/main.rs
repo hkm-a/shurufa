@@ -4,6 +4,7 @@
 //! 同目录可执行文件，避免为桌面 UI 再建立平行的业务实现。
 
 #![cfg(windows)]
+#![windows_subsystem = "windows"]
 
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -84,6 +85,11 @@ fn start_service() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn stop_service() -> Result<(), String> {
+    launch_host(&["stop"])
+}
+
+#[tauri::command]
 fn update_dictionary() -> Result<(), String> {
     launch_host(&["dict-update", "rime-ice"])
 }
@@ -98,14 +104,27 @@ fn open_system_settings() -> Result<(), String> {
         .map_err(|error| format!("打开系统设置失败：{error}"))
 }
 
+#[tauri::command]
+fn open_data_directory() -> Result<(), String> {
+    let directory = app_data_dir();
+    std::fs::create_dir_all(&directory).map_err(|error| format!("创建数据目录失败：{error}"))?;
+    Command::new("explorer.exe")
+        .arg(directory)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开数据目录失败：{error}"))
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             dashboard_state,
             save_relay,
             start_service,
+            stop_service,
             update_dictionary,
-            open_system_settings
+            open_system_settings,
+            open_data_directory
         ])
         .run(tauri::generate_context!())
         .expect("启动 Shurufa 控制中心失败");
