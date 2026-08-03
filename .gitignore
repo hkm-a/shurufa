@@ -19,3 +19,7 @@
 
 # 实验性构建目录（CARGO_TARGET_DIR 别名产物）
 /target-native-capture/
+
+# 本地截图验收生成物，不作为源码或文档资源提交
+/screenshot-test/*.bmp
+/screenshot-test/*.png
