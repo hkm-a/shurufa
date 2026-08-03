@@ -2,7 +2,7 @@ Unicode true
 RequestExecutionLevel admin
 
 !define PRODUCT_NAME "Shurufa 拼音"
-!define PRODUCT_VERSION "0.1.0"
+!define PRODUCT_VERSION "0.4.0"
 !define PRODUCT_PUBLISHER "Shurufa"
 !define PRODUCT_REGISTRY_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Shurufa"
 
