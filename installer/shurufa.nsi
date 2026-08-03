@@ -48,6 +48,12 @@ un_use_default_registration_tool:
 un_tools_ready:
 FunctionEnd
 
+Function StopInputProcesses
+  ExecWait '"$SYSDIR\taskkill.exe" /f /im ctfmon.exe' $0
+  ExecWait '"$SYSDIR\taskkill.exe" /f /im TextInputHost.exe' $0
+  Sleep 1000
+FunctionEnd
+
 Function BackupInstalledVersion
   ClearErrors
   IfFileExists "$PreviousDirectory\*.*" backup_exists
@@ -67,6 +73,7 @@ backup_exists:
   ExecWait '"$PreviousDirectory\shurufa-host.exe" stop' $0
   Sleep 1000
 previous_host_stopped:
+  Call StopInputProcesses
   IfFileExists "$INSTDIR\*.*" backup_conflict
   Rename "$PreviousDirectory" "$INSTDIR"
   IfErrors backup_restore_failed
@@ -80,6 +87,7 @@ backup_remove_stale:
   IfFileExists "$INSTDIR\shurufa-host.exe" 0 +2
   ExecWait '"$INSTDIR\shurufa-host.exe" stop' $0
   Sleep 1000
+  Call StopInputProcesses
   ClearErrors
   RMDir /r "$PreviousDirectory"
   IfErrors backup_remove_failed
@@ -170,6 +178,14 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   WriteRegStr HKLM "${PRODUCT_REGISTRY_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegDWORD HKLM "${PRODUCT_REGISTRY_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${PRODUCT_REGISTRY_KEY}" "NoRepair" 1
+  Call StopInputProcesses
+  ClearErrors
+  RMDir /r /REBOOTOK "$PreviousDirectory"
+  IfErrors backup_cleanup_warning backup_cleanup_done
+backup_cleanup_warning:
+  MessageBox MB_ICONEXCLAMATION "安装已完成，但旧备份仍被系统占用：$PreviousDirectory$\r$\n重启 Windows 后该备份会自动清理。"
+backup_cleanup_done:
+  Exec '"$SYSDIR\ctfmon.exe"'
   Exec '"$INSTDIR\shurufa-host.exe" supervise'
   MessageBox MB_OK "安装完成。Shurufa 拼音已设为默认输入法。"
   Goto install_done
