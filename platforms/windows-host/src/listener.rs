@@ -156,16 +156,18 @@ pub fn run(store: ClipboardStore) -> Result<()> {
 
 const CAPTURE_HOTKEY_ID: i32 = 0x5343;
 const RECORD_HOTKEY_ID: i32 = 0x5344;
+const CAPTURE_PRIMARY_HOTKEY_NAME: &str = "Ctrl+1";
 
 fn register_capture_hotkey() -> &'static str {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         RegisterHotKey, MOD_CONTROL, MOD_SHIFT, VK_1, VK_A,
     };
 
-    // 首选 Ctrl+Shift 组合：Ctrl+1/Ctrl+2 是浏览器切标签等高频快捷键，
-    // 全局抢占的冲突面太大
+    // 首选用户约定的 Ctrl+1；只有系统已占用时才回退，避免用户必须记备用键。
     unsafe {
-        if RegisterHotKey(
+        if RegisterHotKey(None, CAPTURE_HOTKEY_ID, MOD_CONTROL, VK_1.0 as u32).is_ok() {
+            CAPTURE_PRIMARY_HOTKEY_NAME
+        } else if RegisterHotKey(
             None,
             CAPTURE_HOTKEY_ID,
             MOD_CONTROL | MOD_SHIFT,
@@ -173,7 +175,7 @@ fn register_capture_hotkey() -> &'static str {
         )
         .is_ok()
         {
-            "Ctrl+Shift+A"
+            "Ctrl+1 已被占用，回退为 Ctrl+Shift+A"
         } else if RegisterHotKey(
             None,
             CAPTURE_HOTKEY_ID,
@@ -182,9 +184,9 @@ fn register_capture_hotkey() -> &'static str {
         )
         .is_ok()
         {
-            "Ctrl+Shift+A 已被占用，回退为 Ctrl+Shift+1"
+            "Ctrl+1 与 Ctrl+Shift+A 已被占用，回退为 Ctrl+Shift+1"
         } else {
-            "未注册（Ctrl+Shift+A 与 Ctrl+Shift+1 均被其他软件占用）"
+            "未注册（Ctrl+1、Ctrl+Shift+A 与 Ctrl+Shift+1 均被其他软件占用）"
         }
     }
 }
@@ -714,6 +716,11 @@ mod tests {
     #[test]
     fn 截图与录制使用不同的热键标识() {
         assert_ne!(CAPTURE_HOTKEY_ID, RECORD_HOTKEY_ID);
+    }
+
+    #[test]
+    fn 截图默认热键是_ctrl加1() {
+        assert_eq!(CAPTURE_PRIMARY_HOTKEY_NAME, "Ctrl+1");
     }
 
     #[test]
