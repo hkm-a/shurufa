@@ -203,6 +203,9 @@ pub fn supervise() -> ! {
         }
     }
     crate::log_line("supervisor 启动，进入监管循环");
+    // stop 子命令通过令牌请求当前监管器退出。新的启动必须清掉上一次
+    // 已处理或中途遗留的令牌，否则“停止后再启动”会立刻再次停机。
+    let _ = std::fs::remove_file(stop_token_path());
     write_state("starting", None, None, 0);
 
     let exe = std::env::current_exe().expect("获取本进程路径失败");
