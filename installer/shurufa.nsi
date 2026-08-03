@@ -51,6 +51,7 @@ FunctionEnd
 Function BackupInstalledVersion
   ClearErrors
   IfFileExists "$PreviousDirectory\*.*" backup_exists
+backup_current:
   IfFileExists "$INSTDIR\*.*" 0 backup_done
   IfFileExists "$INSTDIR\shurufa-host.exe" 0 +2
   ExecWait '"$INSTDIR\shurufa-host.exe" stop' $0
@@ -62,7 +63,30 @@ Function BackupInstalledVersion
   Return
 
 backup_exists:
-  MessageBox MB_ICONSTOP "检测到未处理的旧部署备份：$PreviousDirectory$\r$\n请先确认或移除该目录，再重新安装。"
+  IfFileExists "$INSTDIR\*.*" backup_conflict
+  Rename "$PreviousDirectory" "$INSTDIR"
+  IfErrors backup_restore_failed
+  Goto backup_current
+
+backup_conflict:
+  MessageBox MB_ICONEXCLAMATION|MB_YESNO "检测到未处理的旧部署备份：$PreviousDirectory$\r$\n当前安装目录也存在。删除旧备份并继续安装吗？\r$\n选择“否”将取消安装并保留备份。" IDYES backup_remove_stale IDNO backup_cancel
+  Goto backup_cancel
+
+backup_remove_stale:
+  ClearErrors
+  RMDir /r "$PreviousDirectory"
+  IfErrors backup_remove_failed
+  Goto backup_current
+
+backup_remove_failed:
+  MessageBox MB_ICONSTOP "无法删除旧部署备份：$PreviousDirectory$\r$\n请关闭占用该目录的程序后重试。"
+  Goto backup_cancel
+
+backup_restore_failed:
+  MessageBox MB_ICONSTOP "无法恢复旧部署备份到：$INSTDIR$\r$\n请检查目录权限后重试。"
+  Goto backup_cancel
+
+backup_cancel:
   SetErrors
   Return
 
