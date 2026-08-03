@@ -115,9 +115,10 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   MessageBox MB_ICONSTOP "无法配置 Shurufa 后台服务的登录启动，已恢复旧版本。"
   Goto install_failed
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+  SetOutPath "$INSTDIR"
   CreateDirectory "$SMPROGRAMS\Shurufa"
-  CreateShortcut "$SMPROGRAMS\Shurufa\Shurufa.lnk" "$INSTDIR\Shurufa.exe"
-  CreateShortcut "$DESKTOP\Shurufa.lnk" "$INSTDIR\Shurufa.exe"
+  CreateShortcut "$SMPROGRAMS\Shurufa\Shurufa.lnk" "$INSTDIR\Shurufa.exe" "" "$INSTDIR\Shurufa.exe" 0
+  CreateShortcut "$DESKTOP\Shurufa.lnk" "$INSTDIR\Shurufa.exe" "" "$INSTDIR\Shurufa.exe" 0
   WriteRegStr HKLM "${PRODUCT_REGISTRY_KEY}" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKLM "${PRODUCT_REGISTRY_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
   WriteRegStr HKLM "${PRODUCT_REGISTRY_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
