@@ -21,8 +21,8 @@ if (-not (Test-Path -LiteralPath $makensis -PathType Leaf)) {
 if (-not $SkipBuild) {
     Push-Location $sourceRoot
     try {
-        Invoke-Native 'npm' @('--prefix', 'platforms/windows-settings', 'run', 'build')
-        Invoke-Native 'cargo' @('build', '-p', 'shurufa-tsf', '-p', 'shurufa-algo', '-p', 'shurufa-host', '-p', 'shurufa-settings', '--release')
+        Invoke-Native 'cargo' @('build', '-p', 'shurufa-tsf', '-p', 'shurufa-algo', '-p', 'shurufa-host', '--release')
+        Invoke-Native 'npm' @('--prefix', 'platforms/windows-settings', 'run', 'tauri', '--', 'build', '--no-bundle')
     }
     finally {
         Pop-Location

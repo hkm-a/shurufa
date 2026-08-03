@@ -1,6 +1,8 @@
 Unicode true
 RequestExecutionLevel admin
 
+!include "MUI2.nsh"
+
 !define PRODUCT_NAME "Shurufa 拼音"
 !define PRODUCT_VERSION "0.4.0"
 !define PRODUCT_PUBLISHER "Shurufa"
@@ -9,8 +11,18 @@ RequestExecutionLevel admin
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "..\dist\Shurufa-Setup.exe"
 InstallDir "$APPDATA\shurufa"
-ShowInstDetails show
-ShowUninstDetails show
+ShowInstDetails nevershow
+ShowUninstDetails nevershow
+
+!define MUI_ABORTWARNING
+!define MUI_FINISHPAGE_NOAUTOCLOSE
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "SimpChinese"
 
 Var PreviousDirectory
 Var AlternatePreviousDirectory
@@ -19,6 +31,11 @@ Var RegistrationTool
 Var InputMethodTool
 Var InputMethodState
 Var StartupState
+
+!macro RunHidden Command
+  nsExec::ExecToLog '${Command}'
+  Pop $0
+!macroend
 
 Function .onInit
   SetShellVarContext all
@@ -51,8 +68,8 @@ un_tools_ready:
 FunctionEnd
 
 Function StopInputProcesses
-  ExecWait '"$SYSDIR\taskkill.exe" /f /im ctfmon.exe' $0
-  ExecWait '"$SYSDIR\taskkill.exe" /f /im TextInputHost.exe' $0
+  !insertmacro RunHidden '"$SYSDIR\taskkill.exe" /f /im ctfmon.exe'
+  !insertmacro RunHidden '"$SYSDIR\taskkill.exe" /f /im TextInputHost.exe'
   Sleep 1000
 FunctionEnd
 
@@ -62,9 +79,9 @@ Function BackupInstalledVersion
 backup_current:
   IfFileExists "$INSTDIR\*.*" 0 backup_done
   IfFileExists "$INSTDIR\shurufa-host.exe" 0 +2
-  ExecWait '"$INSTDIR\shurufa-host.exe" stop' $0
+  !insertmacro RunHidden '"$INSTDIR\shurufa-host.exe" stop'
   IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 +2
-  ExecWait '"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"' $0
+  !insertmacro RunHidden '"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"'
   Rename "$INSTDIR" "$PreviousDirectory"
   IfErrors backup_failed
   StrCpy $BackupCreated "1"
@@ -72,7 +89,7 @@ backup_current:
 
 backup_exists:
   IfFileExists "$PreviousDirectory\shurufa-host.exe" 0 previous_host_stopped
-  ExecWait '"$PreviousDirectory\shurufa-host.exe" stop' $0
+  !insertmacro RunHidden '"$PreviousDirectory\shurufa-host.exe" stop'
   Sleep 1000
 previous_host_stopped:
   Call StopInputProcesses
@@ -87,7 +104,7 @@ backup_conflict:
 
 backup_remove_stale:
   IfFileExists "$INSTDIR\shurufa-host.exe" 0 +2
-  ExecWait '"$INSTDIR\shurufa-host.exe" stop' $0
+  !insertmacro RunHidden '"$INSTDIR\shurufa-host.exe" stop'
   Sleep 1000
   Call StopInputProcesses
   ClearErrors
@@ -120,7 +137,7 @@ backup_cancel:
 
 backup_failed:
   IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 +2
-  ExecWait '"$RegistrationTool" /s "$INSTDIR\shurufa_tsf.dll"' $0
+  !insertmacro RunHidden '"$RegistrationTool" /s "$INSTDIR\shurufa_tsf.dll"'
   MessageBox MB_ICONSTOP "无法替换当前部署，可能仍被输入法进程占用。请注销 Windows 后重试。"
   SetErrors
   Return
@@ -131,15 +148,15 @@ FunctionEnd
 
 Function RestorePreviousVersion
   IfFileExists "$INSTDIR\register-host-startup.ps1" 0 +2
-  ExecWait '"$InputMethodTool" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -Restore -StatePath "$StartupState"' $0
+  !insertmacro RunHidden '"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -Restore -StatePath "$StartupState"'
   IfFileExists "$INSTDIR\activate-default-ime.ps1" 0 +2
-  ExecWait '"$InputMethodTool" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\activate-default-ime.ps1" -Restore -StatePath "$InputMethodState"' $0
+  !insertmacro RunHidden '"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\activate-default-ime.ps1" -Restore -StatePath "$InputMethodState"'
   RMDir /r "$INSTDIR"
   StrCmp $BackupCreated "1" 0 restore_done
   Rename "$PreviousDirectory" "$INSTDIR"
   IfErrors restore_failed
   IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 restore_done
-  ExecWait '"$RegistrationTool" /s "$INSTDIR\shurufa_tsf.dll"' $0
+  !insertmacro RunHidden '"$RegistrationTool" /s "$INSTDIR\shurufa_tsf.dll"'
   Goto restore_done
 
 restore_failed:
@@ -161,23 +178,23 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   File "..\third_party\librime\dist\bin\rime_deployer.exe"
   SetOutPath "$INSTDIR\schemas"
   File /r "..\schemas\*.*"
-  ExecWait '"$INSTDIR\rime_deployer.exe" --build "$INSTDIR\schemas" "$INSTDIR\schemas" "$INSTDIR\schemas\build"' $0
+  !insertmacro RunHidden '"$INSTDIR\rime_deployer.exe" --build "$INSTDIR\schemas" "$INSTDIR\schemas" "$INSTDIR\schemas\build"'
   IntCmp $0 0 +3
   MessageBox MB_ICONSTOP "词典预构建失败，已恢复旧版本。"
   Goto install_failed
-  ExecWait '"$SYSDIR\icacls.exe" "$INSTDIR" /grant *S-1-15-2-1:(OI)(CI)(RX) /t /c' $0
+  !insertmacro RunHidden '"$SYSDIR\icacls.exe" "$INSTDIR" /grant *S-1-15-2-1:(OI)(CI)(RX) /t /c'
   IntCmp $0 0 +3
   MessageBox MB_ICONSTOP "无法授予输入法宿主读取权限，已恢复旧版本。"
   Goto install_failed
-  ExecWait '"$RegistrationTool" /s "$INSTDIR\shurufa_tsf.dll"' $0
+  !insertmacro RunHidden '"$RegistrationTool" /s "$INSTDIR\shurufa_tsf.dll"'
   IntCmp $0 0 +3
   MessageBox MB_ICONSTOP "TSF 注册失败，已恢复旧版本。"
   Goto install_failed
-  ExecWait '"$InputMethodTool" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\activate-default-ime.ps1" -StatePath "$InputMethodState"' $0
+  !insertmacro RunHidden '"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\activate-default-ime.ps1" -StatePath "$InputMethodState"'
   IntCmp $0 0 +3
   MessageBox MB_ICONSTOP "无法将 Shurufa 拼音设为默认输入法，已恢复旧版本。"
   Goto install_failed
-  ExecWait '"$InputMethodTool" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -InstallDir "$INSTDIR" -StatePath "$StartupState"' $0
+  !insertmacro RunHidden '"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -InstallDir "$INSTDIR" -StatePath "$StartupState"'
   IntCmp $0 0 +3
   MessageBox MB_ICONSTOP "无法配置 Shurufa 后台服务的登录启动，已恢复旧版本。"
   Goto install_failed
@@ -200,7 +217,6 @@ backup_cleanup_warning:
 backup_cleanup_done:
   Exec '"$SYSDIR\ctfmon.exe"'
   ExecShell "open" "$INSTDIR\shurufa-host.exe" "supervise" SW_HIDE
-  MessageBox MB_OK "安装完成。Shurufa 拼音已设为默认输入法。"
   Goto install_done
 
 install_failed:
@@ -213,11 +229,11 @@ SectionEnd
 
 Section "Uninstall"
   IfFileExists "$INSTDIR\shurufa-host.exe" 0 +2
-  ExecWait '"$INSTDIR\shurufa-host.exe" stop' $0
+  !insertmacro RunHidden '"$INSTDIR\shurufa-host.exe" stop'
   IfFileExists "$INSTDIR\register-host-startup.ps1" 0 +2
-  ExecWait '"$InputMethodTool" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -Remove' $0
+  !insertmacro RunHidden '"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -Remove'
   IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 +2
-  ExecWait '"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"' $0
+  !insertmacro RunHidden '"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"'
   DeleteRegKey HKLM "${PRODUCT_REGISTRY_KEY}"
   Delete "$SMPROGRAMS\Shurufa\Shurufa.lnk"
   RMDir "$SMPROGRAMS\Shurufa"
