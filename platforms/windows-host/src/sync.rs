@@ -123,8 +123,8 @@ fn received_file_path(name: &str) -> Option<PathBuf> {
 
 /// BMP 转成可通过手机协议帧的 PNG。
 ///
-/// 桌面历史保留完整截图；只有同步副本会按 3/4 比例逐轮缩小，直到落入
-/// 协议上限。这避免高分屏截图既无法入历史又被静默丢弃。
+/// 桌面历史保留完整图片；只有同步副本会按 3/4 比例逐轮缩小，直到落入
+/// 协议上限，避免高分辨率图片无法进入历史或被静默丢弃。
 fn bmp_to_sync_png(bmp: &[u8]) -> Option<(Vec<u8>, bool)> {
     let mut image = image::load_from_memory_with_format(bmp, image::ImageFormat::Bmp).ok()?;
     let mut resized = false;

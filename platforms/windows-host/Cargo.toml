@@ -13,10 +13,6 @@ path = "src/main.rs"
 clipboard-store = { path = "../../core/clipboard" }
 sync-core = { path = "../../core/sync" }
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
-paddle-ocr-rs = { version = "0.6.1", default-features = false }
-# 上游 0.6.1 以 rc.10 发布；显式固定防止预发布语义解析到不兼容的 rc.13。
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
-windows-capture = "2.0"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 windows-registry = "0.6"
 serde = { version = "1", features = ["derive"] }

@@ -3,19 +3,10 @@
 //! `run` 子命令启动剪贴板监听并写入历史库；其余子命令面向历史库的
 //! 查询与管理，供验收与后续 UI 面板复用。
 
-mod annotation;
-mod capture;
 mod dict_update;
-mod editor;
 mod listener;
-mod ocr;
 mod panel;
 mod paste;
-mod pin;
-mod record;
-mod recording_indicator;
-mod region;
-mod scroll;
 mod supervis;
 mod sync;
 #[cfg(debug_assertions)]
@@ -170,111 +161,6 @@ fn main() {
                 _ => println!("条目不存在"),
             }
         }
-        "capture" => {
-            let rect = match parse_capture_rect(&args) {
-                Ok(Some(rect)) => rect,
-                Ok(None) => match capture::virtual_screen_rect() {
-                    Ok(rect) => rect,
-                    Err(e) => exit_with_error(&e),
-                },
-                Err(e) => exit_with_error(&e),
-            };
-            match capture::capture_to_clipboard(rect) {
-                Ok((width, height)) => println!("已截图 {width}×{height}，将自动进入历史并同步"),
-                Err(e) => exit_with_error(&e),
-            }
-        }
-        "capture-window" => {
-            match capture::foreground_window_rect().and_then(capture::capture_to_clipboard) {
-                Ok((width, height)) => {
-                    println!("已截取当前窗口 {width}×{height}，将自动进入历史并同步")
-                }
-                Err(e) => exit_with_error(&e),
-            }
-        }
-        "capture-select" => match region::select_region_to_clipboard() {
-            Ok((width, height)) => {
-                println!("已完成标注截图 {width}×{height}，将自动进入历史并同步")
-            }
-            Err(e) => exit_with_error(&e),
-        },
-        "record-monitor" => {
-            let Some(seconds) = parse_arg(&args, 1).filter(|seconds| *seconds > 0) else {
-                exit_with_error("用法：shurufa-host record-monitor <秒> <输出.mp4>");
-            };
-            let Some(path) = args.get(2).map(PathBuf::from) else {
-                exit_with_error("用法：shurufa-host record-monitor <秒> <输出.mp4>");
-            };
-            match record::record_primary_monitor(
-                &path,
-                std::time::Duration::from_secs(seconds as u64),
-            ) {
-                Ok(report) => println!(
-                    "录制完成：{}，{} 帧，{} 秒",
-                    report.path.display(),
-                    report.frames,
-                    report.duration.as_secs(),
-                ),
-                Err(e) => exit_with_error(&e),
-            }
-        }
-        "capture-monitor" => match capture::capture_primary_monitor_bmp().and_then(|bmp| {
-            paste::set_clipboard_new_image(&bmp)
-                .map_err(|e| format!("写入主显示器截图失败：{e}"))?;
-            let image = image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp)
-                .map_err(|e| format!("读取主显示器截图尺寸失败：{e}"))?;
-            Ok((image.width(), image.height()))
-        }) {
-            Ok((width, height)) => {
-                println!("已使用图形捕获截取主显示器 {width}×{height}，将自动进入历史并同步")
-            }
-            Err(e) => exit_with_error(&e),
-        },
-        "stick" => {
-            let Some(id) = parse_arg(&args, 1) else {
-                eprintln!("用法：shurufa-host stick <图片历史 id>");
-                std::process::exit(2);
-            };
-            let store = open_store();
-            match store.get(id as i64) {
-                Ok(Some(entry)) if entry.kind == ClipKind::Image => {
-                    match store.image_data(entry.id) {
-                        Ok(Some(bmp)) => match pin::show_bmp(&bmp) {
-                            Ok(()) => {}
-                            Err(e) => exit_with_error(&e),
-                        },
-                        _ => exit_with_error("图片历史数据缺失"),
-                    }
-                }
-                Ok(Some(_)) => exit_with_error("该历史条目不是图片"),
-                _ => exit_with_error("图片历史条目不存在"),
-            }
-        }
-        "ocr" => {
-            let Some(id) = parse_arg(&args, 1) else {
-                exit_with_error("用法：shurufa-host ocr <图片历史 id>");
-            };
-            let store = open_store();
-            match store.get(id as i64) {
-                Ok(Some(entry)) if entry.kind == ClipKind::Image => {
-                    match store.image_data(entry.id) {
-                        Ok(Some(bmp)) => match ocr::recognize_bmp(&bmp) {
-                            Ok(text) if !text.trim().is_empty() => {
-                                if let Err(error) = paste::set_clipboard_text(&text) {
-                                    exit_with_error(&format!("写入 OCR 文字剪贴板失败：{error}"));
-                                }
-                                println!("OCR 完成，文字已写入剪贴板并进入历史同步：\n{text}");
-                            }
-                            Ok(_) => println!("未识别到可复制文字"),
-                            Err(error) => exit_with_error(&error),
-                        },
-                        _ => exit_with_error("图片历史数据缺失"),
-                    }
-                }
-                Ok(Some(_)) => exit_with_error("该历史条目不是图片"),
-                _ => exit_with_error("图片历史条目不存在"),
-            }
-        }
         "install-autostart" => match install_autostart() {
             Ok(cmd) => println!("已写入开机自启（HKCU Run）：{cmd}"),
             Err(e) => {
@@ -348,15 +234,6 @@ fn main() {
             }
         },
         #[cfg(debug_assertions)]
-        "test-toggle-record" => {
-            if listener::request_test_toggle_record() {
-                println!("已触发屏幕录制切换");
-            } else {
-                eprintln!("常驻进程未接受屏幕录制切换请求");
-                std::process::exit(1);
-            }
-        }
-        #[cfg(debug_assertions)]
         "tsf-native-probe" => match tsf_probe::run() {
             Ok(text) => println!("原生编辑控件 TSF 验收通过：{text}"),
             Err(error) => exit_with_error(&format!("原生编辑控件 TSF 验收失败：{error}")),
@@ -372,13 +249,6 @@ fn main() {
                  \x20 search <关键词>  搜索文本与文件名\n\
                  \x20 pin/unpin <id>  置顶/取消置顶\n\
                  \x20 copy <id>       把条目写回剪贴板\n\
-                 \x20 capture [x y w h] 截取全屏或指定区域\n\
-                 \x20 capture-window  截取当前窗口\n\
-                 \x20 capture-select  打开区域选择与标注编辑器\n\
-                 \x20 record-monitor <秒> <输出.mp4> 录制主显示器（无音频）\n\
-                 \x20 capture-monitor 使用图形捕获截取主显示器\n\
-                 \x20 stick <id>      将历史图片置顶为贴图\n\
-                 \x20 ocr <id>        识别历史图片中的中文文字\n\
                  \x20 delete <id>     删除单条\n\
                  \x20 clear           清空未置顶记录\n\
                  \x20 retention       立即执行留存清理
@@ -389,23 +259,7 @@ fn main() {
     }
 }
 
-fn parse_capture_rect(args: &[String]) -> Result<Option<capture::CaptureRect>, String> {
-    if args.len() == 1 {
-        return Ok(None);
-    }
-    if args.len() != 5 {
-        return Err("用法：shurufa-host capture [x y 宽 高]".to_owned());
-    }
-    let values: Result<Vec<i32>, _> = args[1..].iter().map(|value| value.parse()).collect();
-    let values = values.map_err(|_| "截图坐标必须是整数".to_owned())?;
-    Ok(Some(capture::CaptureRect {
-        x: values[0],
-        y: values[1],
-        width: values[2],
-        height: values[3],
-    }))
-}
-
+#[cfg(debug_assertions)]
 fn exit_with_error(message: &str) -> ! {
     eprintln!("{message}");
     std::process::exit(1);

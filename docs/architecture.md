@@ -6,7 +6,6 @@
 
 1. **输入法核心**：拼音等中文输入方案，桌面（Windows 优先）与 Android 双端。
 2. **剪贴板同步**：多设备剪贴板历史管理与跨设备同步（对标微信输入法）。
-3. **截图工具**：截图、贴图（Pin）、标注、OCR 取词（对标 PixPin），桌面端能力。
 
 ## 2. 总体原则：标准化 + 生态复用
 
@@ -18,10 +17,8 @@
 | Windows 前端参考 | [weasel（小狼毫）](https://github.com/rime/weasel) | GPL-3 | TSF 集成的完整参考实现 |
 | Android 前端参考 | [trime（同文）](https://github.com/osfans/trime) / [fcitx5-android](https://github.com/fcitx5-android/fcitx5-android) | GPL-3 | InputMethodService + JNI 桥接 librime 的参考 |
 | 词库/方案 | rime 生态方案（朙月拼音、雾凇拼音等） | 各自许可 | 直接以子模块/下载方式分发 |
-| 截图参考 | [Flameshot](https://github.com/flameshot-org/flameshot)（C++/Qt）、[ShareX](https://github.com/ShareX/ShareX) | GPL-3 | 标注交互与贴图设计参考 |
 | 剪贴板管理参考 | [EcoPaste](https://github.com/EcoPasteHub/EcoPaste)（Tauri/Rust） | Apache-2.0 | 剪贴板历史 UI 与格式处理参考 |
 | 设备互联参考 | [KDE Connect](https://invent.kde.org/network/kdeconnect-kde) / [LocalSend](https://github.com/localsend/localsend) | GPL/MIT | 局域网发现 + 配对 + 加密通道的成熟模式 |
-| OCR | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) 或系统 OCR（Windows.Media.Ocr / ML Kit） | Apache-2.0 | 截图取词 |
 
 > 许可证注意：weasel/trime 为 GPL-3，若直接复用其代码，对应组件需以 GPL 兼容方式开源；仅作参考重写则不受约束。librime 为 BSD，可自由链接。
 
@@ -39,9 +36,6 @@
 │  sync           设备发现、配对、端到端加密同步协议     │
 │  config         方案/皮肤/设置，兼容 Rime YAML        │
 ├──────────────────────────────────────────────────────┤
-│              桌面独立组件（与输入法进程解耦）          │
-│  screenshot/    截图、贴图、标注、OCR（桌面端）        │
-└──────────────────────────────────────────────────────┘
 ```
 
 核心层用 **Rust**：一份代码同时服务桌面（cdylib/静态库）与 Android（JNI，经 uniffi 或手写绑定），生态里 SQLite（rusqlite）、网络（quinn/tokio）、加密（ring/rustls）都是成熟库，符合复用原则。librime 本体是 C++，通过 `librime-sys` 风格的 FFI 绑定接入。
@@ -63,13 +57,6 @@
 - **配对与加密**（不可省略）：每台设备生成自签证书（rcgen），SHA-256 指纹即设备身份。首次配对走 **KDE Connect 式六位确认码**——两端各自从双方指纹推导出相同数字，用户人眼比对后放行（无需摄像头扫码，桌面手机通用），确认后互相钉扎指纹。此后所有连接 TLS 1.3 双向证书认证，握手后校验对端指纹必须在已配对表中。剪贴板内容含密码与验证码，明文传输不可接受。
 - **策略**：默认只同步文本、单条大小限额、敏感应用（密码管理器）来源默认不入历史。
 
-### 4.3 截图与贴图（screenshot/，桌面）
-
-- 独立可执行组件，与输入法共用托盘与设置中心，但崩溃互不影响。
-- 功能分期：区域/窗口截图 → 标注（矩形/箭头/马赛克/文字）→ 贴图 Pin（置顶无边框窗口，支持缩放/透明度）→ OCR 取词 → 长截图。
-- 技术选型：Windows 上用 `Windows.Graphics.Capture` 抓屏；UI 与标注层若核心层已选 Rust，可用 Tauri/egui，或直接以 Qt 复用 Flameshot 的交互设计。OCR 首选系统自带 `Windows.Media.Ocr`（零依赖），PaddleOCR 作为高精度可选后端。
-- Android 端截图非输入法职责且权限受限，标注能力以「处理系统截图/分享进来的图片」形式提供，不做后台抓屏。
-
 ### 4.4 配置与皮肤
 
 - 配置格式沿用 Rime YAML（方案层）+ 应用自身 TOML（外观、同步、快捷键），避免发明新格式。
@@ -83,7 +70,6 @@ shurufa/
 ├── platforms/
 │   ├── windows/           # TSF 前端 + 服务进程 + 安装器(WiX)
 │   └── android/           # Gradle 工程，InputMethodService + Compose
-├── screenshot/            # 桌面截图组件
 ├── schemas/               # 内置 Rime 方案（子模块或构建期拉取）
 ├── docs/                  # 架构、协议、贡献指南
 └── .claude/               # 工作流文档
@@ -98,8 +84,8 @@ shurufa/
 | M2 剪贴板本地 | 单机历史 | 监听/存储/搜索/粘贴回填，历史面板 |
 | M3 Android | 手机可用 | 键盘 UI、JNI 桥、与桌面同方案词库 |
 | M4 同步 | 跨设备 | mDNS 发现、扫码配对、加密通道、文本同步 |
-| M5 截图 | 桌面截图 | 区域截图 + 标注 + 贴图 |
-| M6 增强 | 体验补全 | OCR、跨端皮肤、可自托管云词库与自托管中继；词库发布见 [云词库](cloud-dictionary.md)，中继部署见 [自托管同步中继](self-hosted-relay.md) |
+| M5 | 剪贴板体验 | 历史面板与图片、文件同步体验补全 |
+| M6 增强 | 体验补全 | 跨端皮肤、可自托管云词库与自托管中继；词库发布见 [云词库](cloud-dictionary.md)，中继部署见 [自托管同步中继](self-hosted-relay.md) |
 
 ## 7. 关键风险
 

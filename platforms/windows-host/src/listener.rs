@@ -43,8 +43,6 @@ pub const WM_TEST_SET_IMAGE: u32 = WM_APP + 41;
 const WM_WRITE_CLIPBOARD: u32 = WM_APP + 42;
 #[cfg(debug_assertions)]
 const WM_TEST_INSPECT_IMAGE: u32 = WM_APP + 43;
-#[cfg(debug_assertions)]
-const WM_TEST_TOGGLE_RECORD: u32 = WM_APP + 44;
 
 enum ClipboardWrite {
     Text(String),
@@ -54,14 +52,6 @@ enum ClipboardWrite {
 
 static WRITE_QUEUE: OnceLock<Mutex<VecDeque<ClipboardWrite>>> = OnceLock::new();
 static LISTENER_HWND: AtomicIsize = AtomicIsize::new(0);
-static RECORDING_STATE: OnceLock<Mutex<RecordingState>> = OnceLock::new();
-
-enum RecordingState {
-    Idle,
-    Starting,
-    Recording(crate::record::RecordingStop),
-    Finalizing,
-}
 
 struct ListenerState {
     store: ClipboardStore,
@@ -114,13 +104,8 @@ pub fn run(store: ClipboardStore) -> Result<()> {
         });
         AddClipboardFormatListener(hwnd)?;
         let hotkey = crate::panel::register_hotkey();
-        let capture_hotkey = register_capture_hotkey();
-        let record_hotkey = register_record_hotkey();
-        println!(
-            "历史面板热键：{hotkey}；区域截图热键：{capture_hotkey}；屏幕录制热键：{record_hotkey}"
-        );
-        crate::log_line(&format!("原生区域截图热键：{capture_hotkey}"));
-        crate::log_line(&format!("原生屏幕录制热键：{record_hotkey}"));
+        println!("历史面板热键：{hotkey}");
+        crate::log_line(&format!("历史面板热键：{hotkey}"));
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -133,162 +118,10 @@ pub fn run(store: ClipboardStore) -> Result<()> {
                 }
                 continue;
             }
-            if msg.message == WM_HOTKEY && msg.wParam.0 as i32 == CAPTURE_HOTKEY_ID {
-                match crate::region::select_region_to_clipboard() {
-                    Ok((width, height)) => {
-                        crate::log_line(&format!("原生区域截图已写入剪贴板：{width}×{height}"))
-                    }
-                    Err(e) if e == crate::region::CANCELLED => {}
-                    Err(e) => crate::log_line(&format!("原生区域截图失败：{e}")),
-                }
-                continue;
-            }
-            if msg.message == WM_HOTKEY && msg.wParam.0 as i32 == RECORD_HOTKEY_ID {
-                toggle_screen_recording();
-                continue;
-            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
         Ok(())
-    }
-}
-
-const CAPTURE_HOTKEY_ID: i32 = 0x5343;
-const RECORD_HOTKEY_ID: i32 = 0x5344;
-const CAPTURE_PRIMARY_HOTKEY_NAME: &str = "Ctrl+1";
-
-fn register_capture_hotkey() -> &'static str {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        RegisterHotKey, MOD_CONTROL, MOD_SHIFT, VK_1, VK_A,
-    };
-
-    // 首选用户约定的 Ctrl+1；只有系统已占用时才回退，避免用户必须记备用键。
-    unsafe {
-        if RegisterHotKey(None, CAPTURE_HOTKEY_ID, MOD_CONTROL, VK_1.0 as u32).is_ok() {
-            CAPTURE_PRIMARY_HOTKEY_NAME
-        } else if RegisterHotKey(
-            None,
-            CAPTURE_HOTKEY_ID,
-            MOD_CONTROL | MOD_SHIFT,
-            VK_A.0 as u32,
-        )
-        .is_ok()
-        {
-            "Ctrl+1 已被占用，回退为 Ctrl+Shift+A"
-        } else if RegisterHotKey(
-            None,
-            CAPTURE_HOTKEY_ID,
-            MOD_CONTROL | MOD_SHIFT,
-            VK_1.0 as u32,
-        )
-        .is_ok()
-        {
-            "Ctrl+1 与 Ctrl+Shift+A 已被占用，回退为 Ctrl+Shift+1"
-        } else {
-            "未注册（Ctrl+1、Ctrl+Shift+A 与 Ctrl+Shift+1 均被其他软件占用）"
-        }
-    }
-}
-
-fn register_record_hotkey() -> &'static str {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        RegisterHotKey, MOD_CONTROL, MOD_SHIFT, VK_2, VK_R,
-    };
-
-    unsafe {
-        if RegisterHotKey(
-            None,
-            RECORD_HOTKEY_ID,
-            MOD_CONTROL | MOD_SHIFT,
-            VK_2.0 as u32,
-        )
-        .is_ok()
-        {
-            "Ctrl+Shift+2（开始/停止）"
-        } else if RegisterHotKey(
-            None,
-            RECORD_HOTKEY_ID,
-            MOD_CONTROL | MOD_SHIFT,
-            VK_R.0 as u32,
-        )
-        .is_ok()
-        {
-            "Ctrl+Shift+2 已被占用，回退为 Ctrl+Shift+R（开始/停止）"
-        } else {
-            "未注册（Ctrl+Shift+2 与 Ctrl+Shift+R 均被其他软件占用）"
-        }
-    }
-}
-
-fn toggle_screen_recording() {
-    let state = RECORDING_STATE.get_or_init(|| Mutex::new(RecordingState::Idle));
-    let mut state = match state.lock() {
-        Ok(state) => state,
-        Err(_) => {
-            crate::log_line("屏幕录制状态不可用");
-            return;
-        }
-    };
-    match std::mem::replace(&mut *state, RecordingState::Starting) {
-        RecordingState::Recording(stop) => {
-            *state = RecordingState::Finalizing;
-            drop(state);
-            stop.stop();
-            crate::recording_indicator::hide();
-            crate::log_line("正在完成屏幕录制…");
-        }
-        RecordingState::Idle => {
-            drop(state);
-            match crate::record::start_default_recording() {
-                Ok((stop, path, completion)) => {
-                    let state = RECORDING_STATE.get_or_init(|| Mutex::new(RecordingState::Idle));
-                    if let Ok(mut state) = state.lock() {
-                        *state = RecordingState::Recording(stop);
-                    }
-                    crate::recording_indicator::show();
-                    crate::log_line(&format!("屏幕录制已开始，再按热键停止：{}", path.display()));
-                    let _ = std::thread::spawn(move || {
-                        let result = completion
-                            .recv()
-                            .unwrap_or_else(|_| Err("录制完成通知已断开".to_owned()));
-                        finish_screen_recording(result);
-                    });
-                }
-                Err(error) => {
-                    let state = RECORDING_STATE.get_or_init(|| Mutex::new(RecordingState::Idle));
-                    if let Ok(mut state) = state.lock() {
-                        *state = RecordingState::Idle;
-                    }
-                    crate::log_line(&format!("启动屏幕录制失败：{error}"));
-                }
-            }
-        }
-        RecordingState::Starting => {
-            *state = RecordingState::Starting;
-            crate::log_line("屏幕录制正在启动，请稍候…");
-        }
-        RecordingState::Finalizing => {
-            *state = RecordingState::Finalizing;
-            crate::log_line("屏幕录制正在完成，请稍候…");
-        }
-    }
-}
-
-fn finish_screen_recording(result: std::result::Result<crate::record::RecordingReport, String>) {
-    let state = RECORDING_STATE.get_or_init(|| Mutex::new(RecordingState::Idle));
-    if let Ok(mut state) = state.lock() {
-        *state = RecordingState::Idle;
-    }
-    crate::recording_indicator::hide();
-    match result {
-        Ok(report) => crate::log_line(&format!(
-            "屏幕录制已保存：{}，{} 帧，{} 秒",
-            report.path.display(),
-            report.frames,
-            report.duration.as_secs()
-        )),
-        Err(error) => crate::log_line(&format!("屏幕录制失败：{error}")),
     }
 }
 
@@ -340,11 +173,6 @@ unsafe extern "system" fn wnd_proc(
             }
             _ => LRESULT(0),
         };
-    }
-    #[cfg(debug_assertions)]
-    if msg == WM_TEST_TOGGLE_RECORD {
-        toggle_screen_recording();
-        return LRESULT(1);
     }
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
@@ -463,16 +291,6 @@ pub fn inspect_test_image() -> Option<(u32, u32)> {
     } else {
         Some((packed >> 16, packed & 0xffff))
     }
-}
-
-#[cfg(debug_assertions)]
-pub fn request_test_toggle_record() -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
-
-    let Some(hwnd) = listener_window() else {
-        return false;
-    };
-    unsafe { SendMessageW(hwnd, WM_TEST_TOGGLE_RECORD, None, None).0 == 1 }
 }
 
 impl ListenerState {
@@ -711,16 +529,6 @@ mod tests {
             preferred_format(false, false, true),
             Some(PreferredFormat::Text)
         );
-    }
-
-    #[test]
-    fn 截图与录制使用不同的热键标识() {
-        assert_ne!(CAPTURE_HOTKEY_ID, RECORD_HOTKEY_ID);
-    }
-
-    #[test]
-    fn 截图默认热键是_ctrl加1() {
-        assert_eq!(CAPTURE_PRIMARY_HOTKEY_NAME, "Ctrl+1");
     }
 
     #[test]
