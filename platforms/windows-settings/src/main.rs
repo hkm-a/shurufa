@@ -10,6 +10,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
+use clipboard_store::{ClipEntry, ClipKind, ClipboardStore};
 use serde::Serialize;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -19,6 +20,16 @@ struct DashboardState {
     relay: String,
     service_status: String,
     data_directory: String,
+}
+
+#[derive(Serialize)]
+struct HistoryEntry {
+    id: i64,
+    kind: String,
+    text: String,
+    source_app: String,
+    updated_at: i64,
+    pinned: bool,
 }
 
 fn app_data_dir() -> PathBuf {
@@ -33,6 +44,37 @@ fn sync_dir() -> PathBuf {
         PathBuf::from(path)
     } else {
         app_data_dir().join("sync")
+    }
+}
+
+fn history_db_path() -> PathBuf {
+    std::env::var_os("SHURUFA_DB_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| app_data_dir().join("clipboard.db"))
+}
+
+fn open_history_store() -> Result<ClipboardStore, String> {
+    ClipboardStore::open(&history_db_path()).map_err(|error| format!("打开剪贴板历史失败：{error}"))
+}
+
+fn history_entry(entry: ClipEntry) -> HistoryEntry {
+    let kind = match entry.kind {
+        ClipKind::Text => "文本",
+        ClipKind::Image => "图片",
+        ClipKind::Files => "文件",
+    };
+    let text = match entry.kind {
+        ClipKind::Image => format!("图片（{} KB）", (entry.data_size.max(0) + 1023) / 1024),
+        ClipKind::Files => entry.text.lines().next().unwrap_or("文件").to_owned(),
+        ClipKind::Text => entry.text,
+    };
+    HistoryEntry {
+        id: entry.id,
+        kind: kind.to_owned(),
+        text,
+        source_app: entry.source_app,
+        updated_at: entry.updated_at,
+        pinned: entry.pinned,
     }
 }
 
@@ -115,6 +157,51 @@ fn open_data_directory() -> Result<(), String> {
         .map_err(|error| format!("打开数据目录失败：{error}"))
 }
 
+#[tauri::command]
+fn history_entries() -> Result<Vec<HistoryEntry>, String> {
+    open_history_store()?
+        .list(80, 0)
+        .map(|entries| entries.into_iter().map(history_entry).collect())
+        .map_err(|error| format!("读取剪贴板历史失败：{error}"))
+}
+
+#[tauri::command]
+fn copy_history(id: i64) -> Result<(), String> {
+    let id = id.to_string();
+    launch_host(&["copy", &id])
+}
+
+#[tauri::command]
+fn set_history_pinned(id: i64, pinned: bool) -> Result<(), String> {
+    let updated = open_history_store()?
+        .set_pinned(id, pinned)
+        .map_err(|error| format!("更新置顶状态失败：{error}"))?;
+    if updated {
+        Ok(())
+    } else {
+        Err("该历史条目已不存在".to_owned())
+    }
+}
+
+#[tauri::command]
+fn delete_history(id: i64) -> Result<(), String> {
+    let deleted = open_history_store()?
+        .delete(id)
+        .map_err(|error| format!("删除历史条目失败：{error}"))?;
+    if deleted {
+        Ok(())
+    } else {
+        Err("该历史条目已不存在".to_owned())
+    }
+}
+
+#[tauri::command]
+fn clear_unpinned_history() -> Result<usize, String> {
+    open_history_store()?
+        .clear_unpinned()
+        .map_err(|error| format!("清空未置顶历史失败：{error}"))
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -124,7 +211,12 @@ fn main() {
             stop_service,
             update_dictionary,
             open_system_settings,
-            open_data_directory
+            open_data_directory,
+            history_entries,
+            copy_history,
+            set_history_pinned,
+            delete_history,
+            clear_unpinned_history
         ])
         .run(tauri::generate_context!())
         .expect("启动 Shurufa 控制中心失败");
@@ -132,10 +224,28 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::sync_dir;
+    use super::{history_entry, sync_dir};
+    use clipboard_store::{ClipEntry, ClipKind};
 
     #[test]
     fn 默认同步目录位于应用数据目录下() {
         assert!(sync_dir().ends_with("shurufa\\sync"));
+    }
+
+    #[test]
+    fn 图片历史显示数据大小而非空文本() {
+        let entry = history_entry(ClipEntry {
+            id: 1,
+            kind: ClipKind::Image,
+            text: String::new(),
+            source_app: "pixpin.exe".to_owned(),
+            created_at: 0,
+            updated_at: 1,
+            use_count: 1,
+            pinned: false,
+            data_size: 1025,
+        });
+        assert_eq!(entry.kind, "图片");
+        assert_eq!(entry.text, "图片（2 KB）");
     }
 }

@@ -3199,6 +3199,7 @@ dependencies = [
 name = "shurufa-settings"
 version = "0.1.0"
 dependencies = [
+ "clipboard-store",
  "serde",
  "sync-core",
  "tauri",

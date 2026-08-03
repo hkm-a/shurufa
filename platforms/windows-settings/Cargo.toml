@@ -11,6 +11,7 @@ name = "Shurufa"
 path = "src/main.rs"
 
 [dependencies]
+clipboard-store = { path = "../../core/clipboard" }
 serde = { version = "1", features = ["derive"] }
 sync-core = { path = "../../core/sync" }
 tauri = { version = "2", features = [] }
