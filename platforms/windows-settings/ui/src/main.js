@@ -77,12 +77,11 @@ let notice = null;
 const app = document.querySelector("#app");
 
 app.addEventListener("click", (event) => {
-  const button = event.target.closest("button");
+  const target = event.target;
+  const button = target instanceof Element ? target.closest("button") : null;
   if (!button || !app.contains(button) || button.disabled) return;
   if (button.dataset.page) {
     void navigateTo(button.dataset.page);
-  } else if (button.dataset.action) {
-    void handleAction(button);
   }
 });
 
@@ -230,6 +229,12 @@ function render() {
     <main class="content">${pageTemplate()}</main>
     <div id="toast" class="${notice ? `show${notice.error ? " error" : ""}` : ""}" aria-live="polite">${notice ? escapeHtml(notice.message) : ""}</div>`;
   createIcons({ icons: controlCenterIcons });
+  app.querySelectorAll("button[data-action]").forEach((button) => {
+    button.onclick = () => {
+      button.disabled = true;
+      void handleAction(button);
+    };
+  });
 }
 
 async function refreshDashboard() {
@@ -255,23 +260,23 @@ async function navigateTo(page) {
 async function handleAction(button) {
   const action = button.dataset.action;
   const id = Number(button.dataset.id);
-  const actions = {
-    "start-service": ["start_service", undefined, "已发送后台服务启动请求", 900],
-    "stop-service": ["stop_service", undefined, "已发送后台服务停止请求", 900],
-    "update-dictionary": ["update_dictionary", undefined, "词库更新已在后台启动"],
-    "open-settings": ["open_system_settings", undefined, "已打开 Windows 输入法设置"],
-    "open-data-directory": ["open_data_directory", undefined, "已打开本地数据目录"],
-    "save-relay": ["save_relay", { relay: document.querySelector("#relay").value }, "中继设置已保存"],
-    "copy-history": ["copy_history", { id }, "已复制到剪贴板"],
-    "toggle-pin-history": ["set_history_pinned", { id, pinned: button.dataset.pinned !== "true" }, button.dataset.pinned === "true" ? "已取消置顶" : "已置顶"],
-    "delete-history": ["delete_history", { id }, "已删除历史条目"],
-    "clear-history": ["clear_unpinned_history", undefined, "已清空未置顶历史"],
-    "refresh-history": [undefined, undefined, "历史已刷新"],
-    refresh: [undefined, undefined, "后台状态已刷新"]
-  };
-  const [command, args, success, delay] = actions[action];
   button.disabled = true;
   try {
+    const actions = {
+      "start-service": ["start_service", undefined, "已发送后台服务启动请求", 900],
+      "stop-service": ["stop_service", undefined, "已发送后台服务停止请求", 900],
+      "update-dictionary": ["update_dictionary", undefined, "词库更新已在后台启动"],
+      "open-settings": ["open_system_settings", undefined, "已打开 Windows 输入法设置"],
+      "open-data-directory": ["open_data_directory", undefined, "已打开本地数据目录"],
+      "save-relay": ["save_relay", { relay: document.querySelector("#relay")?.value ?? "" }, "中继设置已保存"],
+      "copy-history": ["copy_history", { id }, "已复制到剪贴板"],
+      "toggle-pin-history": ["set_history_pinned", { id, pinned: button.dataset.pinned !== "true" }, button.dataset.pinned === "true" ? "已取消置顶" : "已置顶"],
+      "delete-history": ["delete_history", { id }, "已删除历史条目"],
+      "clear-history": ["clear_unpinned_history", undefined, "已清空未置顶历史"],
+      "refresh-history": [undefined, undefined, "历史已刷新"],
+      refresh: [undefined, undefined, "后台状态已刷新"]
+    };
+    const [command, args, success, delay] = actions[action];
     if (command) await invoke(command, args);
     if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
     await refreshDashboard();

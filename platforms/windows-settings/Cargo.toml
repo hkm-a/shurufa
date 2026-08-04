@@ -10,6 +10,9 @@ build = "build.rs"
 name = "Shurufa"
 path = "src/main.rs"
 
+[features]
+ui-e2e = []
+
 [dependencies]
 clipboard-store = { path = "../../core/clipboard" }
 serde = { version = "1", features = ["derive"] }
