@@ -72,8 +72,28 @@ let dashboard = {
 };
 let historyEntries = [];
 let historyQuery = "";
+let notice = null;
 
 const app = document.querySelector("#app");
+
+app.addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button || !app.contains(button) || button.disabled) return;
+  if (button.dataset.page) {
+    void navigateTo(button.dataset.page);
+  } else if (button.dataset.action) {
+    void handleAction(button);
+  }
+});
+
+app.addEventListener("input", (event) => {
+  if (event.target.id !== "history-search") return;
+  historyQuery = event.target.value;
+  render();
+  const search = document.querySelector("#history-search");
+  search?.focus();
+  search?.setSelectionRange(historyQuery.length, historyQuery.length);
+});
 
 function navTemplate() {
   return pages
@@ -208,17 +228,8 @@ function render() {
       <div class="sidebar-footer"><span class="footer-dot"></span><span>后台服务 ${dashboard.service_status}</span></div>
     </aside>
     <main class="content">${pageTemplate()}</main>
-    <div id="toast" aria-live="polite"></div>`;
+    <div id="toast" class="${notice ? `show${notice.error ? " error" : ""}` : ""}" aria-live="polite">${notice ? escapeHtml(notice.message) : ""}</div>`;
   createIcons({ icons: controlCenterIcons });
-  document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => navigateTo(button.dataset.page)));
-  document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button)));
-  document.querySelector("#history-search")?.addEventListener("input", (event) => {
-    historyQuery = event.target.value;
-    render();
-    const search = document.querySelector("#history-search");
-    search?.focus();
-    search?.setSelectionRange(historyQuery.length, historyQuery.length);
-  });
 }
 
 async function refreshDashboard() {
@@ -274,11 +285,15 @@ async function handleAction(button) {
 }
 
 function showToast(message, error = false) {
-  const toast = document.querySelector("#toast");
-  if (!toast) return;
-  toast.textContent = message;
-  toast.className = error ? "show error" : "show";
-  window.setTimeout(() => { toast.className = ""; }, 2600);
+  const currentNotice = { message: String(message), error };
+  notice = currentNotice;
+  render();
+  window.setTimeout(() => {
+    if (notice === currentNotice) {
+      notice = null;
+      render();
+    }
+  }, 4200);
 }
 
 function escapeHtml(value) {
