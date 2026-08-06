@@ -59,7 +59,8 @@ $required = @(
     (Join-Path $targetDir 'Shurufa.exe'),
     (Join-Path $librime 'lib\rime.dll'),
     (Join-Path $librime 'bin\rime_deployer.exe'),
-    (Join-Path $sourceRoot 'installer\register-host-startup.ps1')
+    (Join-Path $sourceRoot 'installer\register-host-startup.ps1'),
+    (Join-Path $sourceRoot 'installer\verify-install.ps1')
 )
 foreach ($file in $required) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
@@ -92,6 +93,7 @@ try {
     Copy-Item (Join-Path $librime 'lib\rime.dll') $destination -Force
     Copy-Item (Join-Path $librime 'bin\rime_deployer.exe') $destination -Force
     Copy-Item (Join-Path $sourceRoot 'installer\register-host-startup.ps1') $destination -Force
+    Copy-Item (Join-Path $sourceRoot 'installer\verify-install.ps1') $destination -Force
     Copy-Item (Join-Path $sourceRoot 'schemas') (Join-Path $destination 'schemas') -Recurse -Force
 
     $deployer = Join-Path $destination 'rime_deployer.exe'
@@ -101,9 +103,7 @@ try {
     Invoke-Native 'icacls.exe' @($destination, '/grant', '*S-1-15-2-1:(OI)(CI)(RX)', '/t', '/c')
     Invoke-Native 'regsvr32.exe' @('/s', $versionedDll)
     Set-WinDefaultInputMethodOverride -InputTip '0804:{8A5C1B49-3D2E-4F7A-9C61-0B7E2D5A9F13}{C4E9D2A7-6B31-4A58-8F0D-1E9A7C3B5D26}'
-    $startupState = Join-Path $destination '.startup-state.json'
-    & (Join-Path $destination 'register-host-startup.ps1') -InstallDir $destination -StatePath $startupState
-    Remove-Item -LiteralPath $startupState -Force
+    & (Join-Path $destination 'register-host-startup.ps1') -InstallDir $destination
 }
 catch {
     throw
@@ -111,6 +111,10 @@ catch {
 
 if (-not $NoStartHost) {
     Start-Process -FilePath (Join-Path $destination 'shurufa-host.exe') -ArgumentList 'supervise' -WindowStyle Hidden
+    & (Join-Path $destination 'verify-install.ps1') -InstallDir $destination
+    if ($LASTEXITCODE -ne 0) {
+        throw '安装终态验证失败：登录自启动项或后台进程未就绪，请查看上方输出。'
+    }
 }
 
 Write-Host "Shurufa 已安装到 $destination。"

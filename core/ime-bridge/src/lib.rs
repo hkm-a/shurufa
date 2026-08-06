@@ -12,12 +12,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static ENGINE_ALIVE: AtomicBool = AtomicBool::new(false);
 
-/// 输入上下文快照：预编辑串与当前页候选。
+/// 输入上下文快照：预编辑串、组合光标与当前页候选。
 #[derive(Debug, Default, Clone)]
 pub struct Context {
     pub preedit: String,
     pub candidates: Vec<Candidate>,
     pub highlighted: usize,
+    /// 组合光标在 preedit 中的位置（UTF-16 码元数，0 表示串首）。
+    pub cursor_pos: usize,
+    /// 当前候选页页码（从 0 开始）。
+    pub page_no: usize,
+    /// 每页候选条数上限。
+    pub page_size: usize,
+    /// 是否为候选最后一页。
+    pub is_last_page: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +53,13 @@ fn to_cstring(s: &str) -> CString {
     CString::new(s).expect("路径中不允许包含 NUL 字符")
 }
 
+/// 把 librime 的 UTF-8 字节偏移光标转换为 UTF-16 码元数，
+/// 供 Android InputConnection 与 Windows TSF 的 ACP 选区直接使用。
+fn cursor_to_utf16(preedit: &str, byte_pos: usize) -> usize {
+    let boundary = preedit.floor_char_boundary(byte_pos.min(preedit.len()));
+    preedit[..boundary].encode_utf16().count()
+}
+
 unsafe fn cstr_to_string(p: *const std::os::raw::c_char) -> String {
     if p.is_null() {
         String::new()
@@ -60,8 +75,7 @@ impl Engine {
         if ENGINE_ALIVE.swap(true, Ordering::SeqCst) {
             return Err("进程内已存在 Engine 实例".into());
         }
-        std::fs::create_dir_all(user_data_dir)
-            .map_err(|e| format!("创建用户数据目录失败: {e}"))?;
+        std::fs::create_dir_all(user_data_dir).map_err(|e| format!("创建用户数据目录失败: {e}"))?;
 
         let shared = to_cstring(&shared_data_dir.to_string_lossy());
         let user = to_cstring(&user_data_dir.to_string_lossy());
@@ -170,14 +184,22 @@ impl Session<'_> {
             if (api.get_context)(self.id, &mut ctx) == 0 {
                 return Context::default();
             }
+            let preedit = cstr_to_string(ctx.composition.preedit);
+            let cursor_pos = cursor_to_utf16(&preedit, ctx.composition.cursor_pos.max(0) as usize);
             let mut result = Context {
-                preedit: cstr_to_string(ctx.composition.preedit),
+                preedit,
                 candidates: Vec::new(),
                 highlighted: ctx.menu.highlighted_candidate_index.max(0) as usize,
+                cursor_pos,
+                page_no: ctx.menu.page_no.max(0) as usize,
+                page_size: ctx.menu.page_size.max(0) as usize,
+                is_last_page: ctx.menu.is_last_page != 0,
             };
             if !ctx.menu.candidates.is_null() && ctx.menu.num_candidates > 0 {
-                let list =
-                    std::slice::from_raw_parts(ctx.menu.candidates, ctx.menu.num_candidates as usize);
+                let list = std::slice::from_raw_parts(
+                    ctx.menu.candidates,
+                    ctx.menu.num_candidates as usize,
+                );
                 for c in list {
                     result.candidates.push(Candidate {
                         text: cstr_to_string(c.text),

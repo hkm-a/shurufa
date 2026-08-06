@@ -16,11 +16,15 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, LoadCursorW, MoveWindow,
     RegisterClassW, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW,
     SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
-    WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 use ime_ipc::Context;
@@ -270,14 +274,56 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if msg == WM_PAINT {
-        let mut ps = PAINTSTRUCT::default();
-        let hdc = BeginPaint(hwnd, &mut ps);
-        paint(hdc, &ps.rcPaint);
-        let _ = EndPaint(hwnd, &ps);
-        return LRESULT(0);
+    match msg {
+        value if value == WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            paint(hdc, &ps.rcPaint);
+            let _ = EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        value if value == WM_LBUTTONDOWN => {
+            select_candidate_at(lparam);
+            LRESULT(0)
+        }
+        value if value == WM_MOUSEWHEEL => {
+            let delta = ((wparam.0 >> 16) & 0xffff) as i16;
+            send_virtual_key(if delta < 0 { 0x22 } else { 0x21 });
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
-    DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+/// 将点击坐标映射到当前候选，并发送 Rime 已支持的数字选词键。
+unsafe fn select_candidate_at(lparam: LPARAM) {
+    let x = (lparam.0 & 0xffff) as i16 as i32;
+    let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+    let dpi = PAINT_DATA.with_borrow(|data| data.dpi);
+    let row_top = scale(BASE_PADDING, dpi) + scale(BASE_PREEDIT_HEIGHT, dpi);
+    let row_bottom = row_top + scale(BASE_ROW_HEIGHT, dpi);
+    if y < row_top || y >= row_bottom {
+        return;
+    }
+
+    let label_gap = scale(BASE_LABEL_GAP, dpi);
+    let item_padding = scale(BASE_HL_PAD, dpi);
+    PAINT_DATA.with_borrow(|data| {
+        for (index, item) in data.items.iter().enumerate() {
+            let left = item.x - item_padding;
+            let right = item.x + item.label_w + label_gap + item.text_w + item_padding;
+            if x >= left && x <= right {
+                send_virtual_key(0x30 + ((index + 1) % 10) as u8);
+                break;
+            }
+        }
+    });
+}
+
+/// 无焦点候选窗将操作发送给前台编辑器，继续走 TSF 的正常按键路径。
+unsafe fn send_virtual_key(vk: u8) {
+    keybd_event(vk, 0, KEYBD_EVENT_FLAGS(0), 0);
+    keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
 }
 
 unsafe fn paint(hdc: HDC, rc: &RECT) {

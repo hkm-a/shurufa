@@ -3,7 +3,7 @@
 //! 生命周期：`nativeInit` 在后台线程完成引擎初始化与部署（首次约
 //! 数秒到数十秒），成功后建立进程级单一会话；按键与查询都走该会话。
 //! 上下文以 `\u{1}` 分隔的扁平字符串返回，避免引入 JSON 依赖：
-//! `preedit \u{1} highlighted \u{1} 候选1 \u{1} 候选2 …`
+//! 取输入上下文：`preedit \u{1} highlighted \u{1} cursor \u{1} 候选…`；空组合返回空串。
 //!
 //! 安全约定：所有 `#[no_mangle]` JNI 入口都经 [`jni_catch`] 包裹，
 //! 把 panic 拦截在 FFI 边界内，否则 panic 跨 JNI 展开属于未定义行为
@@ -130,7 +130,7 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeCommit(
     )
 }
 
-/// 取输入上下文：`preedit \u{1} highlighted \u{1} 候选…`；空组合返回空串。
+/// 取输入上下文：`preedit \u{1} highlighted \u{1} cursor \u{1} 候选…`；空组合返回空串。
 #[no_mangle]
 pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeContext(
     env: JNIEnv,
@@ -151,6 +151,8 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeContext(
             out.push_str(&ctx.preedit);
             out.push('\u{1}');
             out.push_str(&ctx.highlighted.to_string());
+            out.push('\u{1}');
+            out.push_str(&ctx.cursor_pos.to_string());
             for c in &ctx.candidates {
                 out.push('\u{1}');
                 out.push_str(&c.text);
@@ -158,6 +160,35 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeContext(
             to_jstring(&env, &out)
         },
         default,
+    )
+}
+
+/// 将 Rime 的组合光标移动到指定的 UTF-16 偏移。
+///
+/// librime 没有直接设置组合光标的 C API，故复用标准 Home/Right 键路径。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeSetCursor(
+    _env: JNIEnv,
+    _class: JClass,
+    cursor_pos: jint,
+) {
+    jni_catch(
+        || {
+            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(session) = session.as_ref() else {
+                return;
+            };
+            let context = session.context();
+            let target = (cursor_pos.max(0) as usize).min(context.preedit.encode_utf16().count());
+            if context.preedit.is_empty() || context.cursor_pos == target {
+                return;
+            }
+            session.process_key(0xff50, 0);
+            for _ in 0..target {
+                session.process_key(0xff53, 0);
+            }
+        },
+        (),
     )
 }
 

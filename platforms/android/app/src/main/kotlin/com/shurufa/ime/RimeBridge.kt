@@ -2,7 +2,7 @@ package com.shurufa.ime
 
 /**
  * Rust JNI 桥（platforms/android/rimejni）的 Kotlin 侧声明。
- * 上下文协议：`preedit  highlighted  候选1  候选2 …`，
+ * 上下文协议：`preedit \u{1} highlighted \u{1} cursor \u{1} 候选1 \u{1} 候选2 …`，
  * 空组合返回空串。
  */
 object RimeBridge {
@@ -19,6 +19,9 @@ object RimeBridge {
     external fun nativeCommit(): String
 
     external fun nativeContext(): String
+
+    /** 将引擎内的组合光标同步到编辑器当前的 UTF-16 偏移。 */
+    external fun nativeSetCursor(cursorPos: Int)
 
     external fun nativeReset()
 

@@ -80,6 +80,8 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private lateinit var candidateBar: LinearLayout
+    private lateinit var expandedCandidateBar: LinearLayout
+    private lateinit var candidateExpandButton: TextView
     private lateinit var keyArea: LinearLayout
     private var voice: VoiceInputController? = null
     /// 键盘内置的语音状态条（不受系统 Toast 抑制，必现）。
@@ -95,6 +97,7 @@ class ShurufaImeService : InputMethodService() {
     private var previewImageId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var inputGeneration = 0L
+    private var candidatesExpanded = false
     private val warmupQueue = EngineWarmupQueue<PendingInput>()
 
     /// 当前主题；随系统深色设置在重建输入视图时更新
@@ -137,9 +140,56 @@ class ShurufaImeService : InputMethodService() {
     }
 
     override fun onFinishInput() {
+        resetCompositionForInputChange()
         inputGeneration += 1
         warmupQueue.clear()
         super.onFinishInput()
+    }
+
+    override fun onUpdateSelection(
+        oldSelStart: Int,
+        oldSelEnd: Int,
+        newSelStart: Int,
+        newSelEnd: Int,
+        candidatesStart: Int,
+        candidatesEnd: Int,
+    ) {
+        super.onUpdateSelection(
+            oldSelStart,
+            oldSelEnd,
+            newSelStart,
+            newSelEnd,
+            candidatesStart,
+            candidatesEnd,
+        )
+        if (oldSelStart == newSelStart && oldSelEnd == newSelEnd) return
+
+        // 用户在组合串内点按时，编辑器和 Rime 各自保存光标；必须先同步
+        // 引擎位置，否则下一次输入会错误地追加到拼音尾部。
+        if (
+            engineReady &&
+            newSelStart == newSelEnd &&
+            candidatesStart >= 0 &&
+            candidatesEnd >= candidatesStart &&
+            newSelStart in candidatesStart..candidatesEnd
+        ) {
+            RimeBridge.nativeSetCursor(newSelStart - candidatesStart)
+            return
+        }
+
+        // 用户把光标移到组合区外或选中其他文本时，Rime 仍保存着旧组合。
+        // 先结束该组合，后续输入便从新的编辑器选区开始。
+        if (candidatesStart < 0 || newSelStart != newSelEnd) {
+            resetCompositionForInputChange()
+        }
+    }
+
+    private fun resetCompositionForInputChange() {
+        if (!engineReady || RimeBridge.nativeContext().isEmpty()) return
+        RimeBridge.nativeReset()
+        currentInputConnection?.finishComposingText()
+        candidatesExpanded = false
+        updateCandidates("", emptyList(), 0)
     }
 
     private fun ensureEngine() {
@@ -321,12 +371,13 @@ class ShurufaImeService : InputMethodService() {
         }
         root.addView(voiceStatusBar)
 
-        // 候选词行（单独成行）：背景不带功能键，提升候选可读性与命中面积。
-        val candidateRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        // 候选词区支持横滑浏览、展开九宫格与翻页，候选数量由 Rime 保持唯一来源。
+        val candidatePanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setBackgroundColor(palette.key)
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, candidateBarHeight()
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
             )
         }
         candidateBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -334,12 +385,40 @@ class ShurufaImeService : InputMethodService() {
             addView(candidateBar)
             isHorizontalScrollBarEnabled = false
             layoutParams = LinearLayout.LayoutParams(
+                0,
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.MATCH_PARENT,
+                1f,
             )
         }
-        candidateRow.addView(scroll)
-        root.addView(candidateRow)
+        candidateExpandButton = TextView(this).apply {
+            text = "⌄"
+            textSize = 22f
+            gravity = Gravity.CENTER
+            contentDescription = "展开候选词"
+            setTextColor(palette.preedit)
+            isEnabled = false
+            setOnClickListener {
+                candidatesExpanded = !candidatesExpanded
+                expandedCandidateBar.visibility = if (candidatesExpanded) View.VISIBLE else View.GONE
+                text = if (candidatesExpanded) "⌃" else "⌄"
+                contentDescription = if (candidatesExpanded) "收起候选词" else "展开候选词"
+            }
+        }
+        candidatePanel.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(scroll)
+            addView(
+                candidateExpandButton,
+                LinearLayout.LayoutParams(dp(46f), candidateBarHeight()),
+            )
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, candidateBarHeight()))
+        expandedCandidateBar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(dp(6f), dp(4f), dp(6f), dp(6f))
+        }
+        candidatePanel.addView(expandedCandidateBar)
+        root.addView(candidatePanel)
 
         // 功能行：候选不再占用本行，改为承载剪贴板历史 / 表情入口等功能键。
         val compactFunctionRow = isLandscape()
@@ -1272,6 +1351,12 @@ class ShurufaImeService : InputMethodService() {
         sync()
     }
 
+    private fun onCandidatePage(previous: Boolean) {
+        if (!engineReady) return
+        RimeBridge.nativeProcessKey(if (previous) 0xff55 else 0xff56, 0)
+        sync()
+    }
+
     private fun sync() {
         val ic = currentInputConnection ?: return
         if (!engineReady) {
@@ -1286,17 +1371,26 @@ class ShurufaImeService : InputMethodService() {
             updateCandidates("", emptyList(), 0)
             return
         }
-        val parts = raw.split('\u0001')
+        val parts = raw.split("\u0001")
         val preedit = parts[0]
         val highlighted = parts.getOrNull(1)?.toIntOrNull() ?: 0
-        val candidates = if (parts.size > 2) parts.subList(2, parts.size) else emptyList()
-        ic.setComposingText(preedit, 1)
+        val cursorPos = parts.getOrNull(2)?.toIntOrNull() ?: preedit.length
+        val candidates = if (parts.size > 3) parts.subList(3, parts.size) else emptyList()
+        ic.setComposingText(preedit, cursorPos)
         updateCandidates(preedit, candidates, highlighted)
     }
 
     private fun updateCandidates(preedit: String, candidates: List<String>, highlighted: Int) {
         if (!::candidateBar.isInitialized) return
         candidateBar.removeAllViews()
+        expandedCandidateBar.removeAllViews()
+        candidateExpandButton.isEnabled = candidates.isNotEmpty()
+        if (candidates.isEmpty()) {
+            candidatesExpanded = false
+        }
+        candidateExpandButton.text = if (candidatesExpanded) "⌃" else "⌄"
+        candidateExpandButton.contentDescription = if (candidatesExpanded) "收起候选词" else "展开候选词"
+        expandedCandidateBar.visibility = if (candidatesExpanded) View.VISIBLE else View.GONE
         // 拼音预编辑由系统输入框承载（setComposingText），候选行只渲染候选词，
         // 不再把拼音当作候选显示；仅在“有输入但无匹配”时给出一行轻提示。
         if (candidates.isEmpty() && preedit.isNotEmpty()) {
@@ -1316,15 +1410,7 @@ class ShurufaImeService : InputMethodService() {
             return
         }
         candidates.forEachIndexed { i, text ->
-            val item = TextView(this).apply {
-                this.text = text
-                textSize = 20f
-                gravity = Gravity.CENTER
-                setTextColor(if (i == highlighted) palette.candidateHl else palette.candidate)
-                if (i == highlighted) typeface = Typeface.DEFAULT_BOLD
-                setPadding(dp(15f), 0, dp(15f), 0)
-                setOnClickListener { onCandidate(i) }
-            }
+            val item = candidateItem(text, i, highlighted, compact = true)
             candidateBar.addView(
                 item,
                 LinearLayout.LayoutParams(
@@ -1333,7 +1419,62 @@ class ShurufaImeService : InputMethodService() {
                 )
             )
         }
+        if (candidates.isNotEmpty()) {
+            addExpandedCandidates(candidates, highlighted)
+        }
     }
+
+    private fun candidateItem(text: String, index: Int, highlighted: Int, compact: Boolean): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = if (compact) 20f else 18f
+            gravity = Gravity.CENTER
+            setTextColor(if (index == highlighted) palette.candidateHl else palette.candidate)
+            if (index == highlighted) typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(if (compact) 15f else 8f), 0, dp(if (compact) 15f else 8f), 0)
+            contentDescription = "第 ${index + 1} 候选词：$text"
+            setOnClickListener { onCandidate(index) }
+        }
+
+    private fun addExpandedCandidates(candidates: List<String>, highlighted: Int) {
+        candidates.chunked(CandidatePageSpec.GRID_COLUMNS).forEachIndexed { rowIndex, row ->
+            val rowView = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            row.forEachIndexed { columnIndex, text ->
+                val index = rowIndex * CandidatePageSpec.GRID_COLUMNS + columnIndex
+                rowView.addView(
+                    candidateItem(text, index, highlighted, compact = false),
+                    LinearLayout.LayoutParams(0, dp(38f), 1f),
+                )
+            }
+            repeat(CandidatePageSpec.GRID_COLUMNS - row.size) {
+                rowView.addView(View(this), LinearLayout.LayoutParams(0, dp(38f), 1f))
+            }
+            expandedCandidateBar.addView(rowView)
+        }
+        expandedCandidateBar.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            addView(candidatePageButton("‹", "上一页候选词") { onCandidatePage(previous = true) })
+            addView(TextView(this@ShurufaImeService).apply {
+                text = "滑动候选栏或翻页查看更多"
+                gravity = Gravity.CENTER
+                textSize = 12f
+                setTextColor(palette.preedit)
+            }, LinearLayout.LayoutParams(0, dp(34f), 1f))
+            addView(candidatePageButton("›", "下一页候选词") { onCandidatePage(previous = false) })
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(34f)))
+    }
+
+    private fun candidatePageButton(label: String, description: String, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = label
+            textSize = 26f
+            gravity = Gravity.CENTER
+            contentDescription = description
+            setTextColor(palette.candidate)
+            setOnClickListener { onClick() }
+        }.also {
+            it.layoutParams = LinearLayout.LayoutParams(dp(44f), dp(34f))
+        }
 
     /** 按目标边长下采样解码，避免全分辨率大图在主线程 OOM/卡顿。 */
     override fun onDestroy() {

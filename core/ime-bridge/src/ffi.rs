@@ -166,11 +166,8 @@ pub struct RimeApi {
     pub set_option:
         unsafe extern "C" fn(session_id: RimeSessionId, option: *const c_char, value: Bool),
     pub get_option: unsafe extern "C" fn(session_id: RimeSessionId, option: *const c_char) -> Bool,
-    pub set_property: unsafe extern "C" fn(
-        session_id: RimeSessionId,
-        prop: *const c_char,
-        value: *const c_char,
-    ),
+    pub set_property:
+        unsafe extern "C" fn(session_id: RimeSessionId, prop: *const c_char, value: *const c_char),
     pub get_property: unsafe extern "C" fn(
         session_id: RimeSessionId,
         prop: *const c_char,
@@ -193,11 +190,8 @@ pub struct RimeApi {
     pub config_open:
         unsafe extern "C" fn(config_id: *const c_char, config: *mut RimeConfig) -> Bool,
     pub config_close: unsafe extern "C" fn(config: *mut RimeConfig) -> Bool,
-    pub config_get_bool: unsafe extern "C" fn(
-        config: *mut RimeConfig,
-        key: *const c_char,
-        value: *mut Bool,
-    ) -> Bool,
+    pub config_get_bool:
+        unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char, value: *mut Bool) -> Bool,
     pub config_get_int: unsafe extern "C" fn(
         config: *mut RimeConfig,
         key: *const c_char,

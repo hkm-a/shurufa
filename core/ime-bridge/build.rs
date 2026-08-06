@@ -20,7 +20,10 @@ fn main() {
         .to_path_buf();
     let dll = lib_dir.join("rime.dll");
     if dll.exists() {
-        for target in [profile_dir.join("rime.dll"), profile_dir.join("deps/rime.dll")] {
+        for target in [
+            profile_dir.join("rime.dll"),
+            profile_dir.join("deps/rime.dll"),
+        ] {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent).ok();
             }

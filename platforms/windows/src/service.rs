@@ -12,8 +12,8 @@ use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
     ITfInsertAtSelection, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr,
     ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl,
-    ITfThreadMgr, INSERT_TEXT_AT_SELECTION_FLAGS, TF_AE_NONE, TF_ANCHOR_END, TF_IAS_QUERYONLY,
-    TF_SELECTION, TF_SELECTIONSTYLE, TF_ST_CORRECTION,
+    ITfThreadMgr, TfAnchor, INSERT_TEXT_AT_SELECTION_FLAGS, TF_AE_NONE, TF_ANCHOR_END,
+    TF_IAS_QUERYONLY, TF_SELECTION, TF_SELECTIONSTYLE, TF_ST_CORRECTION,
 };
 use windows_core::IUnknownImpl;
 
@@ -29,8 +29,6 @@ pub struct Inner {
     client: ImeClient,
     composition: Option<ITfComposition>,
     ui: CandidateUi,
-    /// OnTestKeyDown 已处理的键及其结论，供紧随其后的 OnKeyDown 复用
-    pending_key: Option<(u32, bool)>,
     /// 仅用于排障日志：本进程是否已收到过按键
     saw_first_key: bool,
 }
@@ -49,7 +47,6 @@ impl TextService {
                 client: ImeClient::new(),
                 composition: None,
                 ui: CandidateUi::new(),
-                pending_key: None,
                 saw_first_key: false,
             }),
         }
@@ -94,7 +91,7 @@ impl Inner {
                 // 1. 上屏文本：结束组合并以最终文本落盘
                 if let Some(text) = commit.as_deref() {
                     if let Some(comp) = composition_slot.take() {
-                        set_composition_text(&comp, ec, text)?;
+                        set_composition_text(&comp, ec, text, text.encode_utf16().count())?;
                         comp.EndComposition(ec)?;
                     } else {
                         insert_text(context, ec, text)?;
@@ -107,11 +104,11 @@ impl Inner {
                         *composition_slot = Some(start_composition(context, ec, sink)?);
                     }
                     if let Some(comp) = composition_slot.as_ref() {
-                        set_composition_text(comp, ec, &ctx.preedit)?;
+                        set_composition_text(comp, ec, &ctx.preedit, ctx.cursor_pos)?;
                     }
                 } else if let Some(comp) = composition_slot.take() {
                     // 引擎已无组合（如 Esc 清空），结束并清除文档中的预编辑
-                    set_composition_text(&comp, ec, "")?;
+                    set_composition_text(&comp, ec, "", 0)?;
                     comp.EndComposition(ec)?;
                 }
 
@@ -139,7 +136,6 @@ impl Inner {
         self.client.simulate("{Escape}");
         self.composition = None;
         self.ui.hide();
-        self.pending_key = None;
     }
 }
 
@@ -166,18 +162,28 @@ unsafe fn start_composition(
     composition_ctx.StartComposition(ec, &range, sink)
 }
 
-/// 用 `text` 替换组合范围内容，并把光标放到末尾。
-unsafe fn set_composition_text(comp: &ITfComposition, ec: u32, text: &str) -> Result<()> {
+/// 用 `text` 替换组合范围内容，并把光标放到 `cursor_pos` 处。
+unsafe fn set_composition_text(
+    comp: &ITfComposition,
+    ec: u32,
+    text: &str,
+    cursor_pos: usize,
+) -> Result<()> {
     let range = comp.GetRange()?;
     let utf16: Vec<u16> = text.encode_utf16().collect();
     range.SetText(ec, TF_ST_CORRECTION, &utf16)?;
-    let end = range.Clone()?;
-    end.Collapse(ec, TF_ANCHOR_END)?;
-    let context = range.GetContext()?;
-    set_selection(&context, ec, &end)?;
+    // 把光标放到 cursor_pos 处（UTF-16 码元数），而非总是末尾。
+    let cursor = range.Clone()?;
+    // TfAnchor(0) = TF_ANCHOR_START
+    cursor.Collapse(ec, TfAnchor(0))?;
+    let mut actual = 0i32;
+    let haltcond = windows::Win32::UI::TextServices::TF_HALTCOND::default();
+    cursor.ShiftStart(ec, cursor_pos as i32, &mut actual, &haltcond)?;
+    let ctx = range.GetContext()?;
+    set_selection(&ctx, ec, &cursor)?;
     Ok(())
 }
-
+/// 把编辑器选区设为给定范围，避免组合更新后系统仍把光标留在旧位置。
 unsafe fn set_selection(
     context: &ITfContext,
     ec: u32,
@@ -195,7 +201,6 @@ unsafe fn set_selection(
     std::mem::ManuallyDrop::drop(&mut selection.range);
     result
 }
-
 /// 组合文本末端在屏幕上的位置，作为候选窗锚点。
 unsafe fn composition_anchor(
     context: &ITfContext,
@@ -259,33 +264,23 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
 
     fn OnTestKeyDown(
         &self,
-        pic: Ref<'_, ITfContext>,
+        _pic: Ref<'_, ITfContext>,
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
-        let context = pic.ok()?;
-        let sink: ITfCompositionSink = self.to_interface();
-        let mut inner = self.inner.borrow_mut();
-        if !inner.saw_first_key {
-            inner.saw_first_key = true;
-            crate::debug_log(&format!("首个按键到达（vk=0x{:X}）", wparam.0));
-        }
-        let eaten = inner.handle_key(&sink, context, wparam);
-        // 记录结论：应用随后会调用 OnKeyDown，不能重复喂引擎
-        inner.pending_key = Some((wparam.0 as u32, eaten));
-        Ok(eaten.into())
+        // TSF 会先试探再投递实际按键。这里绝不能向引擎喂键或写文档，
+        // 否则只调用试探回调的宿主会丢失中文输入并退化成英文直通。
+        Ok(keys::is_ime_key(wparam.0 as u32, keys::current_modifiers()).into())
     }
 
     fn OnKeyDown(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
         let mut inner = self.inner.borrow_mut();
-        if let Some((vk, eaten)) = inner.pending_key.take() {
-            if vk == wparam.0 as u32 {
-                return Ok(eaten.into());
-            }
-        }
-        // 应用跳过了 OnTestKeyDown，直接处理
         let context = pic.ok()?;
         let sink: ITfCompositionSink = self.to_interface();
+        if !inner.saw_first_key {
+            inner.saw_first_key = true;
+            crate::debug_log(&format!("首个按键到达（vk=0x{:X}）", wparam.0));
+        }
         let eaten = inner.handle_key(&sink, context, wparam);
         Ok(eaten.into())
     }

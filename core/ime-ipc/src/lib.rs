@@ -51,6 +51,14 @@ pub struct Context {
     pub preedit: String,
     pub candidates: Vec<Candidate>,
     pub highlighted: usize,
+    /// 组合光标在 preedit 中的位置（UTF-16 码元数）。
+    pub cursor_pos: usize,
+    /// 当前候选页页码（从 0 开始）。
+    pub page_no: usize,
+    /// 每页候选条数上限。
+    pub page_size: usize,
+    /// 是否为候选最后一页。
+    pub is_last_page: bool,
 }
 
 /// 服务 → 客户端：一次操作的应答。
@@ -139,6 +147,10 @@ pub fn context_from_bridge(ctx: &ime_bridge::Context) -> Context {
             })
             .collect(),
         highlighted: ctx.highlighted,
+        cursor_pos: ctx.cursor_pos,
+        page_no: ctx.page_no,
+        page_size: ctx.page_size,
+        is_last_page: ctx.is_last_page,
     }
 }
 
@@ -170,6 +182,10 @@ mod tests {
                     comment: "".into(),
                 }],
                 highlighted: 0,
+                cursor_pos: 2,
+                page_no: 0,
+                page_size: 9,
+                is_last_page: false,
             },
         };
         let bytes = encode_response(&resp).unwrap();

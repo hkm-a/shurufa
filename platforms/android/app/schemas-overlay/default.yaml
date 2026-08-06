@@ -16,7 +16,8 @@ switcher:
     - simplification
 
 menu:
-  page_size: 6
+  # 移动端候选栏支持横滑和展开九宫格；保持与数字直选键范围一致。
+  page_size: 9
 
 punctuator:
   import_preset: punctuation

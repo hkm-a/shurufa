@@ -47,7 +47,10 @@ class ClipboardSyncService : Service(), ClipboardManager.OnPrimaryClipChangedLis
         }
         clipboard.addPrimaryClipChangedListener(this)
         executor.scheduleWithFixedDelay(::pollOnce, 0, POLL_MILLIS, TimeUnit.MILLISECONDS)
-        executor.execute(::captureCurrentClipboard)
+        // 启动时不立即读取剪贴板：服务随 IME 弹出而创建，立即读取会触发
+        // 系统的剪贴板访问面板（点开文本框时闪现）。延迟数秒后再捕获当前
+        // 内容，之后的变化由 onPrimaryClipChanged 监听器驱动。
+        executor.schedule(::captureCurrentClipboard, INITIAL_CAPTURE_DELAY_SECONDS, TimeUnit.SECONDS)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -228,6 +231,8 @@ class ClipboardSyncService : Service(), ClipboardManager.OnPrimaryClipChangedLis
         private const val POLL_MILLIS = 500L
         private const val MAX_EVENTS_PER_TICK = 8
         private const val DUPLICATE_WINDOW_NANOS = 1_500_000_000L
+        /// 初始捕获延迟：避开 IME 弹出窗口期，防止系统剪贴板面板闪现
+        private const val INITIAL_CAPTURE_DELAY_SECONDS = 8L
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(

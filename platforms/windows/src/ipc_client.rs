@@ -6,6 +6,8 @@
 
 use ime_ipc::pipe::PipeClient;
 use ime_ipc::{decode_response, encode_request, Request, Response};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 /// 单个 TSF 宿主的 IPC 客户端。`connect` 是惰性的：首次使用时才建连。
 pub struct ImeClient {
@@ -14,22 +16,60 @@ pub struct ImeClient {
 
 #[allow(dead_code)]
 impl ImeClient {
+    /// 尝试拉起 shurufa-algo.exe（DLL 同目录优先，其次 PATH/APPDATA）。
+    fn spawn_algo_if_needed() {
+        let names = [
+            Self::dll_dir().map(|d| d.join("shurufa-algo.exe")),
+            Some(PathBuf::from("shurufa-algo.exe")),
+            std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .map(|p| p.join("shurufa").join("shurufa-algo.exe")),
+        ];
+        for candidate in names.iter().flatten() {
+            if candidate.exists() {
+                crate::debug_log(&format!("拉起算法服务：{}", candidate.display()));
+                let _ = Command::new(candidate)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn();
+                return;
+            }
+        }
+        crate::debug_log("未找到 shurufa-algo.exe，无法自拉起");
+    }
+
+    /// 当前 DLL 所在目录。
+    fn dll_dir() -> Option<PathBuf> {
+        crate::dll_path().parent().map(|p| p.to_path_buf())
+    }
     pub fn new() -> Self {
         ImeClient { pipe: None }
     }
 
-    /// 确保已连接（若服务尚未就绪则尝试连接）。
+    /// 确保已连接；若服务未就绪则自动拉起算法服务并轮询等待。
     fn ensure(&mut self) -> Option<&PipeClient> {
-        if self.pipe.is_none() {
+        if self.pipe.is_some() {
+            return self.pipe.as_ref();
+        }
+        // 首次连接失败时拉起算法服务并轮询等待（至多 20 次 × 50ms = 1s）
+        Self::spawn_algo_if_needed();
+        for attempt in 0..20 {
             match PipeClient::connect() {
-                Ok(c) => self.pipe = Some(c),
+                Ok(c) => {
+                    self.pipe = Some(c);
+                    if attempt > 0 {
+                        crate::debug_log(&format!("IPC 第{}次重连成功", attempt + 1));
+                    }
+                    return self.pipe.as_ref();
+                }
                 Err(e) => {
-                    crate::debug_log(&format!("IPC 连接算法服务失败：{e}"));
-                    return None;
+                    crate::debug_log(&format!("IPC 连接算法服务失败（第{}次）：{e}", attempt + 1));
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
             }
         }
-        self.pipe.as_ref()
+        None
     }
 
     /// 发送请求并取回应答；连接失效时自动重连一次。

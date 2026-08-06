@@ -27,69 +27,94 @@ ShowUninstDetails nevershow
 
 Var RegistrationTool
 Var InputMethodTool
-Var InputMethodState
-Var StartupState
+Var CtfmonTool
+Var InstallLog
 
+; 尽力而为步骤（目标进程/注册项可能本就不存在），结果不判定成败。
 !macro RunHidden Command
-  nsExec::ExecToLog '${Command}'
+  nsExec::ExecToLog `${Command}`
   Pop $0
+!macroend
+
+; 安装日志一行（UTF-16LE 保证中文可读）。日志句柄无效时静默丢弃，不影响安装。
+!macro LogLine Text
+  FileWriteUTF16LE $InstallLog `${Text}$\r$\n`
+!macroend
+
+; 关键步骤：nsExec 拉不起工具时返回的是字符串 error/timeout，IntCmp 会把它们按
+; 数值 0 误判为成功（曾导致自启动注册静默丢失），必须与字符串 "0" 严格比较；
+; 失败弹窗附带真实结果值并中止安装，静默安装（/S）经 /SD 取默认按钮。
+!macro RunCritical Command Message
+  nsExec::ExecToLog `${Command}`
+  Pop $0
+  !insertmacro LogLine `结果=$0 步骤=${Message}`
+  StrCmp $0 "0" +3
+  MessageBox MB_ICONSTOP `${Message}失败（结果：$0）。现有安装目录不会被删除，请关闭占用程序后重试。` /SD IDOK
+  Abort
 !macroend
 
 Function .onInit
   SetShellVarContext all
   StrCpy $INSTDIR "$APPDATA\shurufa"
-  InitPluginsDir
-  StrCpy $InputMethodState "$PLUGINSDIR\previous-input-tip.txt"
-  StrCpy $StartupState "$PLUGINSDIR\previous-host-startup.json"
-  IfFileExists "$WINDIR\Sysnative\regsvr32.exe" 0 use_default_registration_tool
+  ; 32 位安装进程访问 System32 会被 WOW64 重定向到 SysWOW64，必须经 Sysnative
+  ; 使用 64 位工具：regsvr32 注册 64 位 TSF DLL、ctfmon 与 PowerShell 同理。
+  IfFileExists "$WINDIR\Sysnative\regsvr32.exe" 0 use_default_tools
   StrCpy $RegistrationTool "$WINDIR\Sysnative\regsvr32.exe"
   StrCpy $InputMethodTool "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+  StrCpy $CtfmonTool "$WINDIR\Sysnative\ctfmon.exe"
   Goto tools_ready
-use_default_registration_tool:
+use_default_tools:
   StrCpy $RegistrationTool "$SYSDIR\regsvr32.exe"
   StrCpy $InputMethodTool "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+  StrCpy $CtfmonTool "$SYSDIR\ctfmon.exe"
 tools_ready:
 FunctionEnd
 
 Function un.onInit
-  IfFileExists "$WINDIR\Sysnative\regsvr32.exe" 0 un_use_default_registration_tool
+  IfFileExists "$WINDIR\Sysnative\regsvr32.exe" 0 un_use_default_tools
   StrCpy $RegistrationTool "$WINDIR\Sysnative\regsvr32.exe"
   StrCpy $InputMethodTool "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
   Goto un_tools_ready
-un_use_default_registration_tool:
+un_use_default_tools:
   StrCpy $RegistrationTool "$SYSDIR\regsvr32.exe"
   StrCpy $InputMethodTool "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
 un_tools_ready:
 FunctionEnd
 
 Function StopInputProcesses
-  !insertmacro RunHidden '"$SYSDIR\taskkill.exe" /f /im ctfmon.exe'
-  !insertmacro RunHidden '"$SYSDIR\taskkill.exe" /f /im TextInputHost.exe'
+  !insertmacro RunHidden `"$SYSDIR\taskkill.exe" /f /im ctfmon.exe`
+  !insertmacro RunHidden `"$SYSDIR\taskkill.exe" /f /im TextInputHost.exe`
   Sleep 1000
 FunctionEnd
 
 Function StopControlCenter
   ; 覆盖桌面端 EXE 前必须释放 WebView 与主进程的文件句柄。
   ; 未运行时 taskkill 返回非零，不影响后续原位安装。
-  !insertmacro RunHidden '"$SYSDIR\taskkill.exe" /f /im Shurufa.exe'
+  !insertmacro RunHidden `"$SYSDIR\taskkill.exe" /f /im Shurufa.exe`
   Sleep 500
 FunctionEnd
 
 Function PrepareInPlaceUpdate
   Call StopControlCenter
-  IfFileExists "$INSTDIR\shurufa-host.exe" 0 +2
-  !insertmacro RunHidden '"$INSTDIR\shurufa-host.exe" stop'
+  IfFileExists "$INSTDIR\shurufa-host.exe" 0 host_stop_done
+  !insertmacro RunHidden `"$INSTDIR\shurufa-host.exe" stop`
+host_stop_done:
   Call StopInputProcesses
-  IfFileExists "$INSTDIR\${TSF_DLL_FILE}" 0 +2
-  !insertmacro RunHidden '"$RegistrationTool" /s /u "$INSTDIR\${TSF_DLL_FILE}"'
-  IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 +2
-  !insertmacro RunHidden '"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"'
+  IfFileExists "$INSTDIR\${TSF_DLL_FILE}" 0 versioned_unregister_done
+  !insertmacro RunHidden `"$RegistrationTool" /s /u "$INSTDIR\${TSF_DLL_FILE}"`
+versioned_unregister_done:
+  IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 legacy_unregister_done
+  !insertmacro RunHidden `"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"`
+legacy_unregister_done:
   Sleep 1000
 FunctionEnd
 
 Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   Call PrepareInPlaceUpdate
   SetOutPath "$INSTDIR"
+  FileOpen $InstallLog "$INSTDIR\install.log" w
+  FileWriteWord $InstallLog 0xFEFF
+  !insertmacro LogLine `开始安装 ${PRODUCT_NAME} ${PRODUCT_VERSION}`
   SetOverwrite off
   File /oname=${TSF_DLL_FILE} "..\target\release\shurufa_tsf.dll"
   SetOverwrite on
@@ -98,30 +123,16 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   File "..\target\release\Shurufa.exe"
   File "activate-default-ime.ps1"
   File "register-host-startup.ps1"
+  File "verify-install.ps1"
   File "..\third_party\librime\dist\lib\rime.dll"
   File "..\third_party\librime\dist\bin\rime_deployer.exe"
   SetOutPath "$INSTDIR\schemas"
   File /r "..\schemas\*.*"
-  !insertmacro RunHidden '"$INSTDIR\rime_deployer.exe" --build "$INSTDIR\schemas" "$INSTDIR\schemas" "$INSTDIR\schemas\build"'
-  IntCmp $0 0 +3
-  MessageBox MB_ICONSTOP "词典预构建失败。现有安装目录不会被删除，请关闭占用程序后重试。"
-  Goto install_failed
-  !insertmacro RunHidden '"$SYSDIR\icacls.exe" "$INSTDIR" /grant *S-1-15-2-1:(OI)(CI)(RX) /t /c'
-  IntCmp $0 0 +3
-  MessageBox MB_ICONSTOP "无法授予输入法宿主读取权限。现有安装目录不会被删除，请关闭占用程序后重试。"
-  Goto install_failed
-  !insertmacro RunHidden '"$RegistrationTool" /s "$INSTDIR\${TSF_DLL_FILE}"'
-  IntCmp $0 0 +3
-  MessageBox MB_ICONSTOP "TSF 注册失败。现有安装目录不会被删除，请关闭占用程序后重试。"
-  Goto install_failed
-  !insertmacro RunHidden '"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\activate-default-ime.ps1" -StatePath "$InputMethodState"'
-  IntCmp $0 0 +3
-  MessageBox MB_ICONSTOP "无法将 Shurufa 拼音设为默认输入法，已恢复旧版本。"
-  Goto install_failed
-  !insertmacro RunHidden '"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -InstallDir "$INSTDIR" -StatePath "$StartupState"'
-  IntCmp $0 0 +3
-  MessageBox MB_ICONSTOP "无法配置 Shurufa 后台服务的登录启动，已恢复旧版本。"
-  Goto install_failed
+  !insertmacro RunCritical `"$INSTDIR\rime_deployer.exe" --build "$INSTDIR\schemas" "$INSTDIR\schemas" "$INSTDIR\schemas\build"` `词典预构建`
+  !insertmacro RunCritical `"$SYSDIR\icacls.exe" "$INSTDIR" /grant *S-1-15-2-1:(OI)(CI)(RX) /t /c` `授予输入法宿主读取权限`
+  !insertmacro RunCritical `"$RegistrationTool" /s "$INSTDIR\${TSF_DLL_FILE}"` `注册 TSF 输入法`
+  !insertmacro RunCritical `"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\activate-default-ime.ps1"` `设置默认输入法`
+  !insertmacro RunCritical `"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -InstallDir "$INSTDIR"` `配置后台服务登录自启动`
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   SetOutPath "$INSTDIR"
   CreateDirectory "$SMPROGRAMS\Shurufa"
@@ -133,24 +144,40 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   WriteRegStr HKLM "${PRODUCT_REGISTRY_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegDWORD HKLM "${PRODUCT_REGISTRY_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${PRODUCT_REGISTRY_KEY}" "NoRepair" 1
-  Exec '"$SYSDIR\ctfmon.exe"'
+  Exec `"$CtfmonTool"`
+  ClearErrors
   ExecShell "open" "$INSTDIR\shurufa-host.exe" "supervise" SW_HIDE
-  Goto install_done
-
-install_failed:
-  Abort
-install_done:
+  IfErrors 0 host_start_done
+  !insertmacro LogLine `ExecShell 启动后台服务失败，改用 PowerShell 兜底启动`
+  !insertmacro RunHidden `"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Process -FilePath '$INSTDIR\shurufa-host.exe' -ArgumentList 'supervise' -WindowStyle Hidden"`
+host_start_done:
+  ; 终态验证：自启动键值与后台进程必须全部就绪。失败仅警告不回滚——
+  ; 文件与注册均已完成，给出手工补救路径比中途中止更可恢复。
+  !insertmacro RunHidden `"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\verify-install.ps1" -InstallDir "$INSTDIR"`
+  !insertmacro LogLine `结果=$0 步骤=安装终态验证`
+  StrCmp $0 "0" verify_done
+  MessageBox MB_ICONEXCLAMATION `安装已完成，但未能确认后台服务就绪（结果：$0）。$\r$\n可手动运行："$INSTDIR\shurufa-host.exe" supervise$\r$\n或注销后重新登录。详见 $INSTDIR\install.log。` /SD IDOK
+verify_done:
+  !insertmacro LogLine `安装流程结束`
+  FileClose $InstallLog
 SectionEnd
 
 Section "Uninstall"
-  IfFileExists "$INSTDIR\shurufa-host.exe" 0 +2
-  !insertmacro RunHidden '"$INSTDIR\shurufa-host.exe" stop'
-  IfFileExists "$INSTDIR\register-host-startup.ps1" 0 +2
-  !insertmacro RunHidden '"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -Remove'
-  IfFileExists "$INSTDIR\${TSF_DLL_FILE}" 0 +2
-  !insertmacro RunHidden '"$RegistrationTool" /s /u "$INSTDIR\${TSF_DLL_FILE}"'
-  IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 +2
-  !insertmacro RunHidden '"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"'
+  IfFileExists "$INSTDIR\shurufa-host.exe" 0 un_host_stop_done
+  !insertmacro RunHidden `"$INSTDIR\shurufa-host.exe" stop`
+un_host_stop_done:
+  IfFileExists "$INSTDIR\register-host-startup.ps1" 0 un_startup_remove_done
+  !insertmacro RunHidden `"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -Remove`
+un_startup_remove_done:
+  IfFileExists "$INSTDIR\activate-default-ime.ps1" 0 un_ime_clear_done
+  !insertmacro RunHidden `"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\activate-default-ime.ps1" -Clear`
+un_ime_clear_done:
+  IfFileExists "$INSTDIR\${TSF_DLL_FILE}" 0 un_versioned_unregister_done
+  !insertmacro RunHidden `"$RegistrationTool" /s /u "$INSTDIR\${TSF_DLL_FILE}"`
+un_versioned_unregister_done:
+  IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 un_legacy_unregister_done
+  !insertmacro RunHidden `"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"`
+un_legacy_unregister_done:
   DeleteRegKey HKLM "${PRODUCT_REGISTRY_KEY}"
   Delete "$SMPROGRAMS\Shurufa\Shurufa.lnk"
   RMDir "$SMPROGRAMS\Shurufa"
@@ -158,6 +185,6 @@ Section "Uninstall"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir /r "$INSTDIR"
   IfErrors 0 uninstall_done
-  MessageBox MB_ICONEXCLAMATION "部分文件仍被系统占用。请注销 Windows 后再次运行卸载程序。"
+  MessageBox MB_ICONEXCLAMATION "部分文件仍被系统占用。请注销 Windows 后再次运行卸载程序。" /SD IDOK
 uninstall_done:
 SectionEnd

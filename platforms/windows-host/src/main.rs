@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 //! shurufa-host：桌面常驻进程。
 //!
 //! `run` 子命令启动剪贴板监听并写入历史库；其余子命令面向历史库的
