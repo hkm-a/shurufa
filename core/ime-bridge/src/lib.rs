@@ -230,6 +230,40 @@ impl Session<'_> {
             }
         }
     }
+
+    /// 设置组合内光标（字节偏移，以待编辑的 raw input 为准，即 UTF-8）。
+    pub fn set_caret_pos(&self, byte_pos: usize) {
+        unsafe { (self.engine.api().set_caret_pos)(self.id, byte_pos) }
+    }
+
+    /// 当前组合内光标的字节偏移。
+    pub fn caret_pos(&self) -> usize {
+        unsafe { (self.engine.api().get_caret_pos)(self.id) }
+    }
+
+    /// 当前原始输入串（raw input，ASCII 拼音）。
+    pub fn input(&self) -> String {
+        unsafe {
+            let p = (self.engine.api().get_input)(self.id);
+            if p.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        }
+    }
+
+    /// 选择当前页第 `index` 个候选；成功返回 true。
+    pub fn select_candidate_on_current_page(&self, index: usize) -> bool {
+        unsafe {
+            (self.engine.api().select_candidate_on_current_page)(self.id, index) != 0
+        }
+    }
+
+    /// 翻一页候选；`backward` 为 true 是上一页。
+    pub fn change_page(&self, backward: bool) -> bool {
+        unsafe { (self.engine.api().change_page)(self.id, backward as ffi::Bool) != 0 }
+    }
 }
 
 impl Drop for Session<'_> {

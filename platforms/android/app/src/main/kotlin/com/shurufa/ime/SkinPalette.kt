@@ -20,31 +20,31 @@ internal data class SkinPalette(
 ) {
     companion object {
         fun lightDefault() = SkinPalette(
-            bg = 0xFFF0F1F5.toInt(),
+            bg = 0xFFF2F3F5.toInt(),
             key = 0xFFFFFFFF.toInt(),
-            keyPressed = 0xFFC7CED9.toInt(),
+            keyPressed = 0xFFDEE4EC.toInt(),
             keyFunc = 0xFFD5DAE3.toInt(),
             funcPressed = 0xFFBFC6D2.toInt(),
-            keyText = 0xFF1A1A1A.toInt(),
-            funcText = 0xFF33383F.toInt(),
-            candidate = 0xFF202020.toInt(),
-            candidateHl = 0xFF35B982.toInt(),
-            preedit = 0xFF8A9099.toInt(),
-            accent = 0xFF35B982.toInt(),
+            keyText = 0xFF111418.toInt(),
+            funcText = 0xFF3A4048.toInt(),
+            candidate = 0xFF15181C.toInt(),
+            candidateHl = 0xFF1B9E77.toInt(),
+            preedit = 0xFF9AA2AB.toInt(),
+            accent = 0xFF1B9E77.toInt(),
         )
 
         fun darkDefault() = SkinPalette(
-            bg = 0xFF15171B.toInt(),
-            key = 0xFF2B2F36.toInt(),
-            keyPressed = 0xFF474D57.toInt(),
-            keyFunc = 0xFF373C44.toInt(),
-            funcPressed = 0xFF4A5059.toInt(),
-            keyText = 0xFFECECEC.toInt(),
-            funcText = 0xFFCFD3D9.toInt(),
-            candidate = 0xFFECECEC.toInt(),
-            candidateHl = 0xFF68D3A0.toInt(),
-            preedit = 0xFF8B9199.toInt(),
-            accent = 0xFF68D3A0.toInt(),
+            bg = 0xFF121418.toInt(),
+            key = 0xFF282C33.toInt(),
+            keyPressed = 0xFF414850.toInt(),
+            keyFunc = 0xFF32373E.toInt(),
+            funcPressed = 0xFF40464E.toInt(),
+            keyText = 0xFFF0F1F3.toInt(),
+            funcText = 0xFFC9CED4.toInt(),
+            candidate = 0xFFF0F1F3.toInt(),
+            candidateHl = 0xFF4ECDA2.toInt(),
+            preedit = 0xFF8E9399.toInt(),
+            accent = 0xFF4ECDA2.toInt(),
         )
 
         /** 用共享皮肤 JSON 解析指定变体；任一缺失或非法字段回退到默认颜色。 */

@@ -165,7 +165,8 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeContext(
 
 /// 将 Rime 的组合光标移动到指定的 UTF-16 偏移。
 ///
-/// librime 没有直接设置组合光标的 C API，故复用标准 Home/Right 键路径。
+/// librime 保存的是 raw input 字节偏移；先把编辑器的 UTF-16 目标
+/// 换算为 UTF-8 字节偏移，再直接调 set_caret_pos（一步直达，不逐键）。
 #[no_mangle]
 pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeSetCursor(
     _env: JNIEnv,
@@ -183,10 +184,17 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeSetCursor(
             if context.preedit.is_empty() || context.cursor_pos == target {
                 return;
             }
-            session.process_key(0xff50, 0);
-            for _ in 0..target {
-                session.process_key(0xff53, 0);
+            // 从 UTF-16 位置反推 UTF-8 字节偏移；ASCII 拼音下两者相等。
+            let mut utf16_seen = 0usize;
+            let mut byte_pos = context.preedit.len();
+            for (i, ch) in context.preedit.char_indices() {
+                if utf16_seen >= target {
+                    byte_pos = i;
+                    break;
+                }
+                utf16_seen += ch.len_utf16();
             }
+            session.set_caret_pos(byte_pos);
         },
         (),
     )
@@ -244,4 +252,3 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeIsAscii(
         0,
     )
 }
-

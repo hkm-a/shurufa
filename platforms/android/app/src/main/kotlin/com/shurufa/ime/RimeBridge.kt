@@ -23,6 +23,12 @@ object RimeBridge {
     /** 将引擎内的组合光标同步到编辑器当前的 UTF-16 偏移。 */
     external fun nativeSetCursor(cursorPos: Int)
 
+    /** 候选列表翻页；backward=true 为上一页。返回 `<上下文串>`（同 nativeContext 协议）。 */
+    external fun nativeChangePage(backward: Boolean): String
+
+    /** 选择当前页第 `index` 个候选并上屏。返回提交文本（空串=失败/无上屏）。 */
+    external fun nativeSelectCandidate(index: Int): String
+
     external fun nativeReset()
 
     /** 切换中英文（ascii_mode），返回切换后是否为英文直输。 */

@@ -15,6 +15,7 @@ use windows::Win32::UI::TextServices::{
     ITfThreadMgr, TfAnchor, INSERT_TEXT_AT_SELECTION_FLAGS, TF_AE_NONE, TF_ANCHOR_END,
     TF_IAS_QUERYONLY, TF_SELECTION, TF_SELECTIONSTYLE, TF_ST_CORRECTION,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse;
 use windows_core::IUnknownImpl;
 
 use crate::candidate_window::CandidateUi;
@@ -63,14 +64,28 @@ impl Inner {
     ) -> bool {
         let modifiers = keys::current_modifiers();
         let shift = modifiers & keys::MASK_SHIFT != 0;
+        // Shift 单独按下：切换中英文（主流行为）。ToggleAscii 是唯一写路径，
+        // 避免 OnTestKeyDown 只试不写导致的状态漂移。
+        if wparam.0 as u32 == KeyboardAndMouse::VK_SHIFT.0 as u32 {
+            if let Some(is_ascii) = self.client.toggle_ascii() {
+                crate::debug_log(&format!("Shift 切换中英文：ascii={is_ascii}"));
+                return true;
+            }
+            return false;
+        }
         // Ctrl/Alt 组合键与不认识的键一律放行
         if modifiers & (keys::MASK_CONTROL | keys::MASK_ALT) != 0 {
             return false;
         }
         let Some(keysym) = keys::vk_to_keysym(wparam.0 as u32, shift) else {
+            // 引擎连接失败：把当前按键作为原字符落入文档（中文兜底），
+            // 避免“只能输入英文”。
+            let _ = self.fallback_commit(context, wparam.0 as u32, shift);
             return false;
         };
         let Some((eaten, commit, ctx)) = self.client.process_key(keysym, modifiers) else {
+            // 引擎连接失败：把当前按键作为原字符落入文档，避免“只能输入英文”。
+            let _ = self.fallback_commit(context, wparam.0 as u32, shift);
             crate::debug_log("引擎 IPC 不可用，按键直通");
             return false;
         };
@@ -136,6 +151,19 @@ impl Inner {
         self.client.simulate("{Escape}");
         self.composition = None;
         self.ui.hide();
+    }
+
+    /// 引擎服务不可用时，把当前按键作为原字符落入文档（中文兜底）。
+    /// 这样即使算法服务崩溃，用户也能继续输入中文而非被迫切回英文。
+    fn fallback_commit(&mut self, context: &ITfContext, vk: u32, shift: bool) -> Result<()> {
+        let ch: char = match vk {
+            0x41..=0x5A => char::from_u32(vk + if shift { 0 } else { 0x20 }).unwrap_or('a'),
+            0x30..=0x39 => char::from_u32(vk).unwrap_or('0'),
+            _ => ' ',
+        };
+        let text = ch.to_string();
+        let client_id = self.client_id;
+        edit_session(client_id, context, |ec| unsafe { insert_text(context, ec, &text) })
     }
 }
 

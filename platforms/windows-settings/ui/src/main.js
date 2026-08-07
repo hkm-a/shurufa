@@ -122,7 +122,7 @@ function workspacePage() {
         <div class="header-actions">${statusPill()}<button class="icon-action" data-action="refresh" title="刷新后台状态"><i data-lucide="refresh-cw"></i></button></div>
       </header>
       <div class="hero-card">
-        <div class="hero-copy"><p class="eyebrow accent">输入与剪贴板</p><h2>专注表达，内容随手可达</h2><p>拼音、热门词库和跨设备剪贴板在同一处管理。</p></div>
+        <div class="hero-copy"><p class="eyebrow accent">输入与剪贴板</p><h2>管理输入与剪贴板同步</h2><p>雾凇拼音、云词库与跨设备剪贴板历史在此统一管理。</p></div>
         ${serviceAction}
       </div>
       <div class="metric-grid">

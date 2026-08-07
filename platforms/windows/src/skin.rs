@@ -20,11 +20,11 @@ pub struct CandidateColors {
 impl Default for CandidateColors {
     fn default() -> Self {
         CandidateColors {
-            background: 0x00FA_FAFA,
-            highlight_background: 0x00F5_E6D8,
-            text: 0x0020_2020,
-            preedit: 0x0088_8888,
-            label: 0x00B0_6030,
+            background: 0x00FF_FFFF,
+            highlight_background: 0x00E1_EBD6,
+            text: 0x0018_1411,
+            preedit: 0x00AB_A29A,
+            label: 0x0077_9E1B,
         }
     }
 }

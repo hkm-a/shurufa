@@ -66,7 +66,7 @@ class ShurufaImeService : InputMethodService() {
         private const val XK_BACKSPACE = 0xff08
         private const val XK_RETURN = 0xff0d
         // 方案资源变化时递增，确保同一应用版本也会重新解包词典。
-        private const val SCHEMA_BUNDLE_VERSION = "rime-ice-20260801"
+        private const val SCHEMA_BUNDLE_VERSION = "rime-ice-20260807"
         /// 缩略图采样目标边长（px），仅为展示用，不必保留原图尺寸
         private const val THUMBNAIL_TARGET = 260
         /// 预览图采样目标边长（px），兼顾清晰度与内存
@@ -98,6 +98,7 @@ class ShurufaImeService : InputMethodService() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var inputGeneration = 0L
     private var candidatesExpanded = false
+    private var compositionCursorOverride: Int? = null
     private val warmupQueue = EngineWarmupQueue<PendingInput>()
 
     /// 当前主题；随系统深色设置在重建输入视图时更新
@@ -116,7 +117,17 @@ class ShurufaImeService : InputMethodService() {
 
     override fun onCreate() {
         super.onCreate()
-        ClipboardSyncService.start(applicationContext)
+        // 不在 onCreate 中启动剪贴板同步服务——IME 刚创建时就启动
+        // 会触发系统（尤其 MIUI/HyperOS）的剪贴板访问面板，导致每次点开
+        // 文本框时弹出剪贴板而非键盘。改为大幅延迟启动，等用户稳定使用后再捕获。
+        thread(name = "clipboard-sync-delayed") {
+            try {
+                Thread.sleep(60_000) // 1 分钟后才启动剪贴板同步
+                ClipboardSyncService.start(applicationContext)
+            } catch (_: InterruptedException) {
+                // 被中断说明 IME 已销毁，无需启动
+            }
+        }
         voice = VoiceInputController(applicationContext).apply {
             onResult = { text -> commitVoiceResult(text, showBar = true) }
             onCommit = { text -> commitVoiceResult(text, showBar = false) }
@@ -137,12 +148,21 @@ class ShurufaImeService : InputMethodService() {
         super.onStartInput(attribute, restarting)
         inputGeneration += 1
         warmupQueue.clear()
+        // 每次打开新输入框时，强制关闭历史面板和图片预览，只展示纯键盘。
+        historyPanel?.visibility = View.GONE
+        previewImageId = null
+        previewKeyboard?.visibility = View.GONE
+        if (::keyArea.isInitialized) keyArea.visibility = View.VISIBLE
     }
 
     override fun onFinishInput() {
         resetCompositionForInputChange()
         inputGeneration += 1
         warmupQueue.clear()
+        historyPanel?.visibility = View.GONE
+        previewKeyboard?.visibility = View.GONE
+        previewImageId = null
+        if (::keyArea.isInitialized) keyArea.visibility = View.VISIBLE
         super.onFinishInput()
     }
 
@@ -173,18 +193,26 @@ class ShurufaImeService : InputMethodService() {
             candidatesEnd >= candidatesStart &&
             newSelStart in candidatesStart..candidatesEnd
         ) {
-            RimeBridge.nativeSetCursor(newSelStart - candidatesStart)
+            val offset = newSelStart - candidatesStart
+            RimeBridge.nativeSetCursor(offset)
+            // 覆盖一次组合光标：很多编辑器在下一次 commit 前不会主动回流选区，
+            // 这里主动以点选位置重写 composition 的光标，避免视觉光标跳到尾部。
+            currentInputConnection?.setComposingRegion(candidatesStart, candidatesEnd)
+            currentInputConnection?.setSelection(newSelStart, newSelEnd)
+            compositionCursorOverride = offset
             return
         }
 
         // 用户把光标移到组合区外或选中其他文本时，Rime 仍保存着旧组合。
         // 先结束该组合，后续输入便从新的编辑器选区开始。
         if (candidatesStart < 0 || newSelStart != newSelEnd) {
+            compositionCursorOverride = null
             resetCompositionForInputChange()
         }
     }
 
     private fun resetCompositionForInputChange() {
+        compositionCursorOverride = null
         if (!engineReady || RimeBridge.nativeContext().isEmpty()) return
         RimeBridge.nativeReset()
         currentInputConnection?.finishComposingText()
@@ -746,7 +774,7 @@ class ShurufaImeService : InputMethodService() {
     private fun populateHistory(panel: LinearLayout, onlyImages: Boolean = false) {
         panel.removeAllViews()
         panel.addView(TextView(this).apply {
-            text = if (onlyImages) "斗图 · 点图片预览 · 再点 ⊞ 返回" else "剪贴板历史 · 点击上屏 · 再点 ⊞ 返回"
+            text = if (onlyImages) "斗图 · 点图片预览 · 再点 ▾▦ 返回" else "剪贴板历史 · 点击上屏 · 再点 ▾▦ 返回"
             textSize = 12f
             setTextColor(palette.preedit)
             setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
@@ -1345,15 +1373,20 @@ class ShurufaImeService : InputMethodService() {
         currentInputConnection?.commitText(s, 1)
     }
 
-    private fun onCandidate(index: Int) {
+    /** 直接选中当前页第 index 个候选（Rime select API），不走数字键路径。 */
+    private fun onCandidateSelect(index: Int) {
         if (!engineReady) return
-        RimeBridge.nativeProcessKey('1'.code + index, 0)
+        val committed = RimeBridge.nativeSelectCandidate(index)
+        val ic = currentInputConnection ?: return
+        if (committed.isNotEmpty()) {
+            ic.commitText(committed, 1)
+        }
         sync()
     }
 
     private fun onCandidatePage(previous: Boolean) {
         if (!engineReady) return
-        RimeBridge.nativeProcessKey(if (previous) 0xff55 else 0xff56, 0)
+        RimeBridge.nativeChangePage(previous)
         sync()
     }
 
@@ -1374,7 +1407,10 @@ class ShurufaImeService : InputMethodService() {
         val parts = raw.split("\u0001")
         val preedit = parts[0]
         val highlighted = parts.getOrNull(1)?.toIntOrNull() ?: 0
-        val cursorPos = parts.getOrNull(2)?.toIntOrNull() ?: preedit.length
+        val engineCursor = parts.getOrNull(2)?.toIntOrNull() ?: preedit.length
+        val cursorPos = compositionCursorOverride
+            ?.takeIf { it in 0..preedit.length }
+            ?: engineCursor.also { compositionCursorOverride = null }
         val candidates = if (parts.size > 3) parts.subList(3, parts.size) else emptyList()
         ic.setComposingText(preedit, cursorPos)
         updateCandidates(preedit, candidates, highlighted)
@@ -1433,7 +1469,7 @@ class ShurufaImeService : InputMethodService() {
             if (index == highlighted) typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(if (compact) 15f else 8f), 0, dp(if (compact) 15f else 8f), 0)
             contentDescription = "第 ${index + 1} 候选词：$text"
-            setOnClickListener { onCandidate(index) }
+            setOnClickListener { onCandidateSelect(index) }
         }
 
     private fun addExpandedCandidates(candidates: List<String>, highlighted: Int) {
