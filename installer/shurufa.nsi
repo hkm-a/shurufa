@@ -10,7 +10,10 @@ RequestExecutionLevel admin
 !define TSF_DLL_FILE "shurufa_tsf-${PRODUCT_VERSION}.dll"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "..\dist\Shurufa-Setup.exe"
+OutFile "..\dist\Shurufa-Setup-${PRODUCT_VERSION}.exe"
+; SetShellVarContext all 之后 $APPDATA 被重定向到 C:\ProgramData（而非某个用户
+; 的 Roaming），InstallDir 只是默认值，真正的覆盖发生在 .onInit。该隐式重定向
+; 必须与 scripts/install.ps1 默认的 $env:ProgramData\shurufa 保持一致。
 InstallDir "$APPDATA\shurufa"
 ShowInstDetails nevershow
 ShowUninstDetails nevershow

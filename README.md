@@ -2,9 +2,10 @@
 
 跨平台中文输入与设备协作工具，覆盖 Windows 桌面端和 Android 输入法。
 
-[![许可证](https://img.shields.io/badge/许可证-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
+[![许可证](https://img.shields.io/badge/许可证-GPL--3.0-blue.svg)](LICENSE)
 [![平台](https://img.shields.io/badge/平台-Windows%20%7C%20Android-2ea44f.svg)](#平台支持)
-[![状态](https://img.shields.io/badge/状态-M6%20增强-2da44e.svg)](docs/m4-verification.md)
+[![CI](https://github.com/hkm-a/shurufa/actions/workflows/ci.yml/badge.svg)](https://github.com/hkm-a/shurufa/actions/workflows/ci.yml)
+[![状态](https://img.shields.io/badge/状态-M6%20增强-2da44e.svg)](docs/M4-验收报告.md)
 
 Shurufa 把中文输入和设备剪贴板放在同一条工作流里：输入法负责稳定输入，剪贴板负责设备间同步。截图、标注与录屏由 PixPin 等专业工具负责，Shurufa 不再重复提供这类桌面能力。
 
@@ -15,62 +16,42 @@ Shurufa 把中文输入和设备剪贴板放在同一条工作流里：输入法
 | 中文输入 | 基于 librime 的雾凇拼音、候选词、词频学习、模糊音 | Windows、Android |
 | 剪贴板同步 | 文本、图片、文件、历史记录，局域网直连与自托管中继 | Windows、Android |
 | 词库与皮肤 | 固定版本的 rime-ice 云词库、SHA-256 校验、跨端皮肤 JSON | Windows、Android |
+| 控制中心 | Tauri 桌面端：历史、设备、皮肤、词库、中继设置 | Windows |
 
 ## 平台支持
 
-- **Windows**：TSF 原生输入法、常驻剪贴板同步、设置页和单文件安装器。
+- **Windows**：TSF 原生输入法、常驻剪贴板同步、设置页和带版本号的单文件安装器（`Shurufa-Setup-<版本>.exe`，附 SHA-256）。
 - **Android**：系统输入法服务、后台剪贴板同步、候选栏、QWERTY/符号键盘、历史面板和云词库更新。
-- **同步中继**：可部署在自有服务器上，不依赖项目提供的公共服务，详见[自托管同步中继](docs/self-hosted-relay.md)。
+- **同步中继**：可部署在自有服务器上，不依赖项目提供的公共服务，详见 [自托管同步中继](docs/自托管中继.md)。
 
 ## 快速开始
 
-### Windows
+### 用户
 
-1. 从源码构建宿主和安装器：
+- **Windows**：从 [Release](../../releases) 下载 `Shurufa-Setup-<版本>.exe`，右键"以管理员身份运行"。详见 [Windows 安装指南](docs/Windows安装指南.md)。
+- **Android**：从 [Release](../../releases) 下载 APK 安装，然后在系统设置中启用 Shurufa。详见 [Android 安装与使用](docs/安卓安装与使用.md)。
 
-   ```powershell
-   .\scripts\build-installer.ps1
-   ```
+### 开发者
 
-2. 以管理员身份运行生成的 `dist\Shurufa-Setup.exe`。
-3. 安装器会部署 TSF、算法服务、后台同步和默认雾凇拼音方案，并创建 `Shurufa.exe` 的开始菜单与桌面快捷方式。
-
-完整的升级、卸载和失败恢复说明见[Windows 安装指南](docs/windows-installation.md)。
-
-### Android
-
-Android 构建需要 Android SDK、JDK 17 和 Rust Android target：
+Windows 一键构建并打包：
 
 ```powershell
-cargo build --release --target x86_64-linux-android -p shurufa-rimejni
-gradle.bat -p platforms/android :app:assembleDebug --console=plain
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 ```
 
-生成的 APK 位于 `platforms/android/app/build/outputs/apk/debug/`。首次使用时，将 Shurufa 设为系统默认输入法即可。
+产物位于 `dist\Shurufa-Setup-<版本>.exe`，同目录附 `.sha256` 校验和。构建机需要 NSIS；已 Release 构建过可加 `-SkipBuild`；正式发布请配 `SHURUFA_SIGN_PFX`/`SHURUFA_SIGN_PASSWORD` 后加 `-Sign`。
 
-### 词库与同步
-
-- [云词库说明](docs/cloud-dictionary.md)：默认 rime-ice 版本、镜像回退和本地校验。
-- [自托管同步中继](docs/self-hosted-relay.md)：服务器部署、端口和配对流程。
-- [架构说明](docs/architecture.md)：核心模块、协议和平台集成点。
-
-## 从源码构建
-
-项目使用 Rust workspace、Kotlin Android 工程和原生 Windows 工程。Windows 的 Rime 依赖不入库，首次构建前准备对应版本的 librime：
+Android 构建（需 JDK 17、Android SDK 与 Rust Android target）：
 
 ```powershell
-New-Item -ItemType Directory -Force third_party\librime | Out-Null
-Invoke-WebRequest `
-  -Uri https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-Windows-msvc-x64.7z `
-  -OutFile third_party\librime\rime.7z
-7z x -y third_party\librime\rime.7z -othird_party\librime
+.\scripts\build-android.cmd
 ```
 
 常用本地验证：
 
 ```powershell
-cargo test --workspace
-gradle.bat -p platforms/android lintDebug testDebugUnitTest --console=plain
+cargo test --workspace --locked
+.\scripts\set-version.ps1 -Check
 git diff --check
 ```
 
@@ -79,16 +60,24 @@ git diff --check
 ```text
 core/          Rust 跨平台核心、剪贴板、输入桥接和同步协议
 platforms/     Windows TSF/桌面端、Android 输入法、中继和设置页
-schemas/       Rime 输入方案、词库清单和跨端皮肤
-docs/          架构、安装、云词库、中继和里程碑验证文档
-scripts/       构建、安装、注册和端到端验收脚本
-installer/     Windows 单文件安装器脚本
+schemas/       Rime 输入方案、词库清单和跨端皮肤（双端单一事实源）
+docs/          中英文对照的产品/架构/验收/发布文档
+installer/     NSIS 安装器脚本与共享部署模块 Deploy-Shurufa.ps1
+scripts/       构建、版本 bump、开发部署、端到端验收脚本
+version.json   版本号单一事实源（由 set-version.ps1 同步四处派生点）
 ```
+
+## 文档导航
+
+- 产品：[架构说明](docs/架构说明.md) · [迭代方向](docs/迭代方向.md)
+- 用户：[Windows 安装指南](docs/Windows安装指南.md) · [安卓安装与使用](docs/安卓安装与使用.md) · [云词库](docs/云词库.md) · [自托管中继](docs/自托管中继.md)
+- 开发者：[开发环境](docs/开发环境.md) · [发布流程](docs/发布流程.md) · [CHANGELOG](CHANGELOG.md)
+- 验收：[M1](docs/M1-验收报告.md) · [M2](docs/M2-验收报告.md) · [M3](docs/M3-验收报告.md) · [M4 Windows](docs/M4-验收报告.md) · [M4 Android](docs/M4-安卓验收报告.md) · [安卓附件测试](docs/安卓附件测试.md)
 
 ## 当前状态
 
-当前实现已完成 M6 增强目标。最近一次本地验收覆盖：Android lint 与单元测试、Windows 宿主回归、同步核心协议测试、JNI 构建，以及 Android 模拟器后台双向图片同步。详细评分和证据保存在[验证报告](.claude/verification-report.md)中。
+当前实现已完成 M6 增强目标。最近一次本地验收覆盖 Android lint 与单元测试、Windows 宿主回归、同步核心协议测试、JNI 构建，以及 Android 模拟器后台双向图片同步。详细评分和证据保存在 [验证报告](.claude/verification-report.md) 中。
 
 ## 许可证
 
-本项目采用 GPL-3.0。第三方 librime 和 rime-ice 组件继续遵循各自许可证；分发时请同时阅读对应上游项目的许可条款。
+本项目采用 GPL-3.0，详见 [LICENSE](LICENSE)。第三方 librime 和 rime-ice 组件继续遵循各自许可证；分发时请同时阅读对应上游项目的许可条款。

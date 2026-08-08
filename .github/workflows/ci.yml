@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  version-consistency:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验四处版本与 version.json 一致
+        shell: pwsh
+        run: ./scripts/set-version.ps1 -Check
+
+  windows-build:
+    runs-on: windows-latest
+    needs: version-consistency
+    env:
+      LIBRIME_VERSION: 1.17.0
+      LIBRIME_TAG: rime-33e7814
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: platforms/windows-settings/package-lock.json
+      - name: 恢复 librime 缓存
+        id: cache-librime
+        uses: actions/cache@v4
+        with:
+          path: third_party/librime
+          key: librime-${{ env.LIBRIME_VERSION }}-${{ env.LIBRIME_TAG }}-windows-msvc-x64
+      - name: 下载并解压 librime
+        if: steps.cache-librime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force third_party\librime | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/rime/librime/releases/download/${env:LIBRIME_VERSION}/${env:LIBRIME_TAG}-Windows-msvc-x64.7z" -OutFile third_party\librime\rime.7z
+          7z x -y third_party\librime\rime.7z -othird_party\librime
+      - name: Rust 测试与 lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace --locked
+      - name: Tauri 设置页前端安装
+        run: npm --prefix platforms/windows-settings ci
+      - name: Release 构建 Windows 宿主/算法/设置
+        run: |
+          cargo build --release --locked -p shurufa-tsf -p shurufa-algo -p shurufa-host
+          npm --prefix platforms/windows-settings run tauri -- build --no-bundle
+      - name: 安装 NSIS 并打包
+        run: |
+          choco install nsis -y --no-progress
+          ./scripts/build-installer.ps1 -SkipBuild
+      - name: 上传安装包与校验和
+        uses: actions/upload-artifact@v4
+        with:
+          name: shurufa-setup
+          path: |
+            dist/Shurufa-Setup-*.exe
+            dist/Shurufa-Setup-*.exe.sha256
+          retention-days: 14
+
+  android-build:
+    runs-on: ubuntu-latest
+    needs: version-consistency
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: 安装 Rust Android target 与 NDK 环境
+        run: |
+          sdkmanager --install "ndk;28.0.13004108"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.0.13004108" >> "$GITHUB_ENV"
+      - name: 配置第三方预编译 librime（Android）
+        run: |
+          mkdir -p third_party/librime-android
+          curl -L -o third_party/librime-android/rime.7z \
+            https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-Android-arm64-v8a.7z
+          7z x -y third_party/librime-android/rime.7z -othird_party/librime-android
+      - name: 构建 JNI 桥
+        run: cargo build --release --target aarch64-linux-android -p shurufa-rimejni --locked
+      - name: 复制 so 到 jniLibs
+        run: |
+          mkdir -p platforms/android/app/src/main/jniLibs/arm64-v8a
+          cp target/aarch64-linux-android/release/libshurufa_rime.so \
+            platforms/android/app/src/main/jniLibs/arm64-v8a/
+      - name: Gradle 校验与测试
+        working-directory: platforms/android
+        run: |
+          chmod +x gradlew
+          ./gradlew lintDebug testDebugUnitTest --console=plain
+      - name: 构建 Debug APK
+        working-directory: platforms/android
+        run: ./gradlew assembleDebug --console=plain
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: shurufa-apk
+          path: platforms/android/app/build/outputs/apk/versioned/*.apk
+          retention-days: 14

@@ -25,12 +25,7 @@ function Invoke-Native([string]$File, [string[]]$Arguments) {
 
 Assert-Administrator
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$profile = $Configuration.ToLowerInvariant()
-$targetDir = Join-Path $sourceRoot "target\$profile"
-$destination = Join-Path $env:ProgramData 'shurufa'
-$librime = Join-Path $sourceRoot 'third_party\librime\dist'
-$productVersion = (Get-Content -LiteralPath (Join-Path $sourceRoot 'platforms\windows-settings\tauri.conf.json') -Raw | ConvertFrom-Json).version
-$tsfDllName = "shurufa_tsf-$productVersion.dll"
+$targetDir = Join-Path $sourceRoot ('target\' + $Configuration.ToLowerInvariant())
 
 if (-not $SkipBuild) {
     $cargoArgs = @('build', '-p', 'shurufa-tsf', '-p', 'shurufa-algo', '-p', 'shurufa-host')
@@ -57,10 +52,8 @@ $required = @(
     (Join-Path $targetDir 'shurufa-algo.exe'),
     (Join-Path $targetDir 'shurufa-host.exe'),
     (Join-Path $targetDir 'Shurufa.exe'),
-    (Join-Path $librime 'lib\rime.dll'),
-    (Join-Path $librime 'bin\rime_deployer.exe'),
-    (Join-Path $sourceRoot 'installer\register-host-startup.ps1'),
-    (Join-Path $sourceRoot 'installer\verify-install.ps1')
+    (Join-Path $sourceRoot 'third_party\librime\dist\lib\rime.dll'),
+    (Join-Path $sourceRoot 'third_party\librime\dist\bin\rime_deployer.exe')
 )
 foreach ($file in $required) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
@@ -68,57 +61,13 @@ foreach ($file in $required) {
     }
 }
 
-if (Test-Path -LiteralPath (Join-Path $destination 'shurufa-host.exe') -PathType Leaf) {
-    & (Join-Path $destination 'shurufa-host.exe') stop
+# 实际部署步骤（停进程/复制/预构建词典/授权/注册/自启动/验证）统一由共享模块执行，
+# 与 NSIS 安装器走同一条代码路径；本脚本只负责构建与产物校验。
+$deployArgs = @{
+    Configuration = $Configuration
+    TargetDir = $targetDir
 }
-Get-Process -Name ctfmon, TextInputHost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-$versionedDll = Join-Path $destination $tsfDllName
-if (Test-Path -LiteralPath $versionedDll -PathType Leaf) {
-    & regsvr32.exe /u /s $versionedDll
-}
-$legacyDll = Join-Path $destination 'shurufa_tsf.dll'
-if (Test-Path -LiteralPath $legacyDll -PathType Leaf) {
-    & regsvr32.exe /u /s $legacyDll
-}
-Start-Sleep -Seconds 1
-
-try {
-    New-Item -ItemType Directory -Path $destination -Force | Out-Null
-    if (-not (Test-Path -LiteralPath $versionedDll -PathType Leaf)) {
-        Copy-Item (Join-Path $targetDir 'shurufa_tsf.dll') $versionedDll
-    }
-    Copy-Item (Join-Path $targetDir 'shurufa-algo.exe') $destination -Force
-    Copy-Item (Join-Path $targetDir 'shurufa-host.exe') $destination -Force
-    Copy-Item (Join-Path $targetDir 'Shurufa.exe') $destination -Force
-    Copy-Item (Join-Path $librime 'lib\rime.dll') $destination -Force
-    Copy-Item (Join-Path $librime 'bin\rime_deployer.exe') $destination -Force
-    Copy-Item (Join-Path $sourceRoot 'installer\register-host-startup.ps1') $destination -Force
-    Copy-Item (Join-Path $sourceRoot 'installer\verify-install.ps1') $destination -Force
-    Copy-Item (Join-Path $sourceRoot 'schemas') (Join-Path $destination 'schemas') -Recurse -Force
-
-    $deployer = Join-Path $destination 'rime_deployer.exe'
-    $schemas = Join-Path $destination 'schemas'
-    Invoke-Native $deployer @('--build', $schemas, $schemas, (Join-Path $schemas 'build'))
-
-    Invoke-Native 'icacls.exe' @($destination, '/grant', '*S-1-15-2-1:(OI)(CI)(RX)', '/t', '/c')
-    Invoke-Native 'regsvr32.exe' @('/s', $versionedDll)
-    Set-WinDefaultInputMethodOverride -InputTip '0804:{8A5C1B49-3D2E-4F7A-9C61-0B7E2D5A9F13}{C4E9D2A7-6B31-4A58-8F0D-1E9A7C3B5D26}'
-    & (Join-Path $destination 'register-host-startup.ps1') -InstallDir $destination
-}
-catch {
-    throw
-}
-
 if (-not $NoStartHost) {
-    Start-Process -FilePath (Join-Path $destination 'shurufa-host.exe') -ArgumentList 'supervise' -WindowStyle Hidden
-    & (Join-Path $destination 'verify-install.ps1') -InstallDir $destination
-    if ($LASTEXITCODE -ne 0) {
-        throw '安装终态验证失败：登录自启动项或后台进程未就绪，请查看上方输出。'
-    }
+    $deployArgs['StartHost'] = $true
 }
-
-Write-Host "Shurufa 已安装到 $destination。"
-Write-Host 'Shurufa 拼音已设为默认输入法，后台服务会在后续登录时自动启动。'
-if ($NoStartHost) {
-    Write-Host "可随后运行：& '$destination\shurufa-host.exe' supervise"
-}
+& (Join-Path $sourceRoot 'installer\Deploy-Shurufa.ps1') @deployArgs

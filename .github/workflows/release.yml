@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 版本一致性校验（tag 必须等于 version.json）
+        shell: pwsh
+        run: |
+          ./scripts/set-version.ps1 -Check
+          $tag = "${env:GITHUB_REF_NAME}" -replace '^v', ''
+          $manifest = Get-Content version.json -Raw | ConvertFrom-Json
+          if ($tag -ne $manifest.version) {
+            throw "tag ${env:GITHUB_REF_NAME} 与 version.json 的 $($manifest.version) 不一致"
+          }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: platforms/windows-settings/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+
+      - name: 恢复 librime 缓存
+        id: cache-librime
+        uses: actions/cache@v4
+        with:
+          path: third_party/librime
+          key: librime-1.17.0-rime-33e7814-windows-msvc-x64
+      - name: 下载并解压 librime（Windows）
+        if: steps.cache-librime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force third_party\librime | Out-Null
+          Invoke-WebRequest -Uri https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-Windows-msvc-x64.7z -OutFile third_party\librime\rime.7z
+          7z x -y third_party\librime\rime.7z -othird_party\librime
+
+      - name: 构建 Windows Release 并打包 NSIS
+        run: |
+          choco install nsis -y --no-progress
+          ./scripts/build-installer.ps1
+
+      - name: 安装 Android NDK 与 Rust target
+        run: |
+          sdkmanager --install "ndk;28.0.13004108"
+          rustup target add aarch64-linux-android
+          echo "ANDROID_NDK_HOME=$env:ANDROID_SDK_ROOT/ndk/28.0.13004108" >> "$env:GITHUB_ENV"
+      - name: 配置第三方预编译 librime（Android）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force third_party\librime-android | Out-Null
+          Invoke-WebRequest -Uri https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-Android-arm64-v8a.7z -OutFile third_party\librime-android\rime.7z
+          7z x -y third_party\librime-android\rime.7z -othird_party\librime-android
+      - name: 构建 Android Debug APK
+        run: |
+          cargo build --release --target aarch64-linux-android -p shurufa-rimejni --locked
+          New-Item -ItemType Directory -Force platforms\android\app\src\main\jniLibs\arm64-v8a | Out-Null
+          Copy-Item target\aarch64-linux-android\release\libshurufa_rime.so platforms\android\app\src\main\jniLibs\arm64-v8a\
+          Push-Location platforms\android
+          .\gradlew.bat assembleDebug --console=plain
+          Pop-Location
+
+      - name: 从 CHANGELOG 提取本版本发布说明
+        id: changelog
+        shell: pwsh
+        run: |
+          $version = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          $text = Get-Content CHANGELOG.md -Raw
+          if ($text -match "(?ms)^## \[$([regex]::Escape($version))\].*?$(?=^## \[|\z)") {
+            $body = $Matches[0].Trim()
+          } else {
+            $body = "详见 CHANGELOG.md"
+          }
+          echo "body<<EOF" >> $env:GITHUB_OUTPUT
+          echo $body >> $env:GITHUB_OUTPUT
+          echo "EOF" >> $env:GITHUB_OUTPUT
+
+      - name: 创建 Release 并上传产物
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.changelog.outputs.body }}
+          files: |
+            dist/Shurufa-Setup-*.exe
+            dist/Shurufa-Setup-*.exe.sha256
+            platforms/android/app/build/outputs/apk/versioned/*.apk
+          draft: false
+          prerelease: false

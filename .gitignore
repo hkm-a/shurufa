@@ -27,3 +27,9 @@
 # 本地截图验收生成物，不作为源码或文档资源提交
 /screenshot-test/*.bmp
 /screenshot-test/*.png
+
+# 发布产物（安装包、APK、校验和），由 CI/本地构建生成，不入库
+/dist/
+
+# 计划工具本地工作区
+/.zcode/

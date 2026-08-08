@@ -64,3 +64,36 @@ scripts\unregister-dev.cmd
 
 脚本会先请求已部署的 supervisor 停止 worker 与算法服务，再反注册 TSF 并删除
 `%ProgramData%\shurufa`。若 DLL 仍被系统输入进程占用，注销后再执行一次。
+
+## 故障排查
+
+安装器与 `scripts\install.ps1` 都会把关键步骤写入 `%ProgramData%\shurufa\install.log`（UTF-16），失败时先看该文件确认卡点步骤与返回码。
+
+### 安装包无法生成：缺少安装文件
+
+`scripts\build-installer.ps1` 会在调用 NSIS 前检查 `target\release\` 下的 TSF/宿主/算法/设置程序与 `third_party\librime\dist\` 下的 rime.dll / rime_deployer.exe。文件缺失时先执行不含 `-SkipBuild` 的完整构建；librime 缺失时按 README[从源码构建]章节重新下载解压。
+
+### 安装后输入法列表里没有 Shurufa
+
+通常是 TSF DLL 未能注册或 AppContainer 权限未授予。在管理员 PowerShell 中依次检查：
+
+```powershell
+regsvr32 "C:\ProgramData\shurufa\shurufa_tsf-<版本>.dll"
+icacls "C:\ProgramData\shurufa" /grant *S-1-15-2-1:(OI)(CI)(RX) /t /c
+```
+
+注册成功后按 `Win+Space` 应能在输入法列表看到"Shurufa 拼音"。
+
+### 后台服务未就绪（supervise / 算法服务）
+
+安装器收尾会通过 `installer\verify-install.ps1` 检查登录自启动项与 `shurufa-host.exe`、`shurufa-algo.exe` 进程。失败时可手动补救：
+
+```powershell
+Start-Process -FilePath "C:\ProgramData\shurufa\shurufa-host.exe" -ArgumentList supervise -WindowStyle Hidden
+```
+
+若重启登录后仍未自动拉起，检查注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 是否存在 `ShurufaHost` 项，或重新运行 `installer\register-host-startup.ps1`。
+
+### DLL 被占用导致覆盖失败
+
+关闭正在使用输入法的所有应用（浏览器、编辑器、聊天软件）后重试安装。必要时先注销 Windows 再运行安装器；安装器本身已会先 `taskkill ctfmon.exe` / `TextInputHost.exe` 释放输入服务，但老版本 DLL 被其他进程映射时只能等释放或注销。

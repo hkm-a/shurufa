@@ -3,8 +3,16 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val shurufaVersionCode = providers.gradleProperty("SHURUFA_VERSION_CODE").get().toInt()
-val shurufaVersionName = providers.gradleProperty("SHURUFA_VERSION_NAME").get()
+// 版本单一事实源是仓库根 version.json；SHURUFA_VERSION_* gradle 属性仍可覆盖（用于本地试包）。
+val repoRootDir = rootDir.parentFile.parentFile
+val shurufaVersionJson = groovy.json.JsonSlurper()
+    .parseText(File(repoRootDir, "version.json").readText(Charsets.UTF_8)) as Map<*, *>
+val shurufaVersionCode = providers.gradleProperty("SHURUFA_VERSION_CODE")
+    .orElse((shurufaVersionJson["versionCode"] as Number).toString())
+    .get().toInt()
+val shurufaVersionName = providers.gradleProperty("SHURUFA_VERSION_NAME")
+    .orElse(shurufaVersionJson["version"] as String)
+    .get()
 
 android {
     namespace = "com.shurufa.ime"
@@ -43,8 +51,7 @@ android {
 }
 
 val syncSchemas = tasks.register<Copy>("syncSchemas") {
-    val repoRoot = rootDir.parentFile.parentFile
-    from(File(repoRoot, "schemas")) {
+    from(File(repoRootDir, "schemas")) {
         include(
             "rime_ice.schema.yaml",
             "rime_ice.dict.yaml",
