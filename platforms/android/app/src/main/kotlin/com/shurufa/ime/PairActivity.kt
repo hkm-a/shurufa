@@ -41,6 +41,13 @@ class PairActivity : Activity() {
 
     private val main = Handler(Looper.getMainLooper())
     private var polling = false
+    /// 配对网络线程引用：onDestroy 时 interrupt + join，避免页面销毁后仍回写已 detach 的 UI
+    private var pairThread: Thread? = null
+    /// 配对整体超时：网络阻塞路径不会停在 Rust 的 is_pairing_idle，JNI 层独立设上限
+    private var pairExpired = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var pairGeneration = 0
+    /// 记录是否已把超时兜底 post 到主线程，避免与 onDestroy 交错出现两条"超时"提示
+    private var pairTimeoutPosted = false
 
     private var nsd: NsdManager? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
@@ -228,19 +235,57 @@ class PairActivity : Activity() {
             Toast.makeText(this, "请选择或输入电脑地址", Toast.LENGTH_SHORT).show()
             return
         }
+        // 前一次配对线程若还活着（用户重复点击），先打断再重开
+        pairThread?.interrupt()
+        val generation = ++pairGeneration
+        pairExpired.set(false)
+        pairTimeoutPosted = false
         pairButton.isEnabled = false
         status.text = "正在连接 $addr …"
-        startCodePolling()
-        thread(name = "pair") {
-            val ok = SyncBridge.nativePairBegin(addr)
+        startCodePolling(generation)
+
+        val worker = thread(name = "pair", isDaemon = true) {
+            val ok = try {
+                SyncBridge.nativePairBegin(addr)
+            } catch (e: InterruptedException) {
+                false // 被 onDestroy/超时打断
+            } catch (e: Throwable) {
+                android.util.Log.e("shurufa", "pairBegin 异常", e)
+                false
+            }
             main.post {
-                polling = false
-                codeArea.visibility = View.GONE
-                pairButton.isEnabled = true
-                status.text = if (ok) "配对成功" else "配对失败：检查网络或对方是否确认"
-                refreshDevices()
+                // 已过期（超时已提示）或已被新一轮配对所取代时，忽略本次结果
+                if (pairExpired.get() || generation != pairGeneration) return@post
+                finishPairingUi(ok)
             }
         }
+        pairThread = worker
+
+        // 配对上限 150s（Rust TLS 探测 ~120s + 等待用户确认 ~30s）：
+        // nativePairBegin 内部 error 路径不会归零 is_pairing_idle 的 180s 看门狗，
+        // UI 层必须有自己的超时，否则用户会看到"正在连接…"无限转圈。
+        main.postDelayed({
+            if (generation == pairGeneration && pairThread?.isAlive == true) {
+                pairExpired.set(true)
+                pairTimeoutPosted = true
+                pairThread?.interrupt()
+                finishPairingUi(ok = false, timeout = true)
+            }
+        }, PAIR_TIMEOUT_MS)
+    }
+
+    /** 归位配对结束的 UI 状态（成功或失败都走这里）。 */
+    private fun finishPairingUi(ok: Boolean, timeout: Boolean = false) {
+        polling = false
+        codeArea.visibility = View.GONE
+        pairButton.isEnabled = true
+        if (pairThread?.isAlive == false) pairThread = null
+        status.text = when {
+            timeout -> "配对超时：网络不通或对端未在 2.5 分钟内确认，请检查后重试"
+            ok -> "配对成功"
+            else -> "配对失败：检查网络或对方是否确认"
+        }
+        refreshDevices()
     }
 
     private fun saveRelay() {
@@ -279,11 +324,11 @@ class PairActivity : Activity() {
         }
     }
 
-    private fun startCodePolling() {
+    private fun startCodePolling(generation: Int) {
         polling = true
         val tick = object : Runnable {
             override fun run() {
-                if (!polling) return
+                if (!polling || generation != pairGeneration) return
                 val raw = SyncBridge.nativePairCode()
                 if (raw.isNotEmpty()) {
                     codeText.text = raw.substringBefore(FIELD)
@@ -301,6 +346,8 @@ class PairActivity : Activity() {
         codeArea.visibility = View.GONE
         if (!accept) {
             polling = false
+            // 拒绝时不打断线程：等待 nativePairBegin 走到对端不确认的自然错误返回，
+            // 由 UI 层超时（PAIR_TIMEOUT_MS）兜底；interrupt 只作为 onDestroy 的最后手段。
             status.text = "已取消"
         }
     }
@@ -311,8 +358,23 @@ class PairActivity : Activity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        // 停轮询 + 打断配对线程：后台 nativePairBegin 仍在 TCP 阻塞时，
+        // interrupt 让自身 catch (InterruptedException) 立即返回，再由 join 等待真正退出，
+        // 防止 finish() 后线程仍持 Activity 引用并更新已 detach 的视图。
         polling = false
+        main.removeCallbacksAndMessages(null)
+        pairThread?.let { t ->
+            if (t.isAlive) {
+                t.interrupt()
+                try {
+                    t.join(500)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+        }
+        pairThread = null
+        super.onDestroy()
     }
 
     // ---------- 控件工厂 ----------
@@ -369,5 +431,8 @@ class PairActivity : Activity() {
 
     companion object {
         private const val FIELD = "\u0001"
+        /// 配对总超时：Rust 直连重试 6 次 × ~2s ≈ 12s；TLS 与等待用户确认给足余量到 2.5 分钟。
+        /// 超过则 UI 主动标超时并 interrupt 网络线程（JNI 侧下次返回时被丢弃）。
+        private const val PAIR_TIMEOUT_MS = 150_000L
     }
 }
