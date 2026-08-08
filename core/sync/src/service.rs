@@ -187,7 +187,7 @@ impl Shared {
 
     /// 该指纹当前是否允许发起重连（未在退避期内）。
     fn allow_retry(&self, fp: &str) -> bool {
-        let map = self.backoff.lock().expect("退避表锁不可恢复");
+        let map = self.backoff.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         match map.get(fp) {
             Some((_, until)) => *until <= Instant::now(),
             None => true,
@@ -196,7 +196,7 @@ impl Shared {
 
     /// 记录一次连接失败，按指数策略延后下一次重试。
     fn mark_failure(&self, fp: &str) {
-        let mut map = self.backoff.lock().expect("退避表锁不可恢复");
+        let mut map = self.backoff.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let (tries, _) = map.get(fp).copied().unwrap_or((0, Instant::now()));
         let tries = tries + 1;
         // 10s → 20s → 40s → … ，封顶 300s
@@ -213,7 +213,7 @@ impl Shared {
 
     /// 连接成功后清除该指纹的退避记录。
     fn clear_backoff(&self, fp: &str) {
-        self.backoff.lock().expect("退避表锁不可恢复").remove(fp);
+        self.backoff.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(fp);
     }
 }
 
@@ -365,8 +365,7 @@ impl SyncService {
     pub fn connected_fingerprints(&self) -> Vec<String> {
         self.shared
             .connected
-            .lock()
-            .expect("连接表锁不可恢复")
+            .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .cloned()
             .collect()
@@ -462,8 +461,7 @@ fn start_mdns(shared: &Arc<Shared>, port: u16) -> Result<mdns_sd::ServiceDaemon,
                     let addr = SocketAddr::new(ip.to_ip_addr(), info.get_port());
                     browse_shared
                         .addr_cache
-                        .lock()
-                        .expect("地址缓存锁不可恢复")
+                        .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
                         .insert(fp.to_string(), addr);
                     browse_shared.reconnect_now.notify_one();
                 }
@@ -503,8 +501,7 @@ async fn connect_missing_peers(shared: &Arc<Shared>, connector: &TlsConnector) {
         }
         let already = shared
             .connected
-            .lock()
-            .expect("连接表锁不可恢复")
+            .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains(&peer.fingerprint);
         if already {
             continue;
@@ -514,8 +511,7 @@ async fn connect_missing_peers(shared: &Arc<Shared>, connector: &TlsConnector) {
         }
         let cached = shared
             .addr_cache
-            .lock()
-            .expect("地址缓存锁不可恢复")
+            .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&peer.fingerprint)
             .copied();
         let direct_addr = match (cached, &peer.last_addr) {
@@ -811,7 +807,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     {
-        let mut connected = shared.connected.lock().expect("连接表锁不可恢复");
+        let mut connected = shared.connected.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if !connected.insert(fp.clone()) {
             // 双向同时建连的竞态：保留已有连接
             return Ok(());
@@ -928,8 +924,7 @@ where
 
     shared
         .connected
-        .lock()
-        .expect("连接表锁不可恢复")
+        .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(&fp);
     shared.log(&format!("连接 {peer_name} 已断开"));
     result

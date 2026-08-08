@@ -226,7 +226,37 @@ fn e2e_ping() -> String {
 
 #[tauri::command]
 fn save_relay(relay: String) -> Result<(), String> {
-    let relay = (!relay.trim().is_empty()).then_some(relay.trim());
+    let relay = relay.trim();
+    let relay = if relay.is_empty() {
+        None
+    } else {
+        // 白名单格式：仅允许 host:port（域名/IPv4字面量/[IPv6]:port）。
+        // 拒绝其他字符避免 CRLF/路径/协议头注入到下层持久化与 TLS 连接。
+        let (host, port_str) = relay.rsplit_once(':')
+            .ok_or_else(|| "中继地址格式无效：应为 host:port".to_owned())?;
+        if host.is_empty() {
+            return Err("主机不能为空".to_owned());
+        }
+        let host_body = host.trim_start_matches('[').trim_end_matches(']');
+        let host_valid = !host_body.is_empty()
+            && host_body
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
+            && !host_body.starts_with('-')
+            && !host_body.ends_with('-');
+        if !host_valid {
+            return Err("主机名含非法字符：仅允许字母数字 . - :".to_owned());
+        }
+        // 端口 1..=65535
+        if port_str.is_empty() || port_str.len() > 5 || !port_str.chars().all(|c| c.is_ascii_digit()) {
+            return Err("端口必须是 1-5 位数字".to_owned());
+        }
+        let port: u32 = port_str.parse().map_err(|_| "端口必须是数字".to_owned())?;
+        if port == 0 || port > 65535 {
+            return Err("端口必须在 1..=65535".to_owned());
+        }
+        Some(relay)
+    };
     sync_core::save_relay_addr(&sync_dir(), relay)
         .map_err(|error| format!("保存中继设置失败：{error}"))
 }

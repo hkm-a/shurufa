@@ -131,6 +131,8 @@ class ClipboardSyncService : Service(), ClipboardManager.OnPrimaryClipChangedLis
                 "text" -> {
                     if (incoming.payload.isEmpty()) return
                     ClipStore.insert(incoming.payload, "同步·${incoming.from}")
+                    // 写入系统剪贴板前先记录指纹，防止 ROM 改写 label 后回环
+                    ClipboardTypePolicy.noteInboundEcho(incoming.payload)
                     val clip = ClipData.newPlainText(
                         ClipboardTypePolicy.REMOTE_LABEL_PREFIX + incoming.from,
                         incoming.payload,

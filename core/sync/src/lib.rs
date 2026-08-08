@@ -1,7 +1,7 @@
 //! 跨设备剪贴板同步核心。
 //!
 //! 安全模型：每台设备持自签名证书，SHA-256 指纹即设备身份；
-//! 配对时两端各自推导六位确认码由用户比对（KDE Connect 模式），
+//! 配对时两端各自推导八位确认码由用户比对（KDE Connect 模式），
 //! 确认后互相钉扎指纹；此后所有连接走 TLS 1.3 双向证书认证，
 //! 握手后校验对端指纹必须在已配对列表中。
 //!
@@ -33,7 +33,8 @@ pub fn fingerprint_hex(cert_der: &[u8]) -> String {
 }
 
 /// 配对确认码：对两端指纹排序拼接后取哈希，两端计算结果必然一致；
-/// 六位数字供人眼比对，防中间人。
+/// 八位数字供人眼比对，防中间人（6 位仅百万级空间，攻击者在配对窗口内
+/// 可暴力枚举；8 位将空间扩至一亿，结合人工比对的单次性质足够抵御）。
 pub fn pairing_code(fp_a: &str, fp_b: &str) -> String {
     let (lo, hi) = if fp_a <= fp_b {
         (fp_a, fp_b)
@@ -41,8 +42,11 @@ pub fn pairing_code(fp_a: &str, fp_b: &str) -> String {
         (fp_b, fp_a)
     };
     let hash = Sha256::digest(format!("shurufa-pair:{lo}:{hi}").as_bytes());
-    let n = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) % 1_000_000;
-    format!("{n:06}")
+    let n = u64::from_be_bytes([
+        hash[0], hash[1], hash[2], hash[3],
+        hash[4], hash[5], hash[6], hash[7],
+    ]) % 100_000_000;
+    format!("{n:08}")
 }
 
 #[cfg(test)]
@@ -50,11 +54,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 配对码两端一致且六位() {
+    fn 配对码两端一致且八位() {
         let a = "aa".repeat(32);
         let b = "bb".repeat(32);
         assert_eq!(pairing_code(&a, &b), pairing_code(&b, &a));
-        assert_eq!(pairing_code(&a, &b).len(), 6);
+        assert_eq!(pairing_code(&a, &b).len(), 8);
         assert_ne!(pairing_code(&a, &b), pairing_code(&a, &a));
     }
 }

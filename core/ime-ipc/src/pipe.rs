@@ -6,15 +6,22 @@
 
 use std::io;
 
+use std::ffi::c_void;
+
 use windows::core::HSTRING;
-use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, LocalFree};
+use windows::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, OPEN_EXISTING,
     PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, SetNamedPipeHandleState,
-    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
 pub const PIPE_NAME: &str = r"\\.\pipe\shurufa-algo";
@@ -35,20 +42,42 @@ pub struct PipeServer {
 
 unsafe impl Send for PipeServer {}
 
+/// 生成的 SDDL，仅允许 SYSTEM、Administrators 与"创建者所有者"（即当前用户）访问。
+/// 不再走默认 DACL，避免同机其他用户/沙盒进程注入按键或窃取 preedit。
+const PIPE_SDDL: &str =
+    "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)";
+
 impl PipeServer {
     /// 新建管道实例并允许客户端连接（FILE_FLAG_FIRST_PIPE_INSTANCE 仅首个实例）。
     pub fn create() -> IoResult<Self> {
         unsafe {
+            let mut sd: *mut c_void = std::ptr::null_mut();
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                &HSTRING::from(PIPE_SDDL),
+                SDDL_REVISION_1,
+                &mut sd as *mut _ as *mut _,
+                None,
+            )
+            .map_err(win_err)?;
+            let sa = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: sd,
+                bInheritHandle: false.into(),
+            };
             let handle = CreateNamedPipeW(
                 &HSTRING::from(PIPE_NAME),
-                FILE_FLAGS_AND_ATTRIBUTES(PIPE_ACCESS_DUPLEX.0),
+                FILE_FLAGS_AND_ATTRIBUTES(
+                    PIPE_ACCESS_DUPLEX.0 | PIPE_REJECT_REMOTE_CLIENTS.0,
+                ),
                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                 PIPE_UNLIMITED_INSTANCES,
                 MAX_FRAME,
                 MAX_FRAME,
                 0,
-                None,
+                Some(&sa),
             );
+            // SECURITY_DESCRIPTOR 由 ConvertString* 用 LocalAlloc 分配，使用后必须 LocalFree
+            let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(sd)));
             if handle.is_invalid() {
                 return Err(io::Error::last_os_error());
             }

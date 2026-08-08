@@ -74,6 +74,8 @@ tools_ready:
 FunctionEnd
 
 Function un.onInit
+  SetShellVarContext all
+  StrCpy $INSTDIR "$APPDATA\shurufa"
   IfFileExists "$WINDIR\Sysnative\regsvr32.exe" 0 un_use_default_tools
   StrCpy $RegistrationTool "$WINDIR\Sysnative\regsvr32.exe"
   StrCpy $InputMethodTool "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
@@ -82,6 +84,39 @@ un_use_default_tools:
   StrCpy $RegistrationTool "$SYSDIR\regsvr32.exe"
   StrCpy $InputMethodTool "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
 un_tools_ready:
+  ; 卸载必须有日志，否则失败后用户与排障均无线索（曾"静默失败"数日无人知）。
+  ; 写到 $TEMP 子目录保证 RMDir /r $INSTDIR 成功后日志仍可查阅。
+  CreateDirectory "$TEMP\Shurufa-Setup"
+  FileOpen $InstallLog "$TEMP\Shurufa-Setup\uninstall.log" w
+  FileWriteWord $InstallLog 0xFEFF
+  !insertmacro LogLine `开始卸载 ${PRODUCT_NAME} 自 $INSTDIR`
+FunctionEnd
+
+; 卸载前先停宿主进程（ctfmon.exe / TextInputHost.exe / Shurufa.exe）
+; 卸载下导出为 un.* 函数，便于与安装侧 StopInputProcesses 并存。
+Function un.PreStopInputProcesses
+  !insertmacro RunHidden `"$SYSDIR\taskkill.exe" /f /im Shurufa.exe`
+  !insertmacro RunHidden `"$SYSDIR\taskkill.exe" /f /im ctfmon.exe`
+  !insertmacro RunHidden `"$SYSDIR\taskkill.exe" /f /im TextInputHost.exe`
+  Sleep 1000
+FunctionEnd
+
+; 卸载时删除且反注册所有仍存在的 shurufa_tsf-*.dll（覆盖跨版本升级残留场景）。
+; FindFirst/FindNext 枚举 + goto 循环；不依赖 LogicLib。
+Function un.TryUnregisterAllTsfDlls
+  Push $R0
+  Push $R1
+  FindFirst $R0 $R1 "$INSTDIR\shurufa_tsf-*.dll"
+un_tsf_enum_loop:
+  StrCmp $R1 "" un_tsf_enum_done
+  !insertmacro LogLine `反注册残留 TSF $R1`
+  !insertmacro RunHidden `"$RegistrationTool" /s /u "$INSTDIR\$R1"`
+  FindNext $R0 $R1
+  Goto un_tsf_enum_loop
+un_tsf_enum_done:
+  FindClose $R0
+  Pop $R1
+  Pop $R0
 FunctionEnd
 
 Function StopInputProcesses
@@ -166,28 +201,71 @@ verify_done:
 SectionEnd
 
 Section "Uninstall"
+  ; 先杀掉占用 DLL 的进程，否则后续反注册与删除会因 locks 静默失败。
+  Call un.PreStopInputProcesses
+
+  ; 关键步骤：若不起 shurufa-host 则中止，否则后续残留进程会重新写注册。
   IfFileExists "$INSTDIR\shurufa-host.exe" 0 un_host_stop_done
-  !insertmacro RunHidden `"$INSTDIR\shurufa-host.exe" stop`
+  nsExec::ExecToLog `"$INSTDIR\shurufa-host.exe" stop`
+  Pop $0
+  !insertmacro LogLine `结果=$0 步骤=停止后台服务`
+  StrCmp $0 "0" un_host_stop_done
+  !insertmacro LogLine `后台服务 stop 未返回 0，但继续（进程可能本就不在）`
 un_host_stop_done:
+
   IfFileExists "$INSTDIR\register-host-startup.ps1" 0 un_startup_remove_done
-  !insertmacro RunHidden `"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -Remove`
+  nsExec::ExecToLog `"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\register-host-startup.ps1" -Remove`
+  Pop $0
+  !insertmacro LogLine `结果=$0 步骤=移除登录自启动`
 un_startup_remove_done:
+
   IfFileExists "$INSTDIR\activate-default-ime.ps1" 0 un_ime_clear_done
-  !insertmacro RunHidden `"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\activate-default-ime.ps1" -Clear`
+  nsExec::ExecToLog `"$InputMethodTool" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$INSTDIR\activate-default-ime.ps1" -Clear`
+  Pop $0
+  !insertmacro LogLine `结果=$0 步骤=清除默认输入法`
 un_ime_clear_done:
+
+  ; 反注册当前版本 TSF
   IfFileExists "$INSTDIR\${TSF_DLL_FILE}" 0 un_versioned_unregister_done
-  !insertmacro RunHidden `"$RegistrationTool" /s /u "$INSTDIR\${TSF_DLL_FILE}"`
+  nsExec::ExecToLog `"$RegistrationTool" /s /u "$INSTDIR\${TSF_DLL_FILE}"`
+  Pop $0
+  !insertmacro LogLine `结果=$0 步骤=反注册 ${TSF_DLL_FILE}`
 un_versioned_unregister_done:
+
+  ; 兼容旧文件名
   IfFileExists "$INSTDIR\shurufa_tsf.dll" 0 un_legacy_unregister_done
-  !insertmacro RunHidden `"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"`
+  nsExec::ExecToLog `"$RegistrationTool" /s /u "$INSTDIR\shurufa_tsf.dll"`
+  Pop $0
+  !insertmacro LogLine `结果=$0 步骤=反注册 shurufa_tsf.dll`
 un_legacy_unregister_done:
+
+  ; 枚举跨版本残留（shurufa_tsf-*.dll）
+  Call un.TryUnregisterAllTsfDlls
+
   DeleteRegKey HKLM "${PRODUCT_REGISTRY_KEY}"
   Delete "$SMPROGRAMS\Shurufa\Shurufa.lnk"
   RMDir "$SMPROGRAMS\Shurufa"
   Delete "$DESKTOP\Shurufa.lnk"
   Delete "$INSTDIR\Uninstall.exe"
+
+  ; 不能再删 $TEMP\Shurufa-Setup\uninstall.log 之上，RMDir /r $INSTDIR 不会波及它。
   RMDir /r "$INSTDIR"
-  IfErrors 0 uninstall_done
-  MessageBox MB_ICONEXCLAMATION "部分文件仍被系统占用。请注销 Windows 后再次运行卸载程序。" /SD IDOK
+  IfErrors 0 un_rmdir_ok
+  ; 删除失败（常被 ctfmon/TextInputHost 持有 DLL 导致）→ 弹醒目警告而不是静默完成。
+  !insertmacro LogLine `RMDir /r $INSTDIR 失败，文件可能被输入法宿主进程占用`
+  MessageBox MB_ICONEXCLAMATION "卸载遇到文件占用。$\r$\n已尽力反注册服务与注册表，但 $INSTDIR 中可能有残余 DLL。$\r$\n请重启 Windows 后再次运行卸载程序，或手动删除该目录。详见 $TEMP\Shurufa-Setup\uninstall.log。" /SD IDOK
+  Goto uninstall_done
+un_rmdir_ok:
+  ; 复核：如果注册表/关键文件仍在，告警而不是假装成功。
+  IfFileExists "$INSTDIR\shurufa-host.exe" 0 un_check_registry
+  !insertmacro LogLine `复核：shurufa-host.exe 仍存在`
+  MessageBox MB_ICONEXCLAMATION "卸载后检测到残留文件。请重启 Windows 后手动删除 $INSTDIR。" /SD IDOK
+un_check_registry:
+  ReadRegStr $0 HKLM "${PRODUCT_REGISTRY_KEY}" "UninstallString"
+  StrCmp $0 "" uninstall_done
+  !insertmacro LogLine `复核：注册表 ${PRODUCT_REGISTRY_KEY} 仍存在`
+  DeleteRegKey HKLM "${PRODUCT_REGISTRY_KEY}"
 uninstall_done:
+  !insertmacro LogLine `卸载流程结束`
+  FileClose $InstallLog
 SectionEnd

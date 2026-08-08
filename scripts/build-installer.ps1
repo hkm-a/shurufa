@@ -55,7 +55,14 @@ foreach ($file in $required) {
 }
 
 New-Item -ItemType Directory -Path (Join-Path $sourceRoot 'dist') -Force | Out-Null
-Invoke-Native $makensis @('/INPUTCHARSET', 'UTF8', (Join-Path $sourceRoot 'installer\shurufa.nsi'))
+# makensis 的 File 相对路径是相对进程 cwd（而非脚本路径），必须从 installer\ 目录调用。
+Push-Location (Join-Path $sourceRoot 'installer')
+try {
+    Invoke-Native $makensis @('/INPUTCHARSET', 'UTF8', 'shurufa.nsi')
+}
+finally {
+    Pop-Location
+}
 $output = Join-Path $sourceRoot "dist\Shurufa-Setup-$version.exe"
 if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
     throw "安装包未生成：$output"

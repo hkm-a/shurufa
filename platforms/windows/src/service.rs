@@ -66,7 +66,19 @@ impl Inner {
         let shift = modifiers & keys::MASK_SHIFT != 0;
         // Shift 单独按下：切换中英文（主流行为）。ToggleAscii 是唯一写路径，
         // 避免 OnTestKeyDown 只试不写导致的状态漂移。
+        // 切换前必须把已有组合收尾，否则残留组合会把后续的英文/拼音都吃进去。
         if wparam.0 as u32 == KeyboardAndMouse::VK_SHIFT.0 as u32 {
+            if let Some(comp) = self.composition.take() {
+                let client_id = self.client_id;
+                if let Err(e) = edit_session(client_id, context, |ec| {
+                    unsafe {
+                        set_composition_text(&comp, ec, "", 0)?;
+                        comp.EndComposition(ec)
+                    }
+                }) {
+                    crate::debug_log(&format!("Shift 前结束残留组合失败：{e:?}"));
+                }
+            }
             if let Some(is_ascii) = self.client.toggle_ascii() {
                 crate::debug_log(&format!("Shift 切换中英文：ascii={is_ascii}"));
                 return true;

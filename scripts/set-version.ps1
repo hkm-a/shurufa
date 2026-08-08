@@ -48,6 +48,15 @@ function Assert-VersionConsistency {
     if ([string]$tauri.version -ne $manifest.Version) { $mismatch += "tauri.conf.json=$($tauri.version)" }
     if ([string]$npm.version -ne $manifest.Version) { $mismatch += "package.json=$($npm.version)" }
 
+    # gradle.properties 曾因固定 SHURUFA_VERSION_* 产生过 0.4.0/9 vs 0.4.1/10 漂移；
+    # 此后该属性应永久移除，此处做主动护栏。若真有本地覆盖需求，请用 -PversionCodeOverride 属性而非此处。
+    if ($gradleProps -and (Test-Path -LiteralPath $gradleProps)) {
+        $gp = Get-Content -LiteralPath $gradleProps -Raw
+        if ($gp -match 'SHURUFA_VERSION_(CODE|NAME)=') {
+            throw "gradle.properties 仍固定 SHURUFA_VERSION_*，会导致与 version.json 漂移。请删除这些行。"
+        }
+    }
+
     if ($mismatch.Count -gt 0) {
         throw "版本不一致：version.json=$($manifest.Version)，但 $($mismatch -join '，')。请先运行 set-version.ps1 对齐。"
     }
@@ -87,10 +96,13 @@ if ($PSCmdlet.ShouldProcess("Shurufa $($current.Version)/$($current.VersionCode)
     $npm.version = $Version
     $npm | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $npmFile -Encoding utf8
 
+    # 不再向 gradle.properties 写入版本：它会与 version.json 漂移（曾 0.4.0/9 vs 0.4.1/10）。
+    # 若该文件残留这两行，由 Assert-VersionConsistency 触发删除提示。
     $gradleText = Get-Content -LiteralPath $gradleProps -Raw
-    $gradleText = $gradleText -replace 'SHURUFA_VERSION_CODE=\d+', "SHURUFA_VERSION_CODE=$VersionCode"
-    $gradleText = $gradleText -replace 'SHURUFA_VERSION_NAME=.*', "SHURUFA_VERSION_NAME=$Version"
-    Set-Content -LiteralPath $gradleProps -Value $gradleText -Encoding utf8 -NoNewline
+    $gradleText = $gradleText -replace '(?m)^SHURUFA_VERSION_CODE=\d+\r?\n', ''
+    $gradleText = $gradleText -replace '(?m)^SHURUFA_VERSION_NAME=[^\r\n]*\r?\n', ''
+    $gradleText = $gradleText.TrimEnd("`r", "`n") + "`r`n"
+    Set-Content -LiteralPath $gradleProps -Value $gradleText -Encoding ascii -NoNewline
 }
 
 Assert-VersionConsistency | Out-Null

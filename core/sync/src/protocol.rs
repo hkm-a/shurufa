@@ -23,7 +23,7 @@ pub enum Message {
         fingerprint: String,
         listen_port: u16,
     },
-    /// 配对流程中，用户确认六位码一致后发送
+    /// 配对流程中，用户确认八位码一致后发送
     PairConfirm,
     /// 配对流程中，用户拒绝或超时
     PairReject,

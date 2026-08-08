@@ -9,6 +9,7 @@ use std::ffi::{CStr, CString};
 use std::mem::MaybeUninit;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 static ENGINE_ALIVE: AtomicBool = AtomicBool::new(false);
 
@@ -38,9 +39,12 @@ pub struct Engine {
     api: *mut ffi::RimeApi,
     // 保持 traits 指向的 C 字符串在引擎生命周期内有效
     _strings: Vec<CString>,
+    // librime 官方说明非线程安全：所有 FFI 调用必须串行进入。
+    // 该栈上所有 API 指针都短命、全局进程唯一，持锁代价可忽略。
+    lock: Mutex<()>,
 }
 
-// librime 内部自带线程同步（会话表有锁保护）；指针表进程级唯一。
+// 裸指针本身可 Send/Sync；真正的线程安全靠 lock 串行化所有 FFI 入口。
 unsafe impl Send for Engine {}
 unsafe impl Sync for Engine {}
 
@@ -75,6 +79,7 @@ impl Engine {
         if ENGINE_ALIVE.swap(true, Ordering::SeqCst) {
             return Err("进程内已存在 Engine 实例".into());
         }
+        let lock = Mutex::new(());
         std::fs::create_dir_all(user_data_dir).map_err(|e| format!("创建用户数据目录失败: {e}"))?;
 
         let shared = to_cstring(&shared_data_dir.to_string_lossy());
@@ -94,6 +99,28 @@ impl Engine {
                 }
             };
             let api_ref = &*api;
+
+            // 每个待调用的 FFI 字段都必须非空，否则后续调用是未定义行为。
+            let api_ptrs: [*const (); 14] = [
+                api_ref.setup as *const (),
+                api_ref.initialize as *const (),
+                api_ref.start_maintenance as *const (),
+                api_ref.join_maintenance_thread as *const (),
+                api_ref.create_session as *const (),
+                api_ref.destroy_session as *const (),
+                api_ref.process_key as *const (),
+                api_ref.get_context as *const (),
+                api_ref.free_context as *const (),
+                api_ref.get_commit as *const (),
+                api_ref.free_commit as *const (),
+                api_ref.get_option as *const (),
+                api_ref.set_option as *const (),
+                api_ref.simulate_key_sequence as *const (),
+            ];
+            if api_ptrs.iter().any(|p| p.is_null()) {
+                ENGINE_ALIVE.store(false, Ordering::SeqCst);
+                return Err("librime API 表不完整（含空函数指针）".into());
+            }
 
             let mut traits = MaybeUninit::<ffi::RimeTraits>::zeroed().assume_init();
             ffi::rime_struct_init::<ffi::RimeTraits>(&mut traits.data_size);
@@ -115,8 +142,14 @@ impl Engine {
             Ok(Engine {
                 api,
                 _strings: vec![shared, user, name, code, version, app, log_dir],
+                lock,
             })
         }
+    }
+
+    /// 串行进入 librime：所有 FFI 调用必须经这把锁，防止并发破坏 composer/context。
+    fn lock(&self) -> MutexGuard<'_, ()> {
+        self.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn api(&self) -> &ffi::RimeApi {
@@ -124,6 +157,7 @@ impl Engine {
     }
 
     pub fn create_session(&self) -> Result<Session<'_>, String> {
+        let _guard = self.lock();
         let id = unsafe { (self.api().create_session)() };
         if id == 0 {
             return Err("创建 Rime 会话失败".into());
@@ -134,6 +168,7 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        let _guard = self.lock();
         unsafe {
             (self.api().cleanup_all_sessions)();
             (self.api().finalize)();
@@ -145,23 +180,27 @@ impl Drop for Engine {
 impl Session<'_> {
     /// 模拟一段按键序列（Rime 键序语法，如 "nihao"）。
     pub fn simulate(&self, keys: &str) -> bool {
+        let _guard = self.engine.lock();
         let keys = to_cstring(keys);
         unsafe { (self.engine.api().simulate_key_sequence)(self.id, keys.as_ptr()) != 0 }
     }
 
     /// 发送单个键（X11 keysym 编码，与 librime 约定一致）。
     pub fn process_key(&self, keycode: i32, mask: i32) -> bool {
+        let _guard = self.engine.lock();
         unsafe { (self.engine.api().process_key)(self.id, keycode, mask) != 0 }
     }
 
     /// 读取布尔开关（如 "ascii_mode"、"simplification"）。
     pub fn get_option(&self, option: &str) -> bool {
+        let _guard = self.engine.lock();
         let opt = to_cstring(option);
         unsafe { (self.engine.api().get_option)(self.id, opt.as_ptr()) != 0 }
     }
 
     /// 设置布尔开关。
     pub fn set_option(&self, option: &str, value: bool) {
+        let _guard = self.engine.lock();
         let opt = to_cstring(option);
         unsafe {
             (self.engine.api().set_option)(self.id, opt.as_ptr(), value as ffi::Bool);
@@ -170,13 +209,19 @@ impl Session<'_> {
 
     /// 切换中英文（ascii_mode）；返回切换后是否为英文直输模式。
     pub fn toggle_ascii(&self) -> bool {
+        let _guard = self.engine.lock();
         let now = !self.get_option("ascii_mode");
-        self.set_option("ascii_mode", now);
+        // 已持有锁，直接走底层 FFI，避免嵌套死锁
+        let opt = to_cstring("ascii_mode");
+        unsafe {
+            (self.engine.api().set_option)(self.id, opt.as_ptr(), now as ffi::Bool);
+        }
         now
     }
 
     /// 读取当前输入上下文（预编辑串与候选列表）。
     pub fn context(&self) -> Context {
+        let _guard = self.engine.lock();
         let api = self.engine.api();
         unsafe {
             let mut ctx = MaybeUninit::<ffi::RimeContext>::zeroed().assume_init();
@@ -214,6 +259,7 @@ impl Session<'_> {
 
     /// 取出已上屏文本；无上屏内容时返回 None。
     pub fn commit(&self) -> Option<String> {
+        let _guard = self.engine.lock();
         let api = self.engine.api();
         unsafe {
             let mut commit = MaybeUninit::<ffi::RimeCommit>::zeroed().assume_init();
@@ -233,16 +279,19 @@ impl Session<'_> {
 
     /// 设置组合内光标（字节偏移，以待编辑的 raw input 为准，即 UTF-8）。
     pub fn set_caret_pos(&self, byte_pos: usize) {
+        let _guard = self.engine.lock();
         unsafe { (self.engine.api().set_caret_pos)(self.id, byte_pos) }
     }
 
     /// 当前组合内光标的字节偏移。
     pub fn caret_pos(&self) -> usize {
+        let _guard = self.engine.lock();
         unsafe { (self.engine.api().get_caret_pos)(self.id) }
     }
 
     /// 当前原始输入串（raw input，ASCII 拼音）。
     pub fn input(&self) -> String {
+        let _guard = self.engine.lock();
         unsafe {
             let p = (self.engine.api().get_input)(self.id);
             if p.is_null() {
@@ -255,6 +304,7 @@ impl Session<'_> {
 
     /// 选择当前页第 `index` 个候选；成功返回 true。
     pub fn select_candidate_on_current_page(&self, index: usize) -> bool {
+        let _guard = self.engine.lock();
         unsafe {
             (self.engine.api().select_candidate_on_current_page)(self.id, index) != 0
         }
@@ -262,12 +312,14 @@ impl Session<'_> {
 
     /// 翻一页候选；`backward` 为 true 是上一页。
     pub fn change_page(&self, backward: bool) -> bool {
+        let _guard = self.engine.lock();
         unsafe { (self.engine.api().change_page)(self.id, backward as ffi::Bool) != 0 }
     }
 }
 
 impl Drop for Session<'_> {
     fn drop(&mut self) {
+        let _guard = self.engine.lock();
         unsafe {
             (self.engine.api().destroy_session)(self.id);
         }

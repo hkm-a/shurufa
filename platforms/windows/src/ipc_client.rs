@@ -10,9 +10,21 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 /// 单个 TSF 宿主的 IPC 客户端。`connect` 是惰性的：首次使用时才建连。
+///
+/// 熔断：一次失败/拒绝后，2 秒内不再尝试重连，避免每次按键都触发
+/// 20×50ms=1s 自旋拉起已经死亡的算法服务（曾造成输入延迟陡涨）。
 pub struct ImeClient {
     pipe: Option<PipeClient>,
+    /// 上次连接尝试失败时刻（用于熔断冷却）
+    last_failure: Option<std::time::Instant>,
+    /// 连续失败计数（达到阈值后扩大冷却窗口）
+    consecutive_failures: u32,
 }
+
+const CIRCUIT_BREAKER_COOLDOWN_MS: u64 = 2_000;
+/// 连续失败次数超过该阈值后，冷却窗口翻倍至 4s
+const CIRCUIT_BREAKER_BACKOFF_THRESHOLD: u32 = 3;
+const CIRCUIT_BREAKER_COOLDOWN_LONG_MS: u64 = 4_000;
 
 #[allow(dead_code)]
 impl ImeClient {
@@ -44,13 +56,46 @@ impl ImeClient {
         crate::dll_path().parent().map(|p| p.to_path_buf())
     }
     pub fn new() -> Self {
-        ImeClient { pipe: None }
+        ImeClient {
+            pipe: None,
+            last_failure: None,
+            consecutive_failures: 0,
+        }
+    }
+
+    /// 是否处于熔断冷却期（避免每次按键都重新尝试连接死亡的服务）。
+    fn circuit_open(&self) -> bool {
+        match self.last_failure {
+            Some(at) => {
+                let cooldown_ms = if self.consecutive_failures >= CIRCUIT_BREAKER_BACKOFF_THRESHOLD {
+                    CIRCUIT_BREAKER_COOLDOWN_LONG_MS
+                } else {
+                    CIRCUIT_BREAKER_COOLDOWN_MS
+                };
+                at.elapsed() < std::time::Duration::from_millis(cooldown_ms)
+            }
+            None => false,
+        }
+    }
+
+    fn note_failure(&mut self) {
+        self.last_failure = Some(std::time::Instant::now());
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+    }
+
+    fn note_success(&mut self) {
+        self.last_failure = None;
+        self.consecutive_failures = 0;
     }
 
     /// 确保已连接；若服务未就绪则自动拉起算法服务并轮询等待。
+    /// 熔断期内直接拒绝，避免频繁自旋。
     fn ensure(&mut self) -> Option<&PipeClient> {
         if self.pipe.is_some() {
             return self.pipe.as_ref();
+        }
+        if self.circuit_open() {
+            return None;
         }
         // 首次连接失败时拉起算法服务并轮询等待（至多 20 次 × 50ms = 1s）
         Self::spawn_algo_if_needed();
@@ -58,6 +103,7 @@ impl ImeClient {
             match PipeClient::connect() {
                 Ok(c) => {
                     self.pipe = Some(c);
+                    self.note_success();
                     if attempt > 0 {
                         crate::debug_log(&format!("IPC 第{}次重连成功", attempt + 1));
                     }
@@ -69,6 +115,7 @@ impl ImeClient {
                 }
             }
         }
+        self.note_failure();
         None
     }
 

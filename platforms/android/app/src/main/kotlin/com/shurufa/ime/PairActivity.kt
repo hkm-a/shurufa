@@ -25,7 +25,7 @@ import kotlin.concurrent.thread
  *
  * 同一 Wi-Fi 下用 NsdManager 自动发现电脑（_shurufa._tcp），列表点击
  * 即配对，无需手输 IP；手输 IP 作为发现失败时的兜底。配对确认沿用
- * 六位码人眼比对。纯代码构建 UI，零第三方依赖。
+ * 八位码人眼比对。纯代码构建 UI，零第三方依赖。
  */
 class PairActivity : Activity() {
 

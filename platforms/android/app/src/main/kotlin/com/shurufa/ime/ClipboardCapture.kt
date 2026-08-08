@@ -33,6 +33,9 @@ internal sealed interface CapturedClipboard {
 /**
  * 将 `ClipData` 中可能短期有效的 URI 立即读取为字节，避免来源应用收回
  * URI 权限后再发送失败。图片 URI 优先于同条目携带的文件名文本。
+ *
+ * 额外的循环抑制：如果远端刚把内容写进系统剪贴板（label 已标记或 authority 自有），
+ * 短时间内同 signature 的读取也会被跳过，防止 ROM 改写 label 后引发同步风暴。
  */
 internal class ClipboardCapture(private val context: Context) {
     private val resolver: ContentResolver = context.contentResolver
@@ -49,6 +52,8 @@ internal class ClipboardCapture(private val context: Context) {
         if (uri != null) return captureUri(clip.description, uri)
 
         val text = item.coerceToText(context)?.toString()?.takeIf { it.isNotBlank() } ?: return null
+        // 文本短路：远端刚塞入 1s 内的相同文本不再回送
+        if (ClipboardTypePolicy.isRecentEcho(text)) return null
         return CapturedClipboard.Text(text)
     }
 
@@ -137,5 +142,33 @@ internal object ClipboardTypePolicy {
         if (declaredMimes.any { it.startsWith("image/", ignoreCase = true) }) return true
         val extension = displayName?.substringAfterLast('.', "")?.lowercase().orEmpty()
         return extension in IMAGE_EXTENSIONS
+    }
+
+    // ---------- 回环抑制（独立于 label 前缀，不依赖远端设备名）----------
+
+    /** 远端刚写入剪贴板的内容指纹 → 写入时间戳(ms)。读到此指纹且在窗口内即跳过。 */
+    private val recentInboundEchoes = java.util.LinkedHashMap<String, Long>(32)
+    private const val INBOUND_ECHO_WINDOW_MS = 1_000L
+    private const val INBOUND_ECHO_CAPACITY = 8
+
+    /** 远端写入剪贴板前调用：记下内容指纹，本端随后捕获到此内容时视为回声跳过。 */
+    @Synchronized
+    fun noteInboundEcho(text: String) {
+        if (text.isBlank()) return
+        recentInboundEchoes[text] = android.os.SystemClock.elapsedRealtime()
+        while (recentInboundEchoes.size > INBOUND_ECHO_CAPACITY) {
+            val eldest = recentInboundEchoes.entries.first()
+            recentInboundEchoes.remove(eldest.key)
+        }
+    }
+
+    @Synchronized
+    fun isRecentEcho(text: String): Boolean {
+        val at = recentInboundEchoes[text] ?: return false
+        if (android.os.SystemClock.elapsedRealtime() - at > INBOUND_ECHO_WINDOW_MS) {
+            recentInboundEchoes.remove(text)
+            return false
+        }
+        return true
     }
 }

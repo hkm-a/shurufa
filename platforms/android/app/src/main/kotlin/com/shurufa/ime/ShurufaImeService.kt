@@ -96,6 +96,10 @@ class ShurufaImeService : InputMethodService() {
     /// 预览键盘当前展示的图片历史 id
     private var previewImageId: Int? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    /// 图片解码 / 相册写入 / 剪贴板大查询走 IO 线程：避免阻塞 IME 主线程导致按键抖动。
+    private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        Thread(task, "shurufa-io").apply { isDaemon = true }
+    }
     private var inputGeneration = 0L
     private var candidatesExpanded = false
     private var compositionCursorOverride: Int? = null
@@ -674,25 +678,39 @@ class ShurufaImeService : InputMethodService() {
         val saveBtn = actionBtn("保存到相册", false).apply {
             setOnClickListener {
                 val id = previewImageId ?: return@setOnClickListener
-                val png = try {
-                    ClipStore.imageData(id)
-                } catch (e: Throwable) {
-                    null
-                }
-                if (png == null) {
-                    showAttachmentError("图片数据缺失")
-                    return@setOnClickListener
-                }
-                val uri = ImageClipboard.saveToGallery(this@ShurufaImeService, png)
-                if (uri != null) {
-                    android.util.Log.i("shurufa", "预览保存到相册 历史ID=$id URI=$uri")
-                    Toast.makeText(
-                        this@ShurufaImeService,
-                        "已保存到相册（Shurufa 文件夹）",
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                } else {
-                    showAttachmentError("保存到相册失败")
+                // 相册写入是系统 ContentResolver IPC（MediaStore），大 PNG 会阻塞主线程
+                // 200ms+，从 IME 点击处切到 IO 线程；结果回主线程弹 Toast。
+                isEnabled = false
+                text = "保存中…"
+                ioExecutor.execute {
+                    val png = try {
+                        ClipStore.imageData(id)
+                    } catch (e: Throwable) {
+                        null
+                    }
+                    val uri = png?.let {
+                        try {
+                            ImageClipboard.saveToGallery(applicationContext, it)
+                        } catch (e: Throwable) {
+                            null
+                        }
+                    }
+                    mainHandler.post {
+                        isEnabled = true
+                        text = "保存到相册"
+                        if (png == null) {
+                            showAttachmentError("图片数据缺失")
+                        } else if (uri != null) {
+                            android.util.Log.i("shurufa", "预览保存到相册 历史ID=$id URI=$uri")
+                            Toast.makeText(
+                                this@ShurufaImeService,
+                                "已保存到相册（Shurufa 文件夹）",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        } else {
+                            showAttachmentError("保存到相册失败")
+                        }
+                    }
                 }
             }
         }
@@ -707,23 +725,34 @@ class ShurufaImeService : InputMethodService() {
                     "正在发送图片…",
                     Toast.LENGTH_SHORT,
                 ).show()
-                val result = commitImage(id)
-                isEnabled = true
-                text = "发 送"
-                when (result) {
-                    SendResult.SENT -> {
-                        Toast.makeText(
-                            this@ShurufaImeService,
-                            "已发送到输入框，请点 App 的发送键",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                        closeImagePreview()
+                // commitImage 内部会查 ClipStore 与 FileProvider，大文件时阻塞主线程；
+                // 切到 IO 线程，结果回主线程恢复按钮与提示。
+                ioExecutor.execute {
+                    val result = try {
+                        commitImage(id)
+                    } catch (e: Throwable) {
+                        android.util.Log.e("shurufa", "发送图片异常", e)
+                        SendResult.FAILED
                     }
-                    SendResult.COPIED -> {
-                        // copyImageToClipboard 内部已 toast 明确结果（粘贴失败→存相册）
-                        closeImagePreview()
+                    mainHandler.post {
+                        isEnabled = true
+                        text = "发 送"
+                        when (result) {
+                            SendResult.SENT -> {
+                                Toast.makeText(
+                                    this@ShurufaImeService,
+                                    "已发送到输入框，请点 App 的发送键",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                                closeImagePreview()
+                            }
+                            SendResult.COPIED -> {
+                                // copyImageToClipboard 内部已 toast 明确结果（粘贴失败→存相册）
+                                closeImagePreview()
+                            }
+                            SendResult.FAILED -> showAttachmentError("图片发送失败")
+                        }
                     }
-                    SendResult.FAILED -> showAttachmentError("图片发送失败")
                 }
             }
         }
@@ -779,35 +808,77 @@ class ShurufaImeService : InputMethodService() {
             setTextColor(palette.preedit)
             setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
         })
-        val entries = try {
-            ClipStore.list(30).filter { !onlyImages || it.kind == "image" }
-        } catch (e: Throwable) {
-            emptyList()
+        // 占位：SQLite 读取与图片缩略解码都在 IO 线程；期间用户可见"加载中"
+        val placeholder = TextView(this).apply {
+            text = "加载中…"
+            textSize = 13f
+            setTextColor(palette.preedit)
+            setPadding(dp(14f), dp(20f), dp(14f), dp(20f))
         }
-        if (entries.isEmpty()) {
-            panel.addView(TextView(this).apply {
-                text = "（暂无历史）"
-                setTextColor(palette.preedit)
-                setPadding(dp(14f), dp(20f), dp(14f), dp(20f))
-            })
-            return
-        }
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        for (entry in entries) {
-            if (entry.kind == "image") {
-                val supportedImageMime = currentSupportedImageMimeType()
-                android.util.Log.i(
-                    "shurufa",
-                    "图片历史条目状态 历史ID=${entry.id} 声明MIME=$supportedImageMime",
-                )
-                val bmp = try {
-                    ClipStore.imageData(entry.id)?.let { decodeSampledBitmap(it, THUMBNAIL_TARGET) }
-                } catch (e: Throwable) {
+        panel.addView(placeholder)
+        // 快照主线程读到的 MIME（currentSupportedImageMimeType 需要 currentInput*）
+        val mimeSnapshot = currentSupportedImageMimeType()
+        ioExecutor.execute {
+            val entries = try {
+                ClipStore.list(30).filter { !onlyImages || it.kind == "image" }
+            } catch (e: Throwable) {
+                emptyList()
+            }
+            // 图片条目预解码缩略图，主线程只做 setImageBitmap，不再做 PNG 解码
+            val prepared = entries.map { entry ->
+                val thumb = if (entry.kind == "image") {
+                    try {
+                        ClipStore.imageData(entry.id)?.let { bytes ->
+                            decodeSampledBitmap(bytes, THUMBNAIL_TARGET)
+                        }
+                    } catch (e: Throwable) {
+                        null
+                    }
+                } else {
                     null
                 }
+                PreparedHistory(entry, thumb)
+            }
+            mainHandler.post {
+                // 列表已更新（populateHistory 又被触发）则放弃本次结果
+                if (placeholder.parent !== panel) return@post
+                panel.removeView(placeholder)
+                if (prepared.isEmpty()) {
+                    panel.addView(TextView(this).apply {
+                        text = "（暂无历史）"
+                        setTextColor(palette.preedit)
+                        setPadding(dp(14f), dp(20f), dp(14f), dp(20f))
+                    })
+                    return@post
+                }
+                renderHistoryList(panel, prepared, onlyImages, mimeSnapshot)
+            }
+        }
+    }
+
+    /** IO 线程预取后回主线程渲染：entry + 已解码缩略图。 */
+    private data class PreparedHistory(
+        val entry: ClipStore.Entry,
+        val thumb: android.graphics.Bitmap?,
+    )
+
+    private fun renderHistoryList(
+        panel: LinearLayout,
+        prepared: List<PreparedHistory>,
+        onlyImages: Boolean,
+        mimeSnapshot: String?,
+    ) {
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        for (item in prepared) {
+            val entry = item.entry
+            if (entry.kind == "image") {
+                android.util.Log.i(
+                    "shurufa",
+                    "图片历史条目状态 历史ID=${entry.id} 声明MIME=$mimeSnapshot",
+                )
                 val thumb = ImageView(this).apply {
                     contentDescription = "图片附件：${entry.source}，点击预览后发送到当前输入框"
-                    if (bmp != null) setImageBitmap(bmp)
+                    if (item.thumb != null) setImageBitmap(item.thumb)
                     adjustViewBounds = true
                     maxHeight = dp(130f)
                     scaleType = ImageView.ScaleType.FIT_START
@@ -826,8 +897,6 @@ class ShurufaImeService : InputMethodService() {
             if (entry.kind == "files") {
                 list.addView(TextView(this).apply {
                     val fileName = entry.text.lineSequence().firstOrNull()?.let { File(it).name } ?: "文件"
-                    val fileMimeType = URLConnection.guessContentTypeFromName(fileName)
-                        ?: "application/octet-stream"
                     text = fileName
                     contentDescription = "文件附件：$fileName"
                     textSize = 16f
@@ -1517,6 +1586,7 @@ class ShurufaImeService : InputMethodService() {
         super.onDestroy()
         voice?.cancel()
         voice = null
+        ioExecutor.shutdownNow()
     }
 
     private fun decodeSampledBitmap(data: ByteArray, target: Int): Bitmap? {
