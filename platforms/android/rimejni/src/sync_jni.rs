@@ -126,7 +126,7 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                         let received_dir = received_dir.clone();
                         tokio::task::spawn_blocking(move || {
                             let item = match inc {
-                                Incoming::Clip { from_name, text } => {
+                                Incoming::Clip { from_name, text, .. } => {
                                     ("text".to_string(), from_name, text)
                                 }
                                 Incoming::Image { from_name, png } => {

@@ -31,6 +31,15 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
+
+        // AI 帮写 key：来自本机 gradle 属性（~/.gradle/gradle.properties 或 -PAGNES_API_KEY=...），
+        // 与 PC 端的 AGNES_API_KEY 环境变量约定同名。绝不下落进版本库：gradle.properties
+        // 在系统用户目录，不入仓库。打包出来的 APK 会内嵌此字符串，只建议本机侧加载。
+        val agnesKey = providers.gradleProperty("AGNES_API_KEY")
+            .orElse(providers.environmentVariable("AGNES_API_KEY"))
+            .orElse("")
+            .get()
+        buildConfigField("String", "AGNES_API_KEY", "\"${agnesKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
     }
 
     compileOptions {

@@ -106,17 +106,27 @@ pub fn run(store: ClipboardStore) -> Result<()> {
         let hotkey = crate::panel::register_hotkey();
         println!("历史面板热键：{hotkey}");
         crate::log_line(&format!("历史面板热键：{hotkey}"));
+        let ai_hotkey = crate::ai_panel::register_hotkey();
+        println!("AI 帮写热键：{ai_hotkey}");
+        crate::log_line(&format!("AI 帮写热键：{ai_hotkey}"));
 
-        let mut msg = MSG::default();
+            let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             // 线程级热键的 WM_HOTKEY 不属于任何窗口，须在循环内截获
-            if msg.message == WM_HOTKEY && msg.wParam.0 as i32 == crate::panel::HOTKEY_ID {
-                #[allow(static_mut_refs)]
-                if let Some(state) = STATE.as_ref() {
-                    let entries = state.store.list(9, 0).unwrap_or_default();
-                    crate::panel::show(entries);
+            if msg.message == WM_HOTKEY {
+                let id = msg.wParam.0 as i32;
+                if id == crate::panel::HOTKEY_ID {
+                    #[allow(static_mut_refs)]
+                    if let Some(state) = STATE.as_ref() {
+                        let entries = state.store.list(9, 0).unwrap_or_default();
+                        crate::panel::show(entries);
+                    }
+                    continue;
                 }
-                continue;
+                if id == crate::ai_panel::HOTKEY_ID {
+                    crate::ai_panel::show();
+                    continue;
+                }
             }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);

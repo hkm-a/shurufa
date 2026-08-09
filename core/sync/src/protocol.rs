@@ -18,28 +18,85 @@ pub enum FrameFormat {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
     /// 连接建立后双方首发：自报名称、指纹和可直连的监听端口。
+    ///
+    /// `features`/`protocol_version` 均为可选（serde default）：老版本端
+    /// 序列化时不写这两个字段，新版本端读到缺省当空列表/版本 1 处理。
+    /// 新版本端据此决定是否在 Clip* 中携带 msg_id，避免老版本端反序列化
+    /// 失败。
     Hello {
         name: String,
         fingerprint: String,
         listen_port: u16,
+        /// 该端声明支持的特性（如 "msg-id-v1"、"lww-v1"）。
+        #[serde(default)]
+        features: Vec<String>,
+        /// 线协议版本：1 = 初始版，2 = 携带 msg_id + LWW。
+        #[serde(default = "default_protocol_version")]
+        protocol_version: u32,
     },
     /// 配对流程中，用户确认八位码一致后发送
     PairConfirm,
     /// 配对流程中，用户拒绝或超时
     PairReject,
     /// 文本剪贴板条目
-    ClipText { text: String, sent_at_ms: i64 },
+    ClipText {
+        text: String,
+        sent_at_ms: i64,
+        /// 消息指纹（发送端的 UUIDv4），跨端重传去重用。
+        /// 老版本不发送：接收端 None 时退化为 (text, sent_at_ms) 推断。
+        #[serde(default)]
+        msg_id: Option<String>,
+        /// 原始写入者设备指纹；远端回环时以此识别"是我自己的回声"。
+        #[serde(default)]
+        origin_device_fp: Option<String>,
+    },
     /// 图片剪贴板条目（data 为 base64 编码的 PNG，跨平台通用）
-    ClipImage { data: String, sent_at_ms: i64 },
+    ClipImage {
+        data: String,
+        sent_at_ms: i64,
+        #[serde(default)]
+        msg_id: Option<String>,
+        #[serde(default)]
+        origin_device_fp: Option<String>,
+    },
     /// 文件剪贴板条目（data 为 base64 编码的文件字节）。
     ClipFile {
         name: String,
         mime_type: String,
         data: String,
         sent_at_ms: i64,
+        #[serde(default)]
+        msg_id: Option<String>,
+        #[serde(default)]
+        origin_device_fp: Option<String>,
     },
     /// 保活
     Ping,
+}
+
+fn default_protocol_version() -> u32 {
+    1
+}
+
+/// 本端声明的特性列表；接收端将其存入 PeerCapabilities。
+pub const FEATURE_MSG_ID_V1: &str = "msg-id-v1";
+pub const FEATURE_LWW_V1: &str = "lww-v1";
+
+/// 当前协议版本：v1 = Hello+Ping+Clip*；v2 = Hello 带 features 协商，
+/// ClipText 带 msg_id/origin_device_fp，可用于跨端回声抑制。
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// 对端特性闭包：判断 hello 协商出的特性是否包含某项。
+pub fn peer_supports<'a>(features: &'a [String], name: &str) -> bool {
+    features.iter().any(|f| f == name)
+}
+
+/// 本端默认宣称的特性（协商 hello 时发送）。
+pub fn local_features() -> Vec<String> {
+    vec![
+        FEATURE_MSG_ID_V1.to_string(),
+        FEATURE_LWW_V1.to_string(),
+    ]
 }
 
 pub async fn write_msg<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> Result<(), String> {
@@ -151,6 +208,8 @@ mod tests {
         let msg = Message::ClipText {
             text: "你好，同步".into(),
             sent_at_ms: 1234567890,
+            msg_id: Some("test-msg-id".into()),
+            origin_device_fp: Some("fp-a".repeat(8)),
         };
         write_msg(&mut a, &msg).await.unwrap();
         let got = read_msg(&mut b).await.unwrap();
@@ -164,6 +223,8 @@ mod tests {
             name: "安卓".into(),
             fingerprint: "a".repeat(64),
             listen_port: 48632,
+            features: vec![],
+            protocol_version: 1,
         };
         let expected = serde_json::to_vec(&msg).unwrap();
         let write = tokio::spawn(async move {
@@ -173,5 +234,41 @@ mod tests {
         write.await.unwrap();
         assert_eq!(actual, msg);
         assert_eq!(format, FrameFormat::RawJson);
+    }
+
+    #[tokio::test]
+    async fn 旧版本_hello_缺新字段仍可解析() {
+        // 模拟老版本端发来的 Hello（没有 features/protocol_version）
+        let legacy = serde_json::json!({
+            "type": "hello",
+            "name": "老版本",
+            "fingerprint": "b".repeat(64),
+            "listen_port": 48632,
+        });
+        let parsed: Message = serde_json::from_value(legacy).unwrap();
+        match parsed {
+            Message::Hello {
+                features,
+                protocol_version,
+                ..
+            } => {
+                assert!(features.is_empty());
+                assert_eq!(protocol_version, 1);
+            }
+            other => panic!("应解析为 Hello，实际 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn 带_msg_id_的_clip_text_序列化后仍能反解() {
+        let msg = Message::ClipText {
+            text: "x".into(),
+            sent_at_ms: 1,
+            msg_id: Some("m".into()),
+            origin_device_fp: None,
+        };
+        let bytes = serde_json::to_vec(&msg).unwrap();
+        let parsed: Message = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed, msg);
     }
 }

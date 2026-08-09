@@ -102,6 +102,14 @@ class ShurufaImeService : InputMethodService() {
     private var previewKeyboard: LinearLayout? = null
     /// 预览键盘当前展示的图片历史 id
     private var previewImageId: Int? = null
+    /// AI 帮写面板（提示输入 + 草稿预览 + 粘贴按钮）
+    private var aiPanel: LinearLayout? = null
+    private var aiInputBox: EditText? = null
+    private var aiStatusLine: TextView? = null
+    private var aiDraftView: TextView? = null
+    private var aiPasteButton: TextView? = null
+    /// 最近一次成功返回的 AI 草稿；点击「粘贴」写入编辑器。
+    private var aiLastDraft: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     /// 图片解码 / 相册写入 / 剪贴板大查询走 IO 线程：避免阻塞 IME 主线程导致按键抖动。
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
@@ -179,6 +187,10 @@ class ShurufaImeService : InputMethodService() {
         warmupQueue.clear()
         historyPanel?.visibility = View.GONE
         previewKeyboard?.visibility = View.GONE
+        aiPanel?.visibility = View.GONE
+        aiLastDraft = null
+        aiDraftView?.text = ""
+        aiStatusLine?.text = ""
         previewImageId = null
         if (::keyArea.isInitialized) keyArea.visibility = View.VISIBLE
         super.onFinishInput()
@@ -537,6 +549,14 @@ class ShurufaImeService : InputMethodService() {
                 LinearLayout.LayoutParams.MATCH_PARENT
             ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
         )
+        // AI 帮写入口：缺 AGNES_API_KEY 时点击显示「未配置」提示。
+        functionRow.addView(
+            functionChip("🪄", "AI 帮写") { toggleAiPanel() },
+            LinearLayout.LayoutParams(
+                clipButtonSize,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
+        )
         root.addView(functionRow)
         // 功能行与键区之间的细分隔线，避免浅灰功能行和浅灰键区粘连。
         root.addView(View(this).apply {
@@ -563,6 +583,16 @@ class ShurufaImeService : InputMethodService() {
             visibility = View.GONE
         }
         root.addView(historyPanel)
+
+        // AI 帮写面板（独立于历史面板）
+        aiPanel = buildAiPanel()
+        root.addView(
+            aiPanel,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
 
         // 微信输入法 S33 同款：图片预览键盘（点图先进预览，再保存/发送）
         previewKeyboard = buildImagePreviewKeyboard()
@@ -606,6 +636,285 @@ class ShurufaImeService : InputMethodService() {
             populateHistory(panel, onlyImages = true, query = "")
             panel.visibility = View.VISIBLE
             keyArea.visibility = View.GONE
+        }
+    }
+
+    // ---------- AI 帮写面板 ----------
+
+    private fun toggleAiPanel() {
+        val panel = aiPanel ?: return
+        if (panel.visibility == View.VISIBLE) {
+            panel.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+        } else {
+            // 打开时重置：清空输入框与状态，保留上次草稿预览以便复制
+            aiInputBox?.setText("")
+            aiStatusLine?.text = if (hasAiApiKey()) "" else "未配置 AGNES_API_KEY；请在 PC 端配置后重试"
+            aiDraftView?.text = aiLastDraft.orEmpty()
+            aiPasteButton?.isEnabled = !aiLastDraft.isNullOrBlank()
+            panel.visibility = View.VISIBLE
+            keyArea.visibility = View.GONE
+            aiInputBox?.requestFocus()
+        }
+    }
+
+    private fun hasAiApiKey(): Boolean =
+        // Android 的 Process environment 与 Windows 用户环境不共享：
+        // 优先 SHURUFA 包内置的 BuildConfig（运行时由 Gradle 属性注入），其次服务端 fallback
+        // 由宿主 ShurufaHostApi 暴露；此处只是快速判定，真正的 key 永远只在服务调用时读取。
+        try {
+            val f = Class.forName("com.shurufa.ime.BuildConfig").getField("AGNES_API_KEY")
+            (f.get(null) as? String)?.isNotBlank() == true
+        } catch (_: Throwable) {
+            false
+        }
+
+    private fun buildAiPanel(): LinearLayout {
+        val dark = isDark()
+        val bg = if (dark) 0xFF23262C.toInt() else 0xFFF7F7F7.toInt()
+        val titleColor = if (dark) 0xFFE6E8EB.toInt() else 0xFF333333.toInt()
+        val hintColor = if (dark) 0xFF8A8F99.toInt() else 0xFF888888.toInt()
+        val inputBg = if (dark) 0xFF2B2F36.toInt() else 0xFFFFFFFF.toInt()
+        val inputStroke = if (dark) 0xFF4A5059.toInt() else 0xFFD9D9D9.toInt()
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bg)
+            visibility = View.GONE
+            setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+        }
+
+        // 标题行
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(TextView(this).apply {
+            text = "🪄 AI 帮写"
+            textSize = 16f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(titleColor)
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(TextView(this).apply {
+            text = "✕"
+            contentDescription = "关闭"
+            gravity = Gravity.CENTER
+            textSize = 18f
+            setTextColor(hintColor)
+            setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
+            setOnClickListener {
+                aiPanel?.visibility = View.GONE
+                keyArea.visibility = View.VISIBLE
+            }
+        }, LinearLayout.LayoutParams(dp(44f), dp(40f)))
+        root.addView(header)
+
+        // 提示输入框（单行；回车由 onEditorAction 提交）
+        val input = EditText(this).apply {
+            hint = "想让 AI 写什么？例如「朋友婚礼上台祝福 80 字」"
+            textSize = 15f
+            setTextColor(titleColor)
+            setHintTextColor(hintColor)
+            setPadding(dp(10f), 0, dp(10f), 0)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(6f).toFloat()
+                setColor(inputBg)
+                setStroke(dp(1f), inputStroke)
+            }
+            imeOptions = EditorInfo.IME_ACTION_SEND
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEND) {
+                    requestAiDraft()
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        aiInputBox = input
+        root.addView(input, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(44f),
+        ).apply { topMargin = dp(6f) })
+
+        // 状态行：进度 / 错误
+        val status = TextView(this).apply {
+            textSize = 12f
+            setTextColor(hintColor)
+            setPadding(0, dp(6f), 0, 0)
+        }
+        aiStatusLine = status
+        root.addView(status)
+
+        // 草稿预览
+        val draft = TextView(this).apply {
+            textSize = 15f
+            setTextColor(titleColor)
+            setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(6f).toFloat()
+                setColor(inputBg)
+                setStroke(dp(1f), inputStroke)
+            }
+            setTextIsSelectable(true)
+        }
+        aiDraftView = draft
+        root.addView(
+            ScrollView(this).apply { addView(draft) },
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f,
+            ).apply { topMargin = dp(6f) },
+        )
+
+        // 底部按钮行：粘贴 / 重试
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6f), 0, 0)
+        }
+        val paste = TextView(this).apply {
+            text = "粘贴到输入框"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(8f).toFloat()
+                setColor(palette.accent)
+            }
+            isEnabled = false
+            setOnClickListener { commitAiDraft() }
+        }
+        aiPasteButton = paste
+        actions.addView(paste, LinearLayout.LayoutParams(0, dp(40f), 1f).apply {
+            rightMargin = dp(6f)
+        })
+        actions.addView(TextView(this).apply {
+            text = "重试"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(titleColor)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(8f).toFloat()
+                setColor(inputBg)
+                setStroke(dp(1f), inputStroke)
+            }
+            setOnClickListener { requestAiDraft() }
+        }, LinearLayout.LayoutParams(0, dp(40f), 1f).apply {
+            leftMargin = dp(6f)
+        })
+        root.addView(actions)
+
+        return root
+    }
+
+    /** 真正调用 Agnes API。network 一律走 ioExecutor → 主线程 setText。 */
+    private fun requestAiDraft() {
+        val prompt = aiInputBox?.text?.toString()?.trim().orEmpty()
+        if (prompt.isEmpty()) {
+            aiStatusLine?.text = "请先输入提示词"
+            return
+        }
+        // 与 PC 端一致：key 从环境变量读；Android 进程不直读用户环境，
+        // 通过 BuildConfig 由打包时 gradle 属性注入（仅 release 本机构建可用）。
+        val apiKey = readAiApiKey()
+        if (apiKey.isNullOrBlank()) {
+            aiStatusLine?.text = "未配置 AGNES_API_KEY"
+            return
+        }
+        aiStatusLine?.text = "思考中…"
+        aiPasteButton?.isEnabled = false
+        ioExecutor.execute {
+            val result = callAgnesChat(apiKey, prompt)
+            mainHandler.post {
+                when (result) {
+                    is AiResult.Ok -> {
+                        aiLastDraft = result.text
+                        aiDraftView?.text = result.text
+                        aiStatusLine?.text = "已生成 ${result.text.length} 字；点击「粘贴到输入框」插入"
+                        aiPasteButton?.isEnabled = true
+                    }
+                    is AiResult.Err -> {
+                        aiStatusLine?.text = "请求失败：${result.message}"
+                        aiPasteButton?.isEnabled = aiLastDraft != null
+                    }
+                }
+            }
+        }
+    }
+
+    private fun commitAiDraft() {
+        val draft = aiLastDraft?.takeIf { it.isNotEmpty() } ?: return
+        currentInputConnection?.let { ic ->
+            ic.finishComposingText()
+            ic.commitText(draft, 1)
+            aiPanel?.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+            aiLastDraft = null
+            aiDraftView?.text = ""
+        }
+    }
+
+    sealed class AiResult {
+        data class Ok(val text: String) : AiResult()
+        data class Err(val message: String) : AiResult()
+    }
+
+    private fun readAiApiKey(): String? = try {
+        val cls = Class.forName("com.shurufa.ime.BuildConfig")
+        (cls.getField("AGNES_API_KEY").get(null) as? String)?.takeIf { it.isNotBlank() }
+    } catch (_: Throwable) {
+        null
+    }
+
+    /** 与 PC 端同一接口：https://apihub.agnes-ai.com/v1/chat/completions */
+    private fun callAgnesChat(apiKey: String, prompt: String): AiResult {
+        val endpoint = java.net.URL("https://apihub.agnes-ai.com/v1/chat/completions")
+        var conn: java.net.HttpURLConnection? = null
+        return try {
+            conn = (endpoint.openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 45_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Authorization", "Bearer $apiKey")
+            }
+            val body = org.json.JSONObject()
+                .put("model", "agnes-2.5-flash")
+                .put("stream", false)
+                .put("temperature", 0.5)
+                .put("messages", org.json.JSONArray()
+                    .put(org.json.JSONObject().put("role", "system").put("content",
+                        "你是用户输入法里的‘AI 帮写’助手。直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。"))
+                    .put(org.json.JSONObject().put("role", "user").put("content", prompt)))
+                .toString()
+            conn.outputStream.use { os ->
+                os.write(body.toByteArray(Charsets.UTF_8))
+            }
+            val code = conn.responseCode
+            val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) {
+                AiResult.Err("HTTP $code: ${text.take(120)}")
+            } else {
+                val root = org.json.JSONObject(text)
+                val content = root.optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("message")
+                    ?.optString("content")
+                    ?.trim()
+                    .orEmpty()
+                if (content.isEmpty()) AiResult.Err("返回内容为空") else AiResult.Ok(content)
+            }
+        } catch (e: Exception) {
+            AiResult.Err(e.message ?: e.javaClass.simpleName)
+        } finally {
+            conn?.disconnect()
         }
     }
 

@@ -77,13 +77,20 @@ async fn 配对后双向同步文本() {
     // 甲 → 乙
     a.send_clip("你好，来自甲机");
     let got = recv_clip(&mut rx_b).await;
-    assert_eq!(
-        got,
+    match got {
         Incoming::Clip {
-            from_name: "甲机".into(),
-            text: "你好，来自甲机".into()
+            from_name,
+            text,
+            sent_at_ms,
+            msg_id,
+        } => {
+            assert_eq!(from_name, "甲机");
+            assert_eq!(text, "你好，来自甲机");
+            assert!(sent_at_ms.is_some(), "v2 协议必须携带 sent_at_ms");
+            assert!(msg_id.is_some(), "v2 协议必须携带 msg_id");
         }
-    );
+        other => panic!("期待 Clip，实际 {other:?}"),
+    }
 
     // 甲 → 乙 传文件（名称、MIME 与字节均保持不变）
     let file = b"sync file bytes";
@@ -116,13 +123,20 @@ async fn 配对后双向同步文本() {
     // 乙 → 甲
     b.send_clip("收到，乙机回礼");
     let got = recv_clip(&mut rx_a).await;
-    assert_eq!(
-        got,
+    match got {
         Incoming::Clip {
-            from_name: "乙机".into(),
-            text: "收到，乙机回礼".into()
+            from_name,
+            text,
+            sent_at_ms,
+            msg_id,
+        } => {
+            assert_eq!(from_name, "乙机");
+            assert_eq!(text, "收到，乙机回礼");
+            assert!(sent_at_ms.is_some());
+            assert!(msg_id.is_some());
         }
-    );
+        other => panic!("期待 Clip，实际 {other:?}"),
+    }
 
     // 未配对的第三方不可见：新服务无法凭空收到广播
     let dir_c = tempfile::tempdir().unwrap();

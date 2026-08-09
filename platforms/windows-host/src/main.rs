@@ -5,6 +5,7 @@
 //! `run` 子命令启动剪贴板监听并写入历史库；其余子命令面向历史库的
 //! 查询与管理，供验收与后续 UI 面板复用。
 
+mod ai_panel;
 mod dict_update;
 mod listener;
 mod panel;

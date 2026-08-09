@@ -226,7 +226,7 @@ pub fn start_daemon() {
                             // 入库/落盘/图片转码/写系统剪贴板均为阻塞或 CPU 密集
                             // 操作，移到 spawn_blocking，避免占用 tokio worker 线程。
                             tokio::task::spawn_blocking(move || match incoming {
-                                Incoming::Clip { from_name, text } => {
+                                Incoming::Clip { from_name, text, .. } => {
                                     let store = crate::open_store();
                                     match store.insert_text(&text, &format!("同步·{from_name}")) {
                                         Ok(_) => {

@@ -49,6 +49,8 @@ const BASE_MODE_BADGE_GAP: i32 = 10;
 struct Item {
     label: String,
     text: String,
+    /// 词库附注（如同类推荐、近义词、emoji 提示）；为空则不绘制。
+    comment: String,
     x: i32,
     label_w: i32,
     text_w: i32,
@@ -184,6 +186,7 @@ impl CandidateUi {
             let preedit_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
 
             let old = SelectObject(hdc, HGDIOBJ(cand_font.0));
+            let sub_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
             let mut x = padding;
             let items: Vec<Item> = ctx
                 .candidates
@@ -194,18 +197,37 @@ impl CandidateUi {
                     let label = format!("{}.", i + 1);
                     let label_w = text_width(hdc, &label);
                     let text_w = text_width(hdc, &c.text);
+                    // 副标（词库附注）；只在文本不重复时展示——同字符的
+                    // comment 是噪音。这里只截断长度，留待 paint 用小号字体。
+                    let comment = if c.comment.is_empty() || c.comment == c.text {
+                        String::new()
+                    } else {
+                        c.comment.chars().take(12).collect()
+                    };
+                    // 宽度预算给 comment：副标跟在主文本右侧，必须占住后续槽位。
+                    // 与 paint 头一致：用 sub_font 实测，再加一侧间隙。
+                    let comment_w = if comment.is_empty() {
+                        0
+                    } else {
+                        SelectObject(hdc, HGDIOBJ(sub_font.0));
+                        let w = text_width(hdc, &comment);
+                        SelectObject(hdc, HGDIOBJ(cand_font.0));
+                        w + scale(4, dpi)
+                    };
                     let item = Item {
                         label,
                         text: c.text.clone(),
+                        comment,
                         x,
                         label_w,
-                        text_w,
+                        text_w: text_w + comment_w,
                         highlighted: i == ctx.highlighted,
                     };
-                    x += label_w + label_gap + text_w + item_gap;
+                    x += label_w + label_gap + text_w + comment_w + item_gap;
                     item
                 })
                 .collect();
+            let _ = DeleteObject(HGDIOBJ(sub_font.0));
 
             SelectObject(hdc, HGDIOBJ(preedit_font.0));
             let preedit_w = text_width(hdc, &ctx.preedit);
@@ -420,6 +442,27 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 item_end,
                 row_h,
             );
+
+            // 副标：词库附注（emoji、近义词、词条类别等），灰字小一号，
+            // 紧跟主文本右侧（与搜狗/Rime 候选副标一致），不另起一行，
+            // 避免抬高候选行高。text_w 已含 comment 宽度（见 show()），
+            // 这里用 cand_font 实测主文本宽度定位 comment 起点。
+            if !item.comment.is_empty() {
+                let pure_text_w = text_width(hdc, &item.text);
+                let sub_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
+                SelectObject(hdc, HGDIOBJ(sub_font.0));
+                SetTextColor(hdc, COLORREF(colors.label));
+                draw_line(
+                    hdc,
+                    &item.comment,
+                    item.x + item.label_w + label_gap + pure_text_w + scale(2, dpi),
+                    row_top,
+                    item_end,
+                    row_h,
+                );
+                SelectObject(hdc, HGDIOBJ(cand_font.0));
+                let _ = DeleteObject(HGDIOBJ(sub_font.0));
+            }
         }
 
         SelectObject(hdc, old_font);

@@ -123,6 +123,10 @@ pub enum Incoming {
     Clip {
         from_name: String,
         text: String,
+        /// 对端声明的消息发送时刻（epoch 毫秒）；旧版本端未提供时为 None。
+        sent_at_ms: Option<i64>,
+        /// 对端分配的消息 id（msg-id-v1 特性）；用于回声/重放去重。
+        msg_id: Option<String>,
     },
     /// 图片（PNG 字节）
     Image {
@@ -139,15 +143,55 @@ pub enum Incoming {
 }
 
 /// 出站广播内容：文本或图片，经 broadcast 通道推给所有活跃连接。
+/// 每条消息天然带一个 uuid v4 `msg_id` 与 `sent_at_ms`，供两端做
+/// 近期复读回波抑制（旧版本端不带 msg_id 时职责落在写入端签名比对）。
 #[derive(Debug, Clone)]
 enum Outbound {
-    Text(String),
+    Text {
+        text: String,
+        msg_id: String,
+        sent_at_ms: i64,
+    },
     Image(Vec<u8>),
     File {
         name: String,
         mime_type: String,
         data: Vec<u8>,
     },
+}
+
+/// 生成一条出站消息 id（uuid v4，无连字符小写）。
+fn new_msg_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // 基于时间戳 + 进程内自增 + 随机源构造 128bit，避免引入 uuid 依赖。
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let rand: u64 = rand_part();
+    let a = (now as u64) ^ rand.rotate_left(21);
+    let b = ((now >> 64) as u64) ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ rand;
+    format!("{a:016x}{b:016x}")
+}
+
+/// 取一个 64bit 随机数：优先 `getrandom` 不可用则回退到地址熵 + 时间。
+fn rand_part() -> u64 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::BuildHasher;
+    // RandomState 每次进程启动随机播种；用来快速取一个无法预测的 64bit。
+    let state = RandomState::new();
+    let hasher = state.build_hasher();
+    use std::hash::Hasher;
+    let mut h = hasher;
+    h.write_u64(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0),
+    );
+    h.finish()
 }
 
 /// 配对确认提示：宿主展示 `code` 并让用户比对两端一致后放行。
@@ -177,6 +221,8 @@ struct Shared {
     relay_addr: Option<String>,
     /// 配对成功后唤醒重连循环，立即建立数据连接
     reconnect_now: Notify,
+    /// 近期本端发出的 (msg_id, sent_at_ms)，用于回声剔除（跨端 LWW 辅助）。
+    recent_out: Mutex<Vec<(String, i64)>>,
     log: Box<dyn Fn(&str) + Send + Sync>,
 }
 
@@ -261,6 +307,7 @@ impl SyncService {
             accept_confirm,
             relay_addr: config.relay_addr.clone(),
             reconnect_now: Notify::new(),
+            recent_out: Mutex::new(Vec::new()),
             log,
         });
 
@@ -377,7 +424,11 @@ impl SyncService {
             return;
         }
         // 无活跃连接时发送失败属正常，静默
-        let _ = self.shared.outgoing.send(Outbound::Text(text.to_string()));
+        let _ = self.shared.outgoing.send(Outbound::Text {
+            text: text.to_string(),
+            msg_id: new_msg_id(),
+            sent_at_ms: now_ms(),
+        });
     }
 
     /// 广播一张本机产生的剪贴板图片（PNG 字节）。
@@ -622,17 +673,25 @@ async fn connect_peer_stream(
             name: shared.device_name.clone(),
             fingerprint: shared.identity.fingerprint.clone(),
             listen_port: shared.local_port,
+            features: crate::protocol::local_features(),
+            protocol_version: crate::protocol::PROTOCOL_VERSION,
         },
     )
     .await?;
-    let (Message::Hello { name, .. }, format) = read_msg_with_format(&mut tls).await? else {
+    let (
+        Message::Hello {
+            name, features, ..
+        },
+        format,
+    ) = read_msg_with_format(&mut tls).await?
+    else {
         return Err("对端未按协议发送 Hello".into());
     };
     if let Some(addr) = direct_addr {
         let _ = shared.peers.update_addr(&fp, addr);
     }
     shared.clear_backoff(&fp);
-    duplex(shared, tls, fp, name, format).await
+    duplex(shared, tls, fp, name, format, features).await
 }
 
 /// 入站连接：已配对 → 数据通道；未配对 → 配对流程（需确认回调）。
@@ -654,6 +713,8 @@ async fn handle_inbound(
             name,
             fingerprint,
             listen_port,
+            features,
+            ..
         },
         format,
     ) = read_msg_with_format(&mut tls).await?
@@ -669,6 +730,8 @@ async fn handle_inbound(
             name: shared.device_name.clone(),
             fingerprint: shared.identity.fingerprint.clone(),
             listen_port: shared.local_port,
+            features: crate::protocol::local_features(),
+            protocol_version: crate::protocol::PROTOCOL_VERSION,
         },
         format,
     )
@@ -679,7 +742,7 @@ async fn handle_inbound(
         if let Some(addr) = direct_addr.as_deref() {
             let _ = shared.peers.update_addr(&fp, addr);
         }
-        return duplex(shared, tls, fp, name, format).await;
+        return duplex(shared, tls, fp, name, format, features).await;
     }
 
     // 未配对：走配对确认
@@ -714,7 +777,7 @@ async fn handle_inbound(
         last_addr: direct_addr,
     })?;
     shared.log(&format!("已与 {name} 配对"));
-    duplex(shared, tls, fp, name, format).await
+    duplex(shared, tls, fp, name, format, features).await
 }
 
 /// 发起端配对：连接 → Hello → 确认码 → PairConfirm 交换 → 入表。
@@ -742,6 +805,8 @@ async fn pair_initiate(
             name: shared.device_name.clone(),
             fingerprint: shared.identity.fingerprint.clone(),
             listen_port: shared.local_port,
+            features: crate::protocol::local_features(),
+            protocol_version: crate::protocol::PROTOCOL_VERSION,
         },
     )
     .await?;
@@ -802,6 +867,7 @@ async fn duplex<S>(
     fp: String,
     peer_name: String,
     format: FrameFormat,
+    peer_features: Vec<String>,
 ) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -813,7 +879,13 @@ where
             return Ok(());
         }
     }
-    shared.log(&format!("已连接 {peer_name}"));
+    let peer_has_msg_id =
+        crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_MSG_ID_V1);
+    shared.log(&format!(
+        "已连接 {peer_name}（协议 {}：{} msg_id）",
+        if peer_has_msg_id { "v2" } else { "v1" },
+        if peer_has_msg_id { "启用" } else { "关闭" },
+    ));
 
     let mut rx = shared.outgoing.subscribe();
     let mut ping = tokio::time::interval(HEARTBEAT_INTERVAL);
@@ -823,13 +895,41 @@ where
         tokio::select! {
             incoming = tokio::time::timeout(READ_IDLE_TIMEOUT, read_msg_with_format(&mut tls)) => {
                 match incoming {
-                    Ok(Ok((Message::ClipText { text, .. }, _))) => {
+                    Ok(Ok((
+                        Message::ClipText {
+                            text,
+                            sent_at_ms,
+                            msg_id,
+                            origin_device_fp,
+                        },
+                        _,
+                    ))) => {
+                        // 回声丢弃：本端指纹即对端 `origin_device_fp` 时，说明是
+                        // 本端先前发出、经对端转发回来的副本，不再上屏也不入库。
+                        if origin_device_fp.as_deref() == Some(shared.identity.fingerprint.as_str()) {
+                            continue;
+                        }
+                        // 与旧端互通：旧端仍会 echo 本端消息但 `origin_device_fp`
+                        // 为 None。用 (msg_id, sent_at_ms) 与本端最后几条出站消息的
+                        // 组合做短窗口复读剔除，近似 LWW（last-writer-wins）。
+                        if let Some(mid) = msg_id.as_deref() {
+                            if shared
+                                .recent_out
+                                .lock().unwrap_or_else(|p| p.into_inner())
+                                .iter()
+                                .any(|(o_mid, o_sent)| o_mid == mid && (*o_sent - sent_at_ms).abs() <= 5_000)
+                            {
+                                continue;
+                            }
+                        }
                         if text.len() <= MAX_CLIP_TEXT {
                             let _ = shared
                                 .incoming
                                 .send(Incoming::Clip {
                                     from_name: peer_name.clone(),
                                     text,
+                                    sent_at_ms: Some(sent_at_ms),
+                                    msg_id,
                                 })
                                 .await;
                         }
@@ -880,10 +980,29 @@ where
                 }
             }
             out = rx.recv() => match out {
-                Ok(Outbound::Text(text)) => {
+                Ok(Outbound::Text {
+                    text,
+                    msg_id,
+                    sent_at_ms,
+                }) => {
+                    // 记账最近发出的 (msg_id, sent_at_ms) 用于回声剔除；窗口短而
+                    // 浅，跟随广播吞吐，64 条已覆盖 32 字/秒级聊天强度。
+                    {
+                        let mut recent = shared.recent_out.lock().unwrap_or_else(|p| p.into_inner());
+                        if recent.len() >= 64 {
+                            recent.remove(0);
+                        }
+                        recent.push((msg_id.clone(), sent_at_ms));
+                    }
                     let msg = Message::ClipText {
                         text,
-                        sent_at_ms: now_ms(),
+                        sent_at_ms,
+                        msg_id: if peer_has_msg_id { Some(msg_id) } else { None },
+                        origin_device_fp: if peer_has_msg_id {
+                            Some(shared.identity.fingerprint.clone())
+                        } else {
+                            None
+                        },
                     };
                     if let Err(e) = write_msg_with_format(&mut tls, &msg, format).await {
                         break Err(e);
@@ -894,6 +1013,8 @@ where
                     let msg = Message::ClipImage {
                         data,
                         sent_at_ms: now_ms(),
+                        msg_id: None,
+                        origin_device_fp: None,
                     };
                     if let Err(e) = write_msg_with_format(&mut tls, &msg, format).await {
                         break Err(e);
@@ -905,6 +1026,8 @@ where
                         mime_type,
                         data: base64::engine::general_purpose::STANDARD.encode(&data),
                         sent_at_ms: now_ms(),
+                        msg_id: None,
+                        origin_device_fp: None,
                     };
                     if let Err(e) = write_msg_with_format(&mut tls, &msg, format).await {
                         break Err(e);
@@ -1022,25 +1145,35 @@ mod tests {
         wait_connected(&first, &second).await;
 
         first.send_clip("仅经中继的同步文本");
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), second_rx.recv())
-                .await
-                .unwrap(),
+        match tokio::time::timeout(Duration::from_secs(5), second_rx.recv()).await.unwrap() {
             Some(Incoming::Clip {
-                from_name: "甲设备".into(),
-                text: "仅经中继的同步文本".into(),
-            })
-        );
+                from_name,
+                text,
+                sent_at_ms,
+                msg_id,
+            }) => {
+                assert_eq!(from_name, "甲设备");
+                assert_eq!(text, "仅经中继的同步文本");
+                assert!(sent_at_ms.is_some());
+                assert!(msg_id.as_deref().map(|s| s.len() >= 16).unwrap_or(false));
+            }
+            other => panic!("期待 Clip 消息，实际 {other:?}"),
+        }
         second.send_clip("中继回传文本");
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), first_rx.recv())
-                .await
-                .unwrap(),
+        match tokio::time::timeout(Duration::from_secs(5), first_rx.recv()).await.unwrap() {
             Some(Incoming::Clip {
-                from_name: "乙设备".into(),
-                text: "中继回传文本".into(),
-            })
-        );
+                from_name,
+                text,
+                sent_at_ms,
+                msg_id,
+            }) => {
+                assert_eq!(from_name, "乙设备");
+                assert_eq!(text, "中继回传文本");
+                assert!(sent_at_ms.is_some());
+                assert!(msg_id.as_deref().map(|s| s.len() >= 16).unwrap_or(false));
+            }
+            other => panic!("期待 Clip 消息，实际 {other:?}"),
+        }
         assert!(first.peers().iter().all(|peer| peer.last_addr.is_none()));
         assert!(second.peers().iter().all(|peer| peer.last_addr.is_none()));
     }
