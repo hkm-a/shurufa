@@ -15,6 +15,7 @@ use jni::sys::{jboolean, jbyteArray, jint, jstring};
 use jni::JNIEnv;
 
 use clipboard_store::{ClipKind, ClipboardStore};
+use sha2::{Digest, Sha256};
 
 static STORE: OnceLock<Mutex<ClipboardStore>> = OnceLock::new();
 
@@ -223,5 +224,100 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeDelete(
             }
         },
         (),
+    )
+}
+
+/// 置顶/取消置顶单条历史；返回是否更新成功（条目存在）。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeSetPinned(
+    _env: JNIEnv,
+    _class: JClass,
+    id: jint,
+    pinned: jboolean,
+) -> jboolean {
+    crate::jni_catch(
+        || {
+            let Some(store) = STORE.get() else {
+                return 0;
+            };
+            match store.lock() {
+                Ok(guard) => guard
+                    .set_pinned(id as i64, pinned != 0)
+                    .unwrap_or(false) as jboolean,
+                Err(_) => 0,
+            }
+        },
+        0,
+    )
+}
+
+/// 搜索历史：记录协议与 nativeList 一致（`id\u{1}类型\u{1}来源\u{1}文本`，记录间 `\u{2}`）。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeSearch(
+    mut env: JNIEnv,
+    _class: JClass,
+    query: JString,
+    limit: jint,
+) -> jstring {
+    let default = to_jstring(&env, "");
+    crate::jni_catch(
+        || {
+            let Some(store) = STORE.get() else {
+                return to_jstring(&env, "");
+            };
+            let q = jstr(&mut env, &query);
+            if q.is_empty() {
+                return to_jstring(&env, "");
+            }
+            let entries = match store.lock() {
+                Ok(guard) => guard.search(&q, limit.max(0) as u32).unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            let text = entries
+                .iter()
+                .map(|e| {
+                    let kind = match e.kind {
+                        ClipKind::Text => "text",
+                        ClipKind::Image => "image",
+                        ClipKind::Files => "files",
+                    };
+                    format!("{}\u{1}{}\u{1}{}\u{1}{}", e.id, kind, e.source_app, e.text)
+                })
+                .collect::<Vec<_>>()
+                .join("\u{2}");
+            to_jstring(&env, &text)
+        },
+        default,
+    )
+}
+
+/// 最新文本类条目的变更指纹：`updatedMs \u{1} sha256(文本)前16hex`；
+/// 无文本条目或空库返回空串。供 Kotlin 侧感知剪贴板历史变化去重。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeLatestSignature(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let default = to_jstring(&env, "");
+    crate::jni_catch(
+        || {
+            let Some(store) = STORE.get() else {
+                return to_jstring(&env, "");
+            };
+            let entries = match store.lock() {
+                Ok(guard) => guard.list(1, 0).unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            let Some(latest) = entries.first() else {
+                return to_jstring(&env, "");
+            };
+            if latest.kind != ClipKind::Text {
+                return to_jstring(&env, "");
+            }
+            let digest = Sha256::digest(latest.text.as_bytes());
+            let hash16: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+            to_jstring(&env, &format!("{}\u{1}{}", latest.updated_at, hash16))
+        },
+        default,
     )
 }

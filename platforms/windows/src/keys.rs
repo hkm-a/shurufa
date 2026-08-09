@@ -111,11 +111,15 @@ pub fn vk_to_keysym(vk: u32, shift: bool) -> Option<i32> {
 
 /// 是否是输入法需要接管的未修饰按键。该判断不触发 IPC 或编辑会话，
 /// 专供 TSF 的 `OnTestKeyDown` 试探回调使用。
-pub fn is_ime_key(vk: u32, modifiers: i32) -> bool {
-    // Shift 和 CapsLock 不应被输入法接管——系统需要它们处理
-    // 中英文切换与大写锁定。否则应用收不到这些键。
-    if vk == VK_SHIFT.0 as u32 || vk == VK_CAPITAL.0 as u32 {
+/// `caps_managed` 为 true 时（选项"CapsLock 切英文"开启）接管 CapsLock，
+/// 由输入法在 handle_key 里切到英文直输，同时系统不再翻转大写灯。
+pub fn is_ime_key(vk: u32, modifiers: i32, caps_managed: bool) -> bool {
+    // Shift 不应被输入法接管——系统需要它处理中英文切换之外的场景。
+    if vk == VK_SHIFT.0 as u32 {
         return false;
+    }
+    if vk == VK_CAPITAL.0 as u32 {
+        return caps_managed && modifiers & (MASK_CONTROL | MASK_ALT | MASK_SHIFT) == 0;
     }
     modifiers & (MASK_CONTROL | MASK_ALT) == 0
         && vk_to_keysym(vk, modifiers & MASK_SHIFT != 0).is_some()
@@ -135,16 +139,25 @@ mod tests {
 
     #[test]
     fn 普通字母由输入法接管而控制组合键直通() {
-        assert!(is_ime_key(0x41, 0));
-        assert!(is_ime_key(0x41, MASK_SHIFT));
-        assert!(!is_ime_key(0x41, MASK_CONTROL));
-        assert!(!is_ime_key(0x70, 0));
+        assert!(is_ime_key(0x41, 0, false));
+        assert!(is_ime_key(0x41, MASK_SHIFT, false));
+        assert!(!is_ime_key(0x41, MASK_CONTROL, false));
+        assert!(!is_ime_key(0x70, 0, false));
     }
 
     #[test]
-    fn shift与大写锁不被输入法接管以保证系统切换可用() {
-        // VK_SHIFT=0x10, VK_CAPITAL=0x14
-        assert!(!is_ime_key(0x10, 0));
-        assert!(!is_ime_key(0x14, 0));
+    fn shift不被输入法接管以保证系统切换可用() {
+        // VK_SHIFT=0x10
+        assert!(!is_ime_key(0x10, 0, false));
+        assert!(!is_ime_key(0x10, 0, true));
+    }
+
+    #[test]
+    fn 大写锁仅在开启切英文选项且无修饰时接管() {
+        // VK_CAPITAL=0x14
+        assert!(!is_ime_key(0x14, 0, false));
+        assert!(is_ime_key(0x14, 0, true));
+        assert!(!is_ime_key(0x14, MASK_CONTROL, true));
+        assert!(!is_ime_key(0x14, MASK_SHIFT, true));
     }
 }

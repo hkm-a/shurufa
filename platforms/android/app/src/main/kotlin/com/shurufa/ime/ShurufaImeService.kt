@@ -16,12 +16,15 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -44,6 +47,10 @@ import kotlin.concurrent.thread
  *
  * 引擎在后台线程初始化（首次含词典部署）。初始化期间，当前输入框的
  * 按键会短暂缓存并在引擎就绪后自动回放，避免用户首次使用误输入英文。
+ *
+ * 候选栏左侧有「中/英」模式角标（B9），长按候选可复制或删除用户词条（B8）；
+ * 剪贴板历史面板支持文本搜索与条目置顶/删除（A6），标题行展示今日/累计
+ * 打字统计（B12，由 Rust 侧埋点）。
  */
 class ShurufaImeService : InputMethodService() {
 
@@ -104,6 +111,13 @@ class ShurufaImeService : InputMethodService() {
     private var candidatesExpanded = false
     private var compositionCursorOverride: Int? = null
     private val warmupQueue = EngineWarmupQueue<PendingInput>()
+
+    /// 候选行左侧的中/英模式角标（B9），engineReady 时随 sync/切换刷新。
+    private var modeBadge: TextView? = null
+    /// 历史面板搜索框（A6），只在文本模式下创建并显示。
+    private var historySearchBox: EditText? = null
+    /// 搜索输入 250ms 防抖任务。
+    private var historySearchRunnable: Runnable? = null
 
     /// 当前主题；随系统深色设置在重建输入视图时更新
     private var palette: Palette = paletteFromSkin(SkinPalette.lightDefault())
@@ -168,6 +182,18 @@ class ShurufaImeService : InputMethodService() {
         previewImageId = null
         if (::keyArea.isInitialized) keyArea.visibility = View.VISIBLE
         super.onFinishInput()
+    }
+
+    /** 系统深色模式切换时键盘内热刷：重建输入视图并清空组合，避免残留旧配色。 */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (!isInputViewShown) return
+        val fresh = paletteFromSkin(SkinConfig.load(this, isDark()))
+        if (fresh != palette) {
+            palette = fresh
+            resetCompositionForInputChange()
+            setInputView(onCreateInputView())
+        }
     }
 
     override fun onUpdateSelection(
@@ -436,8 +462,27 @@ class ShurufaImeService : InputMethodService() {
                 contentDescription = if (candidatesExpanded) "收起候选词" else "展开候选词"
             }
         }
+        // B9 中/英模式角标：候选行左侧小 chip，accent 色文字 + 圆角浅底描边。
+        modeBadge = TextView(this).apply {
+            text = "中"
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setTextColor(palette.accent)
+            background = GradientDrawable().apply {
+                setColor(palette.key)
+                cornerRadius = dp(8f).toFloat()
+                setStroke(dp(1f), palette.accent)
+            }
+        }
         candidatePanel.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(
+                modeBadge,
+                LinearLayout.LayoutParams(dp(30f), dp(22f)).apply {
+                    setMargins(dp(6f), 0, 0, 0)
+                },
+            )
             addView(scroll)
             addView(
                 candidateExpandButton,
@@ -532,7 +577,10 @@ class ShurufaImeService : InputMethodService() {
             panel.visibility = View.GONE
             keyArea.visibility = View.VISIBLE
         } else {
-            populateHistory(panel, onlyImages = false)
+            // 每次打开面板清空搜索框（A6）
+            historySearchRunnable?.let { mainHandler.removeCallbacks(it) }
+            historySearchBox?.setText("")
+            populateHistory(panel, onlyImages = false, query = "")
             panel.visibility = View.VISIBLE
             keyArea.visibility = View.GONE
         }
@@ -545,7 +593,9 @@ class ShurufaImeService : InputMethodService() {
             panel.visibility = View.GONE
             keyArea.visibility = View.VISIBLE
         } else {
-            populateHistory(panel, onlyImages = true)
+            historySearchRunnable?.let { mainHandler.removeCallbacks(it) }
+            historySearchBox?.setText("")
+            populateHistory(panel, onlyImages = true, query = "")
             panel.visibility = View.VISIBLE
             keyArea.visibility = View.GONE
         }
@@ -800,14 +850,64 @@ class ShurufaImeService : InputMethodService() {
         keyArea.visibility = View.VISIBLE
     }
 
-    private fun populateHistory(panel: LinearLayout, onlyImages: Boolean = false) {
+    private fun populateHistory(panel: LinearLayout, onlyImages: Boolean = false, query: String = "") {
         panel.removeAllViews()
-        panel.addView(TextView(this).apply {
+        // 标题行：左侧标题，右侧打字统计小字（B12）
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
+        }
+        titleRow.addView(TextView(this).apply {
             text = if (onlyImages) "斗图 · 点图片预览 · 再点 ▾▦ 返回" else "剪贴板历史 · 点击上屏 · 再点 ▾▦ 返回"
             textSize = 12f
             setTextColor(palette.preedit)
-            setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
-        })
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        val statsView = TextView(this).apply {
+            textSize = 11f
+            setTextColor(palette.preedit)
+        }
+        titleRow.addView(statsView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ))
+        panel.addView(titleRow)
+        refreshTypingStats(statsView)
+
+        // A6 搜索框：仅文本模式（非斗图）显示；空串走 list，非空走 search。
+        historySearchBox = null
+        if (!onlyImages) {
+            val searchBox = EditText(this).apply {
+                hint = "搜索历史…"
+                textSize = 14f
+                setTextColor(palette.keyText)
+                setHintTextColor(palette.preedit)
+                setSingleLine(true)
+                setPadding(dp(14f), dp(10f), dp(14f), dp(10f))
+                setText(query)
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                    override fun afterTextChanged(s: Editable?) {
+                        val q = s?.toString().orEmpty()
+                        historySearchRunnable?.let { mainHandler.removeCallbacks(it) }
+                        val task = Runnable {
+                            val target = historyPanel ?: return@Runnable
+                            populateHistory(target, onlyImages = false, query = q)
+                        }
+                        historySearchRunnable = task
+                        mainHandler.postDelayed(task, 250L)
+                    }
+                })
+            }
+            historySearchBox = searchBox
+            if (query.isNotEmpty()) {
+                // 搜索回填时保持光标在末尾，避免再次触发无意义的文本变化回调
+                searchBox.setSelection(query.length)
+            }
+            panel.addView(searchBox)
+        }
+
         // 占位：SQLite 读取与图片缩略解码都在 IO 线程；期间用户可见"加载中"
         val placeholder = TextView(this).apply {
             text = "加载中…"
@@ -820,7 +920,11 @@ class ShurufaImeService : InputMethodService() {
         val mimeSnapshot = currentSupportedImageMimeType()
         ioExecutor.execute {
             val entries = try {
-                ClipStore.list(30).filter { !onlyImages || it.kind == "image" }
+                if (query.isBlank()) {
+                    ClipStore.list(30)
+                } else {
+                    ClipStore.search(query, 30)
+                }.filter { !onlyImages || it.kind == "image" }
             } catch (e: Throwable) {
                 emptyList()
             }
@@ -845,7 +949,7 @@ class ShurufaImeService : InputMethodService() {
                 panel.removeView(placeholder)
                 if (prepared.isEmpty()) {
                     panel.addView(TextView(this).apply {
-                        text = "（暂无历史）"
+                        text = if (query.isBlank()) "（暂无历史）" else "（没有匹配「$query」的历史）"
                         setTextColor(palette.preedit)
                         setPadding(dp(14f), dp(20f), dp(14f), dp(20f))
                     })
@@ -856,11 +960,57 @@ class ShurufaImeService : InputMethodService() {
         }
     }
 
+    /**
+     * B12 打字统计展示：解析 nativeStatsTotals（"totalChars FIELD todayChars FIELD …"），
+     * 空串/解析失败则置空不占位。
+     */
+    private fun refreshTypingStats(target: TextView) {
+        if (!engineReady) {
+            target.text = ""
+            return
+        }
+        val raw = try {
+            RimeBridge.nativeStatsTotals()
+        } catch (e: Throwable) {
+            ""
+        }
+        if (raw.isEmpty()) {
+            target.text = ""
+            return
+        }
+        val parts = raw.split("\u0001")
+        val totalChars = parts.getOrNull(0)?.toLongOrNull()
+        val todayChars = parts.getOrNull(1)?.toLongOrNull()
+        target.text = if (totalChars == null || todayChars == null) {
+            ""
+        } else {
+            "今日 $todayChars 字 · 累计 $totalChars 字"
+        }
+    }
+
     /** IO 线程预取后回主线程渲染：entry + 已解码缩略图。 */
     private data class PreparedHistory(
         val entry: ClipStore.Entry,
         val thumb: android.graphics.Bitmap?,
     )
+
+    /** A6 长按菜单：置顶/取消置顶、删除。置顶靠 SQL 层排序体现，不做角标。 */
+    private fun showHistoryEntryActions(entry: ClipStore.Entry, onlyImages: Boolean) {
+        // 无 pin 字段回传：当前置顶状态不明，菜单同时给出「置顶」与「取消置顶」。
+        val options = arrayOf("置顶", "取消置顶", "删除")
+        android.app.AlertDialog.Builder(this)
+            .setTitle(entry.text.replace('\n', ' ').take(24))
+            .setItems(options) { dialog, which ->
+                when (which) {
+                    0 -> ClipStore.setPinned(entry.id, true)
+                    1 -> ClipStore.setPinned(entry.id, false)
+                    2 -> ClipStore.delete(entry.id)
+                }
+                dialog.dismiss()
+                historyPanel?.let { populateHistory(it, onlyImages) }
+            }
+            .show()
+    }
 
     private fun renderHistoryList(
         panel: LinearLayout,
@@ -887,6 +1037,10 @@ class ShurufaImeService : InputMethodService() {
                     setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
                     // 微信输入法同款：点图先进预览键盘，再保存/发送
                     setOnClickListener { openImagePreview(entry.id) }
+                    setOnLongClickListener {
+                        showHistoryEntryActions(entry, onlyImages)
+                        true
+                    }
                 }
                 list.addView(thumb, LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -918,6 +1072,10 @@ class ShurufaImeService : InputMethodService() {
                             SendResult.FAILED -> showAttachmentError("文件发送失败")
                         }
                     }
+                    setOnLongClickListener {
+                        showHistoryEntryActions(entry, onlyImages)
+                        true
+                    }
                 }, LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -933,6 +1091,10 @@ class ShurufaImeService : InputMethodService() {
                 setOnClickListener {
                     currentInputConnection?.commitText(entry.text, 1)
                     toggleHistory()
+                }
+                setOnLongClickListener {
+                    showHistoryEntryActions(entry, onlyImages)
+                    true
                 }
             }, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1318,6 +1480,7 @@ class ShurufaImeService : InputMethodService() {
         RimeBridge.nativeReset()
         if (::keyArea.isInitialized && !symbolMode) rebuildKeys() // 刷新中英键帽
         sync()
+        updateModeBadge()
     }
 
     // ---------- 输入处理 ----------
@@ -1483,6 +1646,7 @@ class ShurufaImeService : InputMethodService() {
         val candidates = if (parts.size > 3) parts.subList(3, parts.size) else emptyList()
         ic.setComposingText(preedit, cursorPos)
         updateCandidates(preedit, candidates, highlighted)
+        updateModeBadge()
     }
 
     private fun updateCandidates(preedit: String, candidates: List<String>, highlighted: Int) {
@@ -1539,7 +1703,61 @@ class ShurufaImeService : InputMethodService() {
             setPadding(dp(if (compact) 15f else 8f), 0, dp(if (compact) 15f else 8f), 0)
             contentDescription = "第 ${index + 1} 候选词：$text"
             setOnClickListener { onCandidateSelect(index) }
+            // B8 长按菜单：复制 / 删除该词（用户词典词条）
+            setOnLongClickListener {
+                showCandidateActions(text, index)
+                true
+            }
         }
+
+    /** B8 候选长按菜单：复制 / 删除该词。 */
+    private fun showCandidateActions(text: String, index: Int) {
+        val options = arrayOf("复制", "删除该词")
+        android.app.AlertDialog.Builder(this)
+            .setTitle(text)
+            .setItems(options) { dialog, which ->
+                when (which) {
+                    0 -> {
+                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("候选词", text))
+                        Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show()
+                    }
+                    1 -> {
+                        val ok = try {
+                            engineReady && RimeBridge.nativeForgetOnCurrentPage(index)
+                        } catch (e: Throwable) {
+                            false
+                        }
+                        if (ok) {
+                            sync()
+                        } else {
+                            Toast.makeText(this, "该词不可删除", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    /**
+     * B9 中/英模式角标：解析 nativeStatus（空串=中文），ascii=1 显示「英」否则「中」。
+     * 只在候选面板可见时被调用（sync / onToggleLang 之后）。
+     */
+    private fun updateModeBadge() {
+        val badge = modeBadge ?: return
+        if (!engineReady) {
+            badge.text = "中"
+            return
+        }
+        val raw = try {
+            RimeBridge.nativeStatus()
+        } catch (e: Throwable) {
+            ""
+        }
+        val ascii = raw.split("\u0001").getOrNull(0) == "1"
+        badge.text = if (ascii) "英" else "中"
+    }
 
     private fun addExpandedCandidates(candidates: List<String>, highlighted: Int) {
         candidates.chunked(CandidatePageSpec.GRID_COLUMNS).forEachIndexed { rowIndex, row ->

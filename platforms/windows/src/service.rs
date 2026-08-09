@@ -5,6 +5,7 @@
 //! 同步回文档与候选窗。引擎不在本进程内 —— 用户词库锁冲突由此消除。
 
 use std::cell::RefCell;
+use std::time::{Duration, Instant, SystemTime};
 
 use windows::core::{implement, Interface, Ref, Result, BOOL, GUID};
 use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
@@ -17,6 +18,8 @@ use windows::Win32::UI::TextServices::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse;
 use windows_core::IUnknownImpl;
+
+use shurufa_options::ImeOptions;
 
 use crate::candidate_window::CandidateUi;
 use crate::composition::edit_session;
@@ -32,6 +35,12 @@ pub struct Inner {
     ui: CandidateUi,
     /// 仅用于排障日志：本进程是否已收到过按键
     saw_first_key: bool,
+    /// 用户选项缓存（options.json；加载失败回退默认）
+    opts: ImeOptions,
+    /// 最近一次检查 options.json 磁盘变化的时刻
+    opts_checked_at: Instant,
+    /// 当前已知的 options.json 修改时间（用于热重载判定）
+    opts_mtime: Option<SystemTime>,
 }
 
 #[implement(ITfTextInputProcessorEx, ITfKeyEventSink, ITfCompositionSink)]
@@ -49,12 +58,48 @@ impl TextService {
                 composition: None,
                 ui: CandidateUi::new(),
                 saw_first_key: false,
+                opts: shurufa_options::load(),
+                opts_checked_at: Instant::now(),
+                opts_mtime: None,
             }),
         }
     }
 }
 
 impl Inner {
+    /// 至多每 2 秒检查一次 options.json 的修改时间，变了就重载。
+    /// 不主动向引擎推状态（全角/标点默认由 schema 决定），只影响快捷键行为。
+    fn refresh_options(&mut self) {
+        if self.opts_checked_at.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.opts_checked_at = Instant::now();
+        let mtime = std::fs::metadata(shurufa_options::path())
+            .and_then(|m| m.modified())
+            .ok();
+        if mtime != self.opts_mtime {
+            self.opts_mtime = mtime;
+            self.opts = shurufa_options::load();
+            crate::debug_log(&format!("选项已重载：{:?}", self.opts));
+        }
+    }
+
+    /// 结束文档侧残留的 TSF 组合（切换中英文/标点/全角前的收尾，
+    /// 否则残留组合会把后续按键吃进去）。
+    fn end_pending_composition(&mut self, context: &ITfContext) {
+        if let Some(comp) = self.composition.take() {
+            let client_id = self.client_id;
+            if let Err(e) = edit_session(client_id, context, |ec| {
+                unsafe {
+                    set_composition_text(&comp, ec, "", 0)?;
+                    comp.EndComposition(ec)
+                }
+            }) {
+                crate::debug_log(&format!("结束残留组合失败：{e:?}"));
+            }
+        }
+    }
+
     /// 喂键给引擎并同步文档/候选窗；返回该键是否被输入法吃掉。
     fn handle_key(
         &mut self,
@@ -62,42 +107,72 @@ impl Inner {
         context: &ITfContext,
         wparam: WPARAM,
     ) -> bool {
+        let vk = wparam.0 as u32;
         let modifiers = keys::current_modifiers();
         let shift = modifiers & keys::MASK_SHIFT != 0;
+        let ctrl = modifiers & keys::MASK_CONTROL != 0;
+        let alt = modifiers & keys::MASK_ALT != 0;
+
         // Shift 单独按下：切换中英文（主流行为）。ToggleAscii 是唯一写路径，
         // 避免 OnTestKeyDown 只试不写导致的状态漂移。
         // 切换前必须把已有组合收尾，否则残留组合会把后续的英文/拼音都吃进去。
-        if wparam.0 as u32 == KeyboardAndMouse::VK_SHIFT.0 as u32 {
-            if let Some(comp) = self.composition.take() {
-                let client_id = self.client_id;
-                if let Err(e) = edit_session(client_id, context, |ec| {
-                    unsafe {
-                        set_composition_text(&comp, ec, "", 0)?;
-                        comp.EndComposition(ec)
-                    }
-                }) {
-                    crate::debug_log(&format!("Shift 前结束残留组合失败：{e:?}"));
-                }
+        if vk == KeyboardAndMouse::VK_SHIFT.0 as u32 {
+            if !self.opts.shift_switch_cn_en {
+                return false;
             }
+            self.end_pending_composition(context);
             if let Some(is_ascii) = self.client.toggle_ascii() {
                 crate::debug_log(&format!("Shift 切换中英文：ascii={is_ascii}"));
                 return true;
             }
             return false;
         }
+        // CapsLock：开启选项时切到英文直输（只进不出，回中文用 Shift）。
+        // 吃掉该键后系统不再翻转大写灯（OnTestKeyDown 已声明接管）。
+        if vk == KeyboardAndMouse::VK_CAPITAL.0 as u32 && self.opts.capslock_to_english {
+            self.end_pending_composition(context);
+            if self.client.get_option("ascii_mode") == Some(false) {
+                let is_ascii = self.client.toggle_ascii().unwrap_or(false);
+                crate::debug_log(&format!("CapsLock 切英文直输：ascii={is_ascii}"));
+            }
+            return true;
+        }
+        // Shift+Space：无组合时切换全/半角；有组合时按普通空格交给引擎。
+        if vk == KeyboardAndMouse::VK_SPACE.0 as u32
+            && shift
+            && !ctrl
+            && !alt
+            && self.opts.shift_space_full_shape
+            && self.composition.is_none()
+        {
+            let current = self.client.get_option("full_shape").unwrap_or(false);
+            let next = !current;
+            let ok = self.client.set_option("full_shape", next);
+            crate::debug_log(&format!("Shift+Space 切换全/半角：full_shape={next} ok={ok}"));
+            return true;
+        }
+        // Ctrl+.：切换中/英标点（ascii_punct）。必须放在 Ctrl/Alt 直通判断之前。
+        if vk == 0xBE && ctrl && !alt && self.opts.ctrl_period_ascii_punct {
+            self.end_pending_composition(context);
+            let current = self.client.get_option("ascii_punct").unwrap_or(false);
+            let next = !current;
+            let ok = self.client.set_option("ascii_punct", next);
+            crate::debug_log(&format!("Ctrl+. 切换中/英标点：ascii_punct={next} ok={ok}"));
+            return true;
+        }
         // Ctrl/Alt 组合键与不认识的键一律放行
         if modifiers & (keys::MASK_CONTROL | keys::MASK_ALT) != 0 {
             return false;
         }
-        let Some(keysym) = keys::vk_to_keysym(wparam.0 as u32, shift) else {
+        let Some(keysym) = keys::vk_to_keysym(vk, shift) else {
             // 引擎连接失败：把当前按键作为原字符落入文档（中文兜底），
             // 避免“只能输入英文”。
-            let _ = self.fallback_commit(context, wparam.0 as u32, shift);
+            let _ = self.fallback_commit(context, vk, shift);
             return false;
         };
         let Some((eaten, commit, ctx)) = self.client.process_key(keysym, modifiers) else {
             // 引擎连接失败：把当前按键作为原字符落入文档，避免“只能输入英文”。
-            let _ = self.fallback_commit(context, wparam.0 as u32, shift);
+            let _ = self.fallback_commit(context, vk, shift);
             crate::debug_log("引擎 IPC 不可用，按键直通");
             return false;
         };
@@ -310,7 +385,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     ) -> Result<BOOL> {
         // TSF 会先试探再投递实际按键。这里绝不能向引擎喂键或写文档，
         // 否则只调用试探回调的宿主会丢失中文输入并退化成英文直通。
-        Ok(keys::is_ime_key(wparam.0 as u32, keys::current_modifiers()).into())
+        // CapsLock 接管与否取决于选项缓存（不读文件，只有 handle_key 周期性重载）。
+        let caps_managed = self.inner.borrow().opts.capslock_to_english;
+        Ok(keys::is_ime_key(wparam.0 as u32, keys::current_modifiers(), caps_managed).into())
     }
 
     fn OnKeyDown(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
@@ -321,6 +398,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             inner.saw_first_key = true;
             crate::debug_log(&format!("首个按键到达（vk=0x{:X}）", wparam.0));
         }
+        inner.refresh_options();
         let eaten = inner.handle_key(&sink, context, wparam);
         Ok(eaten.into())
     }

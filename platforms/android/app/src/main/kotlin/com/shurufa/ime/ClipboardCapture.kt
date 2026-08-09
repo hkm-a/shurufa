@@ -8,6 +8,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.provider.OpenableColumns
 import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 
 /** 已从系统剪贴板物化、可安全跨线程发送的内容。 */
 internal sealed interface CapturedClipboard {
@@ -54,7 +55,38 @@ internal class ClipboardCapture(private val context: Context) {
         val text = item.coerceToText(context)?.toString()?.takeIf { it.isNotBlank() } ?: return null
         // 文本短路：远端刚塞入 1s 内的相同文本不再回送
         if (ClipboardTypePolicy.isRecentEcho(text)) return null
+        // C14 第二道闸门（应用写入回声）：某些 ROM（尤其荣耀）在我们把远端文本写进
+        // 系统剪贴板 1~2s 后，再次经 onPrimaryClipChanged 触发 capture()，会把同一条
+        // 重新入库并回推对端形成抖动。这里以「最新文本条目签名」判定：
+        // 2s 窗口内签名（sha256 前 16 hex）一致即视为自身写入的回声，跳过。
+        // 注：latestSignature 是单行 SQLite 读，量级远小于 list(30)，可接受。
+        val signature = try {
+            ClipStore.latestSignature()
+        } catch (e: Throwable) {
+            ""
+        }
+        if (signature.isNotEmpty()) {
+            val parts = signature.split("\u0001")
+            val updatedMs = parts.getOrNull(0)?.toLongOrNull()
+            val hash16 = parts.getOrNull(1)
+            if (updatedMs != null && !hash16.isNullOrEmpty() &&
+                System.currentTimeMillis() - updatedMs < 2_000L &&
+                hash16 == sha256Hex16(text)
+            ) {
+                return null
+            }
+        }
         return CapturedClipboard.Text(text)
+    }
+
+    /** sha256(text UTF-8) 前 8 字节 → 16 位小写 hex，与 Rust 侧签名协议一致。 */
+    private fun sha256Hex16(text: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
+        val out = StringBuilder(16)
+        for (i in 0 until 8) {
+            out.append(String.format("%02x", digest[i]))
+        }
+        return out.toString()
     }
 
     private fun captureUri(description: ClipDescription, uri: Uri): CapturedClipboard? {

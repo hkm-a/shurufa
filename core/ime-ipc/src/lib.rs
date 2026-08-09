@@ -59,6 +59,12 @@ pub struct Context {
     pub page_size: usize,
     /// 是否为候选最后一页。
     pub is_last_page: bool,
+    /// 引擎当前是否英文直输（由服务侧填充；默认 false 兼容旧 JSON）。
+    #[serde(default)]
+    pub is_ascii: bool,
+    /// 引擎当前是否全角（由服务侧填充）。
+    #[serde(default)]
+    pub is_full_shape: bool,
 }
 
 /// 服务 → 客户端：一次操作的应答。
@@ -151,6 +157,9 @@ pub fn context_from_bridge(ctx: &ime_bridge::Context) -> Context {
         page_no: ctx.page_no,
         page_size: ctx.page_size,
         is_last_page: ctx.is_last_page,
+        // 状态位需要会话访问，此处没有 session，置默认；由 server.rs 填充
+        is_ascii: false,
+        is_full_shape: false,
     }
 }
 
@@ -186,6 +195,7 @@ mod tests {
                 page_no: 0,
                 page_size: 9,
                 is_last_page: false,
+                ..Context::default()
             },
         };
         let bytes = encode_response(&resp).unwrap();

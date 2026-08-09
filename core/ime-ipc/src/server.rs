@@ -60,11 +60,22 @@ fn handle_request(
         Request::CreateSession => Response::Session(Some(1)),
         Request::DestroySession => Response::Ok,
         Request::ProcessKey { keysym, mask } => {
+            // 打字统计埋点：按键必计一次；上屏非空时计字符数（失败静默）
+            shurufa_options::stats::note_keys(1);
             let eaten = s.process_key(keysym, mask);
-            let context = crate::context_from_bridge(&s.context());
+            let mut context = crate::context_from_bridge(&s.context());
+            let (is_ascii, is_full_shape, _) = s.status_bits();
+            context.is_ascii = is_ascii;
+            context.is_full_shape = is_full_shape;
+            let commit = s.commit();
+            if let Some(text) = commit.as_deref() {
+                if !text.is_empty() {
+                    shurufa_options::stats::note_chars(text.chars().count());
+                }
+            }
             Response::ProcessKey {
                 eaten,
-                commit: s.commit(),
+                commit,
                 context,
             }
         }

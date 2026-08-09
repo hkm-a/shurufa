@@ -52,6 +52,190 @@ pub fn cli_update(manifest_url: &str) {
     }
 }
 
+/// 打印当前词库版本（无 `.current-revision` 时为发布自带的内置版本）。
+pub fn cli_current() {
+    match read_current_revision(&schema_dir()) {
+        Some(revision) => println!("{revision}"),
+        None => println!("内置"),
+    }
+}
+
+/// 回滚到上次更新前的词库；无备份时打印提示并正常返回。
+pub fn cli_rollback() {
+    let schema_dir = schema_dir();
+    match rollback(&schema_dir) {
+        Ok(Some(revision)) => println!("已回滚到 {revision}"),
+        Ok(None) => println!("无可回滚版本"),
+        Err(error) => {
+            eprintln!("词库回滚失败：{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn schemas_backup_dir(schema_dir: &Path) -> PathBuf {
+    schema_dir.join(".backup")
+}
+
+fn current_revision_path(schema_dir: &Path) -> PathBuf {
+    schema_dir.join(".current-revision")
+}
+
+fn read_current_revision(schema_dir: &Path) -> Option<String> {
+    let revision = fs::read_to_string(current_revision_path(schema_dir)).ok()?;
+    let revision = revision.trim().to_string();
+    if revision.is_empty() {
+        None
+    } else {
+        Some(revision)
+    }
+}
+
+/// 更新成功后生成回滚快照：被替换的旧文件复制到 `<schemas>/.backup/`
+/// （先清空再复制，最多保留最近一代），新增文件记入 `.backup/.added` 清单
+/// （回滚时删除），上一版 revision 记入 `.backup/.previous-revision`，
+/// 最后把本次 revision 写入 `<schemas>/.current-revision`。
+fn persist_revision_snapshot(
+    schema_dir: &Path,
+    applied: &[AppliedFile],
+    new_revision: &str,
+) -> Result<(), String> {
+    let previous = read_current_revision(schema_dir);
+    let backup_dir = schemas_backup_dir(schema_dir);
+    if backup_dir.exists() {
+        fs::remove_dir_all(&backup_dir).map_err(|e| format!("清理旧回滚备份失败: {e}"))?;
+    }
+    fs::create_dir_all(&backup_dir).map_err(|e| format!("创建回滚备份目录失败: {e}"))?;
+
+    let mut added = Vec::new();
+    for file in applied {
+        if file.existed {
+            let dest = backup_dir.join(
+                file.target
+                    .strip_prefix(schema_dir)
+                    .map_err(|_| "词库备份路径解析失败")?,
+            );
+            let parent = dest.parent().ok_or("词库备份路径没有父目录")?;
+            fs::create_dir_all(parent).map_err(|e| format!("创建回滚备份子目录失败: {e}"))?;
+            // staging 里的 .backup 与目标一一对应，复制旧文件而非移动，
+            // staging 目录随后整体删除
+            fs::copy(&file.backup, &dest).map_err(|e| format!("写入回滚备份失败: {e}"))?;
+        } else {
+            added.push(
+                file.target
+                    .strip_prefix(schema_dir)
+                    .map_err(|_| "词库备份路径解析失败")?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
+    fs::write(backup_dir.join(".added"), added.join("\n"))
+        .map_err(|e| format!("写入新增清单失败: {e}"))?;
+    fs::write(
+        backup_dir.join(".previous-revision"),
+        previous.unwrap_or_default(),
+    )
+    .map_err(|e| format!("写入上一版本号失败: {e}"))?;
+    fs::write(current_revision_path(schema_dir), new_revision)
+        .map_err(|e| format!("写入当前版本号失败: {e}"))?;
+    Ok(())
+}
+
+/// 用 `<schemas>/.backup` 覆盖回 schemas 目录：恢复旧文件、删除 `.added`
+/// 清单里的新增文件、把 `.previous-revision` 写回 `.current-revision`，
+/// 随后重建二进制词典。返回回滚到的版本号；无备份返回 None。
+fn rollback(schema_dir: &Path) -> Result<Option<String>, String> {
+    let backup_dir = schemas_backup_dir(schema_dir);
+    if !backup_dir.is_dir() {
+        return Ok(None);
+    }
+
+    // 1. 恢复被替换的旧文件（跳过备份元数据文件）
+    for entry in fs::read_dir(&backup_dir).map_err(|e| format!("读取回滚备份失败: {e}"))? {
+        let entry = entry.map_err(|e| format!("读取回滚备份失败: {e}"))?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            // .added / .previous-revision 等元数据在后续单独处理
+            continue;
+        }
+        if path.is_dir() {
+            restore_backup_tree(&path, &backup_dir, schema_dir)?;
+        } else {
+            restore_backup_file(&path, &backup_dir, schema_dir)?;
+        }
+    }
+
+    // 2. 删除本次更新新增的文件
+    let added_path = backup_dir.join(".added");
+    if let Ok(list) = fs::read_to_string(&added_path) {
+        for relative in list.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            let relative_path = Path::new(relative);
+            if relative_path
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+            {
+                return Err(format!("回滚新增清单含非法路径：{relative}"));
+            }
+            let target = schema_dir.join(relative_path);
+            if target.exists() {
+                fs::remove_file(&target)
+                    .map_err(|e| format!("删除新增词库 {relative} 失败: {e}"))?;
+            }
+        }
+    }
+
+    // 3. 版本号回写（上一版可能为空，表示内置版本）
+    let previous = fs::read_to_string(backup_dir.join(".previous-revision"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if previous.is_empty() {
+        let _ = fs::remove_file(current_revision_path(schema_dir));
+    } else {
+        fs::write(current_revision_path(schema_dir), &previous)
+            .map_err(|e| format!("写回当前版本号失败: {e}"))?;
+    }
+
+    // 4. 备份已消费：只允许回滚一代
+    fs::remove_dir_all(&backup_dir).map_err(|e| format!("清理回滚备份失败: {e}"))?;
+
+    rebuild(schema_dir)?;
+    if previous.is_empty() {
+        Ok(Some("内置".into()))
+    } else {
+        Ok(Some(previous))
+    }
+}
+
+/// 递归恢复备份树（备份目录下的子目录，如 cn_dicts/）。
+fn restore_backup_tree(dir: &Path, backup_root: &Path, schema_dir: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(dir).map_err(|e| format!("读取回滚备份失败: {e}"))? {
+        let entry = entry.map_err(|e| format!("读取回滚备份失败: {e}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            restore_backup_tree(&path, backup_root, schema_dir)?;
+        } else {
+            restore_backup_file(&path, backup_root, schema_dir)?;
+        }
+    }
+    Ok(())
+}
+
+/// 把单个备份文件复制回 schemas 目录对应位置。
+fn restore_backup_file(file: &Path, backup_root: &Path, schema_dir: &Path) -> Result<(), String> {
+    let relative = file
+        .strip_prefix(backup_root)
+        .map_err(|_| "词库备份路径解析失败")?;
+    let target = schema_dir.join(relative);
+    let parent = target.parent().ok_or("词库恢复路径没有父目录")?;
+    fs::create_dir_all(parent).map_err(|e| format!("创建词库恢复目录失败: {e}"))?;
+    fs::copy(file, &target).map_err(|e| format!("恢复 {} 失败: {e}", target.display()))?;
+    Ok(())
+}
+
 fn schema_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("SHURUFA_SCHEMAS") {
         return PathBuf::from(path);
@@ -91,7 +275,11 @@ fn update_from_url(schema_dir: &Path, manifest_url: &str) -> Result<String, Stri
         ensure_deployer(schema_dir)?;
         let applied = apply_staged(schema_dir, &stage, &manifest.files)?;
         match rebuild(schema_dir) {
-            Ok(()) => Ok(manifest.revision.clone()),
+            Ok(()) => {
+                // 部署成功后才固化回滚快照与版本号；快照失败不回退已部署内容
+                persist_revision_snapshot(schema_dir, &applied, &manifest.revision)?;
+                Ok(manifest.revision.clone())
+            }
             Err(error) => {
                 rollback_staged(&applied).map_err(|rollback_error| {
                     format!("{error}；恢复旧词库失败：{rollback_error}")
@@ -408,5 +596,81 @@ mod tests {
             let bytes = download(&file.url, file.size).unwrap();
             verify_file(file, &bytes).unwrap();
         }
+    }
+
+    #[test]
+    fn 回滚快照记录旧文件与新增清单() {
+        let root = std::env::temp_dir().join(format!("shurufa-dict-snap-test-{}", std::process::id()));
+        let schema_dir = root.join("schemas");
+        let stage = root.join("stage");
+        fs::create_dir_all(schema_dir.join("cn_dicts")).unwrap();
+        fs::create_dir_all(stage.join("cn_dicts")).unwrap();
+        fs::write(schema_dir.join("cn_dicts/existing.yaml"), b"old").unwrap();
+        fs::write(stage.join("cn_dicts/existing.yaml"), b"new").unwrap();
+        fs::write(stage.join("cn_dicts/added.yaml"), b"added").unwrap();
+        let files = vec![
+            ManifestFile {
+                path: "cn_dicts/existing.yaml".into(),
+                url: "https://example.com/existing.yaml".into(),
+                fallback_urls: vec![],
+                sha256: "a".repeat(64),
+                size: 1,
+            },
+            ManifestFile {
+                path: "cn_dicts/added.yaml".into(),
+                url: "https://example.com/added.yaml".into(),
+                fallback_urls: vec![],
+                sha256: "a".repeat(64),
+                size: 1,
+            },
+        ];
+        let applied = apply_staged(&schema_dir, &stage, &files).unwrap();
+
+        // 无版本时首更：previous 应为空串
+        persist_revision_snapshot(&schema_dir, &applied, "r1").unwrap();
+        assert_eq!(read_current_revision(&schema_dir).as_deref(), Some("r1"));
+        let backup = schemas_backup_dir(&schema_dir);
+        assert_eq!(
+            fs::read(backup.join("cn_dicts/existing.yaml")).unwrap(),
+            b"old"
+        );
+        assert_eq!(fs::read_to_string(backup.join(".added")).unwrap(), "cn_dicts/added.yaml");
+        assert_eq!(fs::read_to_string(backup.join(".previous-revision")).unwrap(), "");
+
+        // 再更一代：快照被覆盖（只保留最近一代），previous = r1
+        fs::write(stage.join("cn_dicts/existing.yaml"), b"newer").unwrap();
+        // added.yaml 本次不在清单内，模拟其作为既有文件存在
+        let files2 = vec![ManifestFile {
+            path: "cn_dicts/existing.yaml".into(),
+            url: "https://example.com/existing.yaml".into(),
+            fallback_urls: vec![],
+            sha256: "a".repeat(64),
+            size: 1,
+        }];
+        let applied2 = apply_staged(&schema_dir, &stage, &files2).unwrap();
+        persist_revision_snapshot(&schema_dir, &applied2, "r2").unwrap();
+        assert_eq!(read_current_revision(&schema_dir).as_deref(), Some("r2"));
+        assert_eq!(
+            fs::read(backup.join("cn_dicts/existing.yaml")).unwrap(),
+            b"new"
+        );
+        assert_eq!(fs::read_to_string(backup.join(".added")).unwrap(), "");
+        assert_eq!(fs::read_to_string(backup.join(".previous-revision")).unwrap(), "r1");
+
+        // 回滚（跳过重建）：恢复 r1 的文件状态并回写版本号
+        let previous = fs::read_to_string(backup.join(".previous-revision")).unwrap();
+        assert_eq!(previous.trim(), "r1");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn 无备份时回滚返回空() {
+        let root =
+            std::env::temp_dir().join(format!("shurufa-dict-rb-none-test-{}", std::process::id()));
+        let schema_dir = root.join("schemas");
+        fs::create_dir_all(&schema_dir).unwrap();
+        assert_eq!(rollback(&schema_dir).unwrap(), None);
+        assert_eq!(read_current_revision(&schema_dir), None);
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -191,4 +191,23 @@ impl ImeClient {
             _ => None,
         }
     }
+
+    /// 读取布尔开关（如 "full_shape"、"ascii_punct"）；连接失败返回 None。
+    pub fn get_option(&mut self, name: &str) -> Option<bool> {
+        match self.roundtrip(&Request::GetOption(name.to_string()))? {
+            Response::Option(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// 设置布尔开关；成功返回 true。
+    pub fn set_option(&mut self, name: &str, value: bool) -> bool {
+        matches!(
+            self.roundtrip(&Request::SetOption {
+                name: name.to_string(),
+                value,
+            }),
+            Some(Response::Ok)
+        )
+    }
 }

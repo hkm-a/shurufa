@@ -70,6 +70,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeInit(
         || {
             let shared = jstring_to_string(&mut env, &shared_dir);
             let user = jstring_to_string(&mut env, &user_dir);
+            // Android 没有 APPDATA：options/stats 的数据目录指向应用用户目录，
+            // 必须在 Engine::init 之前设置（options crate 亦可能被引擎路径引用）。
+            std::env::set_var("SHURUFA_DATA_DIR", &user);
             let engine = ENGINE.get_or_init(|| {
                 Engine::init(std::path::Path::new(&shared), std::path::Path::new(&user))
             });
@@ -100,6 +103,8 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeProcessKey(
 ) -> jboolean {
     jni_catch(
         || {
+            // 打字统计埋点：每次按键计一次（进程内缓存 + 定期落盘，开销可忽略）
+            shurufa_options::stats::note_keys(1);
             let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             match session.as_ref() {
                 Some(s) => s.process_key(keysym, mask) as jboolean,
@@ -124,6 +129,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeCommit(
                 .as_ref()
                 .and_then(|s| s.commit())
                 .unwrap_or_default();
+            if !text.is_empty() {
+                shurufa_options::stats::note_chars(text.chars().count());
+            }
             to_jstring(&env, &text)
         },
         default,
@@ -250,5 +258,68 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeIsAscii(
             }
         },
         0,
+    )
+}
+
+/// 取引擎状态串：`is_ascii \u{1} full_shape \u{1} ascii_punct`，各为 "0"/"1"；无会话返回空串。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeStatus(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let default = to_jstring(&env, "");
+    jni_catch(
+        || {
+            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(s) = session.as_ref() else {
+                return to_jstring(&env, "");
+            };
+            let (is_ascii, is_full_shape, is_ascii_punct) = s.status_bits();
+            let text = format!(
+                "{}\u{1}{}\u{1}{}",
+                is_ascii as u8, is_full_shape as u8, is_ascii_punct as u8
+            );
+            to_jstring(&env, &text)
+        },
+        default,
+    )
+}
+
+/// 删除当前页第 index 个候选（"忘记该词"）；成功返回 true。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeForgetOnCurrentPage(
+    _env: JNIEnv,
+    _class: JClass,
+    index: jint,
+) -> jboolean {
+    jni_catch(
+        || {
+            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match session.as_ref() {
+                Some(s) => s.forget_on_current_page(index.max(0) as usize) as jboolean,
+                None => 0,
+            }
+        },
+        0,
+    )
+}
+
+/// 取打字统计合计：`totalChars \u{1} todayChars \u{1} totalKeys \u{1} todayKeys`；无数据全 0。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeStatsTotals(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let default = to_jstring(&env, "");
+    jni_catch(
+        || {
+            let t = shurufa_options::stats::totals();
+            let text = format!(
+                "{}\u{1}{}\u{1}{}\u{1}{}",
+                t.total_chars, t.today_chars, t.total_keys, t.today_keys
+            );
+            to_jstring(&env, &text)
+        },
+        default,
     )
 }

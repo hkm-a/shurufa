@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core/ime-bridge", "core/ime-ipc", "core/clipboard", "core/sync", "platforms/windows", "platforms/windows-host", "platforms/windows-algo", "platforms/windows-settings", "platforms/relay", "platforms/android/rimejni"]
+members = ["core/options", "core/ime-bridge", "core/ime-ipc", "core/clipboard", "core/sync", "platforms/windows", "platforms/windows-host", "platforms/windows-algo", "platforms/windows-settings", "platforms/relay", "platforms/android/rimejni"]
 
 [workspace.package]
 edition = "2021"

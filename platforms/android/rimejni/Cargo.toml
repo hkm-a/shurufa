@@ -11,7 +11,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ime-bridge = { path = "../../../core/ime-bridge" }
+shurufa-options = { path = "../../../core/options" }
 sync-core = { path = "../../../core/sync" }
 clipboard-store = { path = "../../../core/clipboard" }
+sha2 = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 jni = "0.21"

@@ -315,6 +315,34 @@ impl Session<'_> {
         let _guard = self.engine.lock();
         unsafe { (self.engine.api().change_page)(self.id, backward as ffi::Bool) != 0 }
     }
+
+    /// 删除当前页第 `index` 个候选（"忘记该词"）；成功返回 true。
+    pub fn forget_on_current_page(&self, index: usize) -> bool {
+        let _guard = self.engine.lock();
+        unsafe { (self.engine.api().delete_candidate_on_current_page)(self.id, index) != 0 }
+    }
+
+    /// 读取引擎状态位：(是否英文直输, 是否全角, 是否英文标点)。
+    /// 失败（取不到状态）时按默认中文/半角/中文标点返回。
+    pub fn status_bits(&self) -> (bool, bool, bool) {
+        let _guard = self.engine.lock();
+        let api = self.engine.api();
+        unsafe {
+            let mut status = MaybeUninit::<ffi::RimeStatus>::zeroed().assume_init();
+            ffi::rime_struct_init::<ffi::RimeStatus>(&mut status.data_size);
+            if (api.get_status)(self.id, &mut status) == 0 {
+                return (false, false, false);
+            }
+            let bits = (
+                status.is_ascii_mode != 0,
+                status.is_full_shape != 0,
+                status.is_ascii_punct != 0,
+            );
+            // RimeStatus 内含 C 字符串，必须交还引擎释放
+            (api.free_status)(&mut status);
+            bits
+        }
+    }
 }
 
 impl Drop for Session<'_> {

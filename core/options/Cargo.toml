@@ -1,0 +1,13 @@
+[package]
+name = "shurufa-options"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "输入法用户选项（options.json）与打字统计（stats.json）的单一事实源"
+
+[lib]
+name = "shurufa_options"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

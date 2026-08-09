@@ -1664,6 +1664,7 @@ dependencies = [
  "ime-bridge",
  "serde",
  "serde_json",
+ "shurufa-options",
  "windows 0.62.2",
 ]
 
@@ -3177,6 +3178,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shurufa-options"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "shurufa-relay"
 version = "0.1.0"
 dependencies = [
@@ -3191,6 +3200,8 @@ dependencies = [
  "clipboard-store",
  "ime-bridge",
  "jni",
+ "sha2 0.11.0",
+ "shurufa-options",
  "sync-core",
  "tokio",
 ]
@@ -3201,6 +3212,7 @@ version = "0.1.0"
 dependencies = [
  "clipboard-store",
  "serde",
+ "shurufa-options",
  "sync-core",
  "tauri",
  "tauri-build",
@@ -3214,6 +3226,7 @@ dependencies = [
  "ime-ipc",
  "serde",
  "serde_json",
+ "shurufa-options",
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-registry",

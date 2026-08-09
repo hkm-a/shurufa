@@ -11,7 +11,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use shurufa_options::ImeOptions;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -366,6 +367,91 @@ fn clear_unpinned_history() -> Result<usize, String> {
         .map_err(|error| format!("清空未置顶历史失败：{error}"))
 }
 
+/// 输入法四项快捷键选项（options.json 单一事实源，TSF 端 2 秒内热加载）。
+#[derive(Serialize, Deserialize)]
+struct ImeOptionsDto {
+    shift_switch_cn_en: bool,
+    shift_space_full_shape: bool,
+    ctrl_period_ascii_punct: bool,
+    capslock_to_english: bool,
+}
+
+impl From<ImeOptions> for ImeOptionsDto {
+    fn from(o: ImeOptions) -> Self {
+        Self {
+            shift_switch_cn_en: o.shift_switch_cn_en,
+            shift_space_full_shape: o.shift_space_full_shape,
+            ctrl_period_ascii_punct: o.ctrl_period_ascii_punct,
+            capslock_to_english: o.capslock_to_english,
+        }
+    }
+}
+
+impl From<ImeOptionsDto> for ImeOptions {
+    fn from(d: ImeOptionsDto) -> Self {
+        Self {
+            shift_switch_cn_en: d.shift_switch_cn_en,
+            shift_space_full_shape: d.shift_space_full_shape,
+            ctrl_period_ascii_punct: d.ctrl_period_ascii_punct,
+            capslock_to_english: d.capslock_to_english,
+        }
+    }
+}
+
+#[tauri::command]
+fn ime_options() -> ImeOptionsDto {
+    shurufa_options::load().into()
+}
+
+#[tauri::command]
+fn save_ime_options(opts: ImeOptionsDto) -> Result<(), String> {
+    shurufa_options::save(&opts.into()).map_err(|error| format!("保存输入选项失败：{error}"))
+}
+
+#[derive(Serialize)]
+struct DictionaryInfo {
+    revision: String,
+}
+
+async fn run_host_capture(args: &[&str]) -> Result<String, String> {
+    let executable = sibling_exe("shurufa-host.exe");
+    let arguments: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
+    run_blocking(move || {
+        let output = Command::new(executable)
+            .args(arguments)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|error| format!("无法启动后台宿主：{error}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if output.status.success() {
+            Ok(stdout)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            Err(if stderr.is_empty() {
+                format!("后台宿主退出码 {:?}：{}", output.status.code(), stdout)
+            } else {
+                format!("后台宿主退出码 {:?}：{}", output.status.code(), stderr)
+            })
+        }
+    })
+    .await
+}
+
+/// 当前词典 revision（无记录时为"内置"）。
+#[tauri::command]
+async fn dictionary_info() -> Result<DictionaryInfo, String> {
+    let revision = run_host_capture(&["dict-current"]).await?;
+    Ok(DictionaryInfo {
+        revision: if revision.is_empty() { "内置".to_owned() } else { revision },
+    })
+}
+
+/// 回滚到上一代词典并重建。
+#[tauri::command]
+async fn rollback_dictionary() -> Result<String, String> {
+    run_host_capture(&["dict-rollback"]).await
+}
+
 fn main() {
     let builder = tauri::Builder::default().invoke_handler(tauri::generate_handler![
         dashboard_state,
@@ -380,7 +466,11 @@ fn main() {
         copy_history,
         set_history_pinned,
         delete_history,
-        clear_unpinned_history
+        clear_unpinned_history,
+        ime_options,
+        save_ime_options,
+        dictionary_info,
+        rollback_dictionary
     ]);
     #[cfg(feature = "ui-e2e")]
     let builder = builder.on_page_load(|webview, payload| {

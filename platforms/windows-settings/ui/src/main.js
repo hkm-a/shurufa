@@ -73,6 +73,9 @@ let dashboard = {
 let historyEntries = [];
 let historyQuery = "";
 let notice = null;
+// 输入法四项快捷键选项；null 表示尚未加载（ssr/失败场景一律禁用态）
+let imeOptions = null;
+let dictionaryInfo = { revision: "" };
 
 const app = document.querySelector("#app");
 
@@ -170,11 +173,12 @@ function historyPage() {
 }
 
 function dictionaryPage() {
+  const revision = dictionaryInfo.revision || "读取中…";
   return `
     <section class="page settings-page">
       <header class="page-header"><div><p class="eyebrow">DICTIONARY</p><h1>词库</h1></div></header>
       <article class="setting-panel dictionary-panel">
-        <div class="setting-row"><div class="row-icon coral"><i data-lucide="book-open-text"></i></div><div><h3>热门云词库</h3><p>rime-ice · 常用词与流行表达</p></div><button class="outline-action" data-action="update-dictionary"><i data-lucide="refresh-cw"></i>更新词库</button></div>
+        <div class="setting-row"><div class="row-icon coral"><i data-lucide="book-open-text"></i></div><div><h3>热门云词库</h3><p>rime-ice · 常用词与流行表达</p><p class="field-note">当前词典版本：${escapeHtml(revision)}</p></div><div class="row-side"><button class="outline-action" data-action="update-dictionary"><i data-lucide="refresh-cw"></i>更新词库</button><button class="outline-action" data-action="rollback-dictionary"><i data-lucide="arrow-up-right"></i>回滚到上一版</button></div></div>
         <div class="divider"></div>
         <div class="setting-row"><div class="row-icon"><i data-lucide="shield-check"></i></div><div><h3>本地校验</h3><p>下载完成后校验内容，再替换本地词典</p></div><span class="row-state">已保护</span></div>
       </article>
@@ -196,10 +200,30 @@ function syncPage() {
     </section>`;
 }
 
+function imeOptionsPanel() {
+  if (!imeOptions) {
+    return `<article class="setting-panel"><div class="setting-row"><div class="row-icon"><i data-lucide="keyboard"></i></div><div><h3>输入选项</h3><p>读取中…</p></div></div></article>`;
+  }
+  const items = [
+    ["shift_switch_cn_en", "Shift 切换中英文", "按下 Shift 即在中文/英文直输之间切换"],
+    ["shift_space_full_shape", "Shift+空格 切换全角/半角", "无组合时切换空格与字母的全/半角"],
+    ["ctrl_period_ascii_punct", "Ctrl+. 切换中文/英文标点", "收尾当前组合后切换标点全/半角"],
+    ["capslock_to_english", "CapsLock 直接输入英文", "按下 CapsLock 即切到英文直输（再按 Shift 回中文）"]
+  ];
+  const rows = items
+    .map(([key, title, desc]) => {
+      const checked = imeOptions[key] ? "checked" : "";
+      return `<div class="setting-row"><div class="row-icon"><i data-lucide="circle-dot"></i></div><label class="setting-toggle"><div><h3>${title}</h3><p>${desc}</p></div></label><label class="switch"><input type="checkbox" data-ime-option="${key}" ${checked} /><span></span></label></div>`;
+    })
+    .join(`<div class="divider"></div>`);
+  return `<article class="setting-panel ime-options-panel"><div class="panel-heading"><div class="row-icon blue"><i data-lucide="keyboard"></i></div><div><h3>输入选项</h3><p>全部对正在输入的应用热生效，延迟约 2 秒</p></div></div>${rows}</article>`;
+}
+
 function settingsPage() {
   return `
     <section class="page settings-page">
       <header class="page-header"><div><p class="eyebrow">PREFERENCES</p><h1>偏好</h1></div></header>
+      ${imeOptionsPanel()}
       <article class="setting-panel">
         <div class="setting-row"><div class="row-icon"><i data-lucide="settings-2"></i></div><div><h3>系统输入法</h3><p>管理语言、输入法和默认输入法</p></div><button class="outline-action" data-action="open-settings"><i data-lucide="arrow-up-right"></i>打开设置</button></div>
         <div class="divider"></div>
@@ -235,6 +259,23 @@ function render() {
       void handleAction(button);
     };
   });
+  // 四项输入选项：change 即存，不做提交按钮
+  app.querySelectorAll("input[data-ime-option]").forEach((input) => {
+    input.onchange = () => {
+      const key = input.dataset.imeOption;
+      if (!key || !imeOptions) return;
+      const next = { ...imeOptions, [key]: input.checked };
+      invoke("save_ime_options", { opts: next })
+        .then(() => {
+          imeOptions = next;
+          showToast("已保存");
+        })
+        .catch((error) => {
+          input.checked = !input.checked;
+          showToast(String(error), true);
+        });
+    };
+  });
 }
 
 async function refreshDashboard() {
@@ -245,6 +286,18 @@ async function refreshHistory() {
   historyEntries = await invoke("history_entries");
 }
 
+async function refreshImeOptions() {
+  imeOptions = await invoke("ime_options");
+}
+
+async function refreshDictionaryInfo() {
+  try {
+    dictionaryInfo = await invoke("dictionary_info");
+  } catch (error) {
+    dictionaryInfo = { revision: "读取失败" };
+  }
+}
+
 async function navigateTo(page) {
   activePage = page;
   if (page === "history") {
@@ -252,6 +305,19 @@ async function navigateTo(page) {
       await refreshHistory();
     } catch (error) {
       showToast(String(error), true);
+    }
+  } else if (page === "settings") {
+    try {
+      await refreshImeOptions();
+    } catch (error) {
+      imeOptions = null;
+      showToast(String(error), true);
+    }
+  } else if (page === "dictionary") {
+    try {
+      await refreshDictionaryInfo();
+    } catch (_error) {
+      // 失败时 dictionaryPage 内已做兜底
     }
   }
   render();
@@ -276,6 +342,22 @@ async function handleAction(button) {
       "refresh-history": [undefined, undefined, "历史已刷新"],
       refresh: [undefined, undefined, "后台状态已刷新"]
     };
+    if (action === "rollback-dictionary") {
+      const last = dictionaryInfo.revision || "上一版";
+      if (!window.confirm(`将回滚到 ${last}，继续？`)) {
+        render();
+        return;
+      }
+      try {
+        const result = await invoke("rollback_dictionary");
+        await refreshDictionaryInfo().catch(() => {});
+        render();
+        showToast(result || "已回滚");
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
     const [command, args, success, delay] = actions[action];
     if (command) await invoke(command, args);
     if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));

@@ -16,6 +16,7 @@ ui-e2e = []
 [dependencies]
 clipboard-store = { path = "../../core/clipboard" }
 serde = { version = "1", features = ["derive"] }
+shurufa-options = { path = "../../core/options" }
 sync-core = { path = "../../core/sync" }
 tauri = { version = "2", features = [] }
 

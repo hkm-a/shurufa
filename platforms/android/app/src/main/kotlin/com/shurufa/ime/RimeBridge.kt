@@ -35,4 +35,13 @@ object RimeBridge {
     external fun nativeToggleAscii(): Boolean
 
     external fun nativeIsAscii(): Boolean
+
+    /** 引擎状态快照："is_ascii FIELD full_shape FIELD ascii_punct"，取值 "0"/"1"；无会话返回空串。 */
+    external fun nativeStatus(): String
+
+    /** 删除当前页第 index 个候选（用户词典词条），成功返回 true。 */
+    external fun nativeForgetOnCurrentPage(index: Int): Boolean
+
+    /** 打字统计："totalChars FIELD todayChars FIELD totalKeys FIELD todayKeys"；无数据返回空串。 */
+    external fun nativeStatsTotals(): String
 }

@@ -22,6 +22,13 @@ object ClipStore {
     external fun nativeList(limit: Int): String
     external fun nativeImageData(id: Int): ByteArray
     external fun nativeDelete(id: Int)
+    external fun nativeSetPinned(id: Int, pinned: Boolean)
+
+    /** 子串搜索文本/文件历史，返回与 nativeList 相同的字段协议串。 */
+    external fun nativeSearch(query: String, limit: Int): String
+
+    /** 最新一条文本类条目的签名："updatedMs FIELD sha256(text)前16位hex"；无则空串（图片/文件返回空）。 */
+    external fun nativeLatestSignature(): String
 
     data class Entry(val id: Int, val kind: String, val source: String, val text: String)
 
@@ -51,8 +58,28 @@ object ClipStore {
 
     fun list(limit: Int = 30): List<Entry> {
         if (!ready) return emptyList()
-        val raw = nativeList(limit)
+        val raw = try {
+            nativeList(limit)
+        } catch (e: Throwable) {
+            return emptyList()
+        }
         if (raw.isEmpty()) return emptyList()
+        return parseEntries(raw)
+    }
+
+    /** 子串搜索历史（文本/文件），协议与 list 相同；失败/未就绪返回空。 */
+    fun search(query: String, limit: Int = 30): List<Entry> {
+        if (!ready || query.isBlank()) return emptyList()
+        val raw = try {
+            nativeSearch(query, limit)
+        } catch (e: Throwable) {
+            return emptyList()
+        }
+        if (raw.isEmpty()) return emptyList()
+        return parseEntries(raw)
+    }
+
+    private fun parseEntries(raw: String): List<Entry> {
         return raw.split(RECORD).mapNotNull { rec ->
             val f = rec.split(FIELD)
             if (f.size >= 4) {
@@ -64,6 +91,25 @@ object ClipStore {
 
     fun delete(id: Int) {
         if (ready) nativeDelete(id)
+    }
+
+    /** 置顶/取消置顶；未就绪或异常时静默忽略。 */
+    fun setPinned(id: Int, pinned: Boolean) {
+        if (!ready) return
+        try {
+            nativeSetPinned(id, pinned)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** 最新文本条目签名 "updatedMs FIELD hash16"；未就绪/异常/无数据返回空串。 */
+    fun latestSignature(): String {
+        if (!ready) return ""
+        return try {
+            nativeLatestSignature() ?: ""
+        } catch (e: Throwable) {
+            ""
+        }
     }
 
     /** 图片条目 PNG 字节；非图片或不存在返回 null。 */

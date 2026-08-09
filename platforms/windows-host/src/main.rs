@@ -210,6 +210,8 @@ fn main() {
             };
             dict_update::cli_update(url);
         }
+        "dict-rollback" => dict_update::cli_rollback(),
+        "dict-current" => dict_update::cli_current(),
         "retention" => {
             let n = open_store()
                 .apply_retention(&RetentionPolicy::default())
@@ -255,7 +257,9 @@ fn main() {
                  \x20 clear           清空未置顶记录\n\
                  \x20 retention       立即执行留存清理
                  \x20 relay <地址|off> 配置或关闭自托管同步中继
-                 \x20 dict-update <HTTPS地址> 更新自托管云词库"
+                 \x20 dict-update <HTTPS地址> 更新自托管云词库
+                 \x20 dict-rollback   回滚到上次更新前的词库
+                 \x20 dict-current    打印当前词库版本"
             );
         }
     }
