@@ -497,7 +497,7 @@ class ShurufaImeService : InputMethodService() {
         candidatePanel.addView(expandedCandidateBar)
         root.addView(candidatePanel)
 
-        // 功能行：候选不再占用本行，改为承载剪贴板历史 / 表情入口等功能键。
+        // 功能行：候选不再占用本行，改为承载剪贴板历史 / 图片历史 / 表情入口等功能键。
         val compactFunctionRow = isLandscape()
         val functionRowHeight = dp(if (compactFunctionRow) 30f else 38f)
         val clipButtonSize = dp(if (compactFunctionRow) 24f else 30f)
@@ -510,24 +510,32 @@ class ShurufaImeService : InputMethodService() {
                 LinearLayout.LayoutParams.MATCH_PARENT, functionRowHeight
             )
         }
-        val clipButton = TextView(this).apply {
-            text = "▾▦"
-            contentDescription = "剪贴板历史"
-            gravity = Gravity.CENTER
-            textSize = 15f
-            setTextColor(0xFFFFFFFF.toInt())
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(palette.accent)
+        fun functionChip(glyph: String, description: String, onClick: () -> Unit): TextView =
+            TextView(this).apply {
+                text = glyph
+                contentDescription = description
+                gravity = Gravity.CENTER
+                textSize = 15f
+                setTextColor(0xFFFFFFFF.toInt())
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(palette.accent)
+                }
+                setOnClickListener { onClick() }
             }
-            setOnClickListener { toggleHistory() }
-        }
         functionRow.addView(
-            clipButton,
+            functionChip("▾▦", "剪贴板历史") { toggleHistory() },
             LinearLayout.LayoutParams(
                 clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
-            ).apply { setMargins(dp(8f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
+            ).apply { setMargins(dp(8f), clipVerticalMargin, dp(4f), clipVerticalMargin) }
+        )
+        functionRow.addView(
+            functionChip("🖼", "图片历史（斗图）") { toggleImageHistory() },
+            LinearLayout.LayoutParams(
+                clipButtonSize,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
         )
         root.addView(functionRow)
         // 功能行与键区之间的细分隔线，避免浅灰功能行和浅灰键区粘连。

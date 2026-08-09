@@ -43,6 +43,7 @@ const BASE_HL_PAD: i32 = 7;
 const BASE_FONT_HEIGHT: i32 = 26;
 const BASE_PREEDIT_FONT_HEIGHT: i32 = 18;
 const BASE_MIN_WIDTH: i32 = 96;
+const BASE_MODE_BADGE_GAP: i32 = 10;
 
 /// 单个候选的横向布局槽位（坐标为窗口客户区像素）
 struct Item {
@@ -59,6 +60,8 @@ struct PaintData {
     items: Vec<Item>,
     dpi: u32,
     colors: CandidateColors,
+    is_ascii: bool,
+    is_full_shape: bool,
 }
 
 // 绘制数据挂在线程本地：窗口与 TSF 回调同属宿主 UI 线程
@@ -68,6 +71,8 @@ thread_local! {
         items: Vec::new(),
         dpi: 96,
         colors: CandidateColors::default(),
+        is_ascii: false,
+        is_full_shape: false,
     });
     static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) };
 }
@@ -216,7 +221,10 @@ impl CandidateUi {
             .last()
             .map(|it| it.x + it.label_w + label_gap + it.text_w)
             .unwrap_or(padding);
-        let width = (items_end.max(padding + preedit_w) + padding).max(scale(BASE_MIN_WIDTH, dpi));
+        // 给模式徽标预留宽度，避免与 preedit 互相压占
+        let mode_badge_hint = scale(BASE_FONT_HEIGHT, dpi) * 3 + scale(BASE_MODE_BADGE_GAP, dpi);
+        let width = (items_end.max(padding + preedit_w + mode_badge_hint) + padding)
+            .max(scale(BASE_MIN_WIDTH, dpi));
         let height = scale(BASE_PREEDIT_HEIGHT, dpi) + scale(BASE_ROW_HEIGHT, dpi) + padding * 2;
 
         PAINT_DATA.with_borrow_mut(|data| {
@@ -224,6 +232,8 @@ impl CandidateUi {
             data.items = items;
             data.dpi = dpi;
             data.colors = self.colors;
+            data.is_ascii = ctx.is_ascii;
+            data.is_full_shape = ctx.is_full_shape;
         });
 
         unsafe {
@@ -313,7 +323,9 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
             let left = item.x - item_padding;
             let right = item.x + item.label_w + label_gap + item.text_w + item_padding;
             if x >= left && x <= right {
-                send_virtual_key(0x30 + ((index + 1) % 10) as u8);
+                // 序号键 1..9 → 0x31..0x39；第 10 项按下标 0 → 0x30。
+                let key = if index >= 9 { 0x30 } else { 0x31 + index as u8 };
+                send_virtual_key(key);
                 break;
             }
         }
@@ -345,10 +357,27 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let preedit_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
         let old_font = SelectObject(hdc, HGDIOBJ(preedit_font.0));
         SetTextColor(hdc, COLORREF(colors.preedit));
+        // 模式徽标（中/英 + 全/半角），与搜狗主流视觉一致；仅占 preedit 行尾部少量宽度。
+        let mode_badge = format!(
+            "{}{}",
+            if data.is_ascii { "英" } else { "中" },
+            if data.is_full_shape { "·全" } else { "" },
+        );
+        let mode_badge_w = text_width(hdc, &mode_badge) + scale(BASE_MODE_BADGE_GAP, dpi);
+        let preedit_w = (rc.right - padding * 2 - mode_badge_w).max(scale(BASE_MIN_WIDTH, dpi));
         draw_line(
             hdc,
             &data.preedit,
             padding,
+            padding,
+            preedit_w,
+            preedit_h,
+        );
+        SetTextColor(hdc, COLORREF(colors.label));
+        draw_line(
+            hdc,
+            &mode_badge,
+            padding + preedit_w,
             padding,
             rc.right - padding,
             preedit_h,
