@@ -20,5 +20,9 @@ shurufa-options = { path = "../../core/options" }
 sync-core = { path = "../../core/sync" }
 tauri = { version = "2", features = [] }
 
+[dev-dependencies]
+# 测试里需要校验 DTO 的 serde 输出结构
+serde_json = "1"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

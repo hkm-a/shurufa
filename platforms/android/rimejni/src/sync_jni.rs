@@ -166,6 +166,8 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                                         None => return,
                                     }
                                 }
+                                // 对端的搜索响应当前只供 PC 侧 CLI/日志消费，Android 暂不展示。
+                                Incoming::SearchResults { .. } => return,
                             };
                             let mut q = incoming_task.lock().expect("入站队列锁不可恢复");
                             if q.len() >= 64 {

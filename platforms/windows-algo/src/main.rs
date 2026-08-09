@@ -7,6 +7,10 @@
 //! 为验证演进正确性，同时提供 `--once` 单次模式：从 stdin 读一串键序列
 //! （如 `nihao`），服务一次后打印候选并退出，便于命令行回归验证引擎可用。
 
+// GUI 子系统构建（见 build.rs）：由 supervisor/TSF 以子进程方式拉起时不挂
+// 控制台窗口，不会出现在任务栏；`--once` 命令行模式下输出走 stdout 不受影响。
+#![windows_subsystem = "windows"]
+
 use std::path::PathBuf;
 use std::process::exit;
 
@@ -161,6 +165,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--once") => {
+            // 命令行回归模式：若系统没分控制台（我们从 GUI 子系统启动），
+            // 临时 attach 到父进程控制台让 stdout/stderr 可见。
+            attach_console_to_parent();
             let keys = args.get(1).map(String::as_str).unwrap_or("nihao");
             run_once(keys);
         }
@@ -171,3 +178,17 @@ fn main() {
         }
     }
 }
+
+/// windows_subsystem="windows" 构建下 stdout/stderr 默认无宿主；我们只在
+/// `--once` 调用时把句柄接到调用方控制台（cmd/pwsh），其余常驻分支不接。
+#[cfg(windows)]
+fn attach_console_to_parent() {
+    use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    unsafe {
+        // 父进程不是控制台时返回 Err；静默忽略，因为此时没人会看 stdout。
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_console_to_parent() {}

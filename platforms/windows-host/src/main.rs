@@ -128,6 +128,39 @@ fn main() {
             };
             print_entries(&open_store().search(query, 50).unwrap_or_default());
         }
+        // clip-search 只是 search 的别名，供 AI/脚本以语义更清晰的名称调用本机历史
+        "clip-search" => {
+            let Some(query) = args.get(1) else {
+                eprintln!("用法：shurufa-host clip-search <关键词>");
+                std::process::exit(2);
+            };
+            print_entries(&open_store().search(query, 50).unwrap_or_default());
+        }
+        "clip-remote-search" => {
+            let Some(query) = args.get(1) else {
+                eprintln!("用法：shurufa-host clip-remote-search <关键词>");
+                std::process::exit(2);
+            };
+            sync::cli_remote_search(query);
+        }
+        "chat" => {
+            let Some(prompt) = args.get(1) else {
+                eprintln!("用法：shurufa-host chat <提示词>  （走 Agnes，AI 帮写同款通道）");
+                std::process::exit(2);
+            };
+            let key = std::env::var("AGNES_API_KEY").unwrap_or_default().trim().to_owned();
+            if key.is_empty() {
+                eprintln!("缺少 AGNES_API_KEY（系统环境变量）。key 不落盘、不入日志。");
+                std::process::exit(1);
+            }
+            match ai_panel::call_agnes(&key, prompt, ai_panel::SYSTEM_PROMPT) {
+                Ok(draft) => println!("{draft}"),
+                Err(e) => {
+                    eprintln!("请求失败：{e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         "pin" | "unpin" => {
             let Some(id) = parse_arg(&args, 1) else {
                 eprintln!("用法：shurufa-host {cmd} <id>");
@@ -252,6 +285,9 @@ fn main() {
                  \x20 stop            停止 supervisor\n\
                  \x20 list [N]        最近 N 条历史（默认 20）\n\
                  \x20 search <关键词>  搜索文本与文件名\n\
+                 \x20 clip-search <关键词>     search 同义别名（供脚本用）\n\
+                 \x20 clip-remote-search <关键词> 跨设备搜索（8 秒聚合）\n\
+                 \x20 chat <提示词>     Agnes 一次性帮写（不弹面板）\n\
                  \x20 pin/unpin <id>  置顶/取消置顶\n\
                  \x20 copy <id>       把条目写回剪贴板\n\
                  \x20 delete <id>     删除单条\n\
@@ -357,7 +393,7 @@ fn print_entries(entries: &[ClipEntry]) {
 }
 
 /// 压成单行并按字符数截断，避免多行内容打乱列表。
-fn single_line_preview(text: &str, max_chars: usize) -> String {
+pub(crate) fn single_line_preview(text: &str, max_chars: usize) -> String {
     let mut line: String = text
         .chars()
         .map(|c| {

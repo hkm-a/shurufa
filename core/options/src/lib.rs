@@ -82,6 +82,48 @@ pub fn save(options: &ImeOptions) -> std::io::Result<()> {
     save_to(&path(), options)
 }
 
+/// 读取-修改-写回：在同一把进程级文件锁内完成，杜绝设置中心与 TSF
+/// （或两端设置中心）并发写互相覆盖。文件锁用 `options.json.lock`
+/// 旁路文件，Windows 上 LockFileEx 对 rename 不敏感——锁的是 lock
+/// 文件本体，不挡 rename 的目标文件。
+///
+/// `f` 在拿到最新内容后被调用；返回值即要写回的结果。任何一步出错
+/// 都会解锁并向上传播。
+pub fn modify(f: impl FnOnce(&ImeOptions) -> ImeOptions) -> std::io::Result<ImeOptions> {
+    let dir = app_dir();
+    std::fs::create_dir_all(&dir)?;
+    let lock_path = dir.join("options.json.lock");
+    modify_at(&path_in(&dir), &lock_path, f)
+}
+
+fn modify_at(
+    path: &std::path::Path,
+    lock_path: &std::path::Path,
+    f: impl FnOnce(&ImeOptions) -> ImeOptions,
+) -> std::io::Result<ImeOptions> {
+    use fs4::fs_std::FileExt;
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?;
+    // 进程内先串行化：POSIX fcntl 锁同进程可重复获取且语义不一致，
+    // 这里再加一层互斥让"同进程并发 modify"在跨平台行为上一致。
+    static LOCAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _local_guard = LOCAL.lock().unwrap_or_else(|p| p.into_inner());
+    lock_file.lock_exclusive()?;
+    let result = (|| {
+        let current = load_from(path);
+        let next = f(&current);
+        save_to(path, &next)?;
+        Ok(next)
+    })();
+    // 无论成功失败都解锁
+    let _ = lock_file.unlock();
+    result
+}
+
 fn save_to(path: &std::path::Path, options: &ImeOptions) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -240,6 +282,73 @@ pub mod stats {
         totals_of(&stats)
     }
 
+    /// 最近 N 天（含今天、升序）的 (日期 YYYY-MM-DD, 当日字符数)；无数据的
+    /// 日期补 0，方便图表直接按固定宽度渲染。N 上限 31 防御误传。
+    pub fn last_days(n: usize) -> Vec<(String, u64)> {
+        let stats = match cache().lock() {
+            Ok(guard) => guard.stats.clone(),
+            Err(poisoned) => poisoned.into_inner().stats.clone(),
+        };
+        last_days_of(&stats, n.min(31).max(1))
+    }
+
+    fn last_days_of(stats: &StatsFile, n: usize) -> Vec<(String, u64)> {
+        // 从 today_utc() 逐日回推；BTreeMap 按 key 字典序即日期序。
+        let mut out = Vec::with_capacity(n);
+        let today = today_utc();
+        let (mut y, mut m, mut d) = parse_ymd(&today).unwrap_or((2000, 1, 1));
+        for _ in 0..n {
+            let key = format!("{y:04}-{m:02}-{d:02}");
+            let chars = stats.days.get(&key).map(|c| c.chars).unwrap_or(0);
+            out.push((key, chars));
+            // 逐日倒退一天
+            let (py, pm, pd) = prev_day(y, m, d);
+            y = py;
+            m = pm;
+            d = pd;
+        }
+        out.reverse();
+        out
+    }
+
+    fn parse_ymd(s: &str) -> Option<(i64, u32, u32)> {
+        let mut parts = s.split('-');
+        let y = parts.next()?.parse().ok()?;
+        let m = parts.next()?.parse().ok()?;
+        let d = parts.next()?.parse().ok()?;
+        Some((y, m, d))
+    }
+
+    fn prev_day(y: i64, m: u32, d: u32) -> (i64, u32, u32) {
+        // days-from-civil 逆运算：用与 today_utc 相同的 Hinnant 算法回退。
+        let days = days_from_civil(y, m, d) - 1;
+        civil_from_days(days)
+    }
+
+    fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+        let y_adj = if m <= 2 { y - 1 } else { y };
+        let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+        let yoe = (y_adj - era * 400) as u64;
+        let mp = if m > 2 { m - 3 } else { m + 9 } as u64;
+        let doy = (153 * mp + 2) / 5 + d as u64 - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146_097 + doe as i64 - 719_468
+    }
+
+    fn civil_from_days(z: i64) -> (i64, u32, u32) {
+        let z = z + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = (z - era * 146_097) as u64;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if m <= 2 { y + 1 } else { y };
+        (y, m as u32, d as u32)
+    }
+
     fn totals_of(stats: &StatsFile) -> StatsTotals {
         let today = stats.days.get(&today_utc()).copied().unwrap_or_default();
         StatsTotals {
@@ -314,6 +423,34 @@ pub mod stats {
             assert_eq!(&day[4..5], "-");
             assert_eq!(&day[7..8], "-");
         }
+
+        #[test]
+        fn last_days_包含今天且空日补零() {
+            let dir = temp_dir("last-days");
+            note_at(&dir, 7, 0);
+            let path = dir.join("stats.json");
+            let stats = load_from(&path);
+            let days = last_days_of(&stats, 3);
+            assert_eq!(days.len(), 3);
+            let today = today_utc();
+            assert_eq!(days[2].0, today);
+            assert_eq!(days[2].1, 7);
+            assert_eq!(days[0].1, 0);
+            assert_eq!(days[1].1, 0);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn 日前后推算与逆运算保持一致() {
+            // 覆盖跨月/跨年边界
+            for (y, m, d) in [(2026, 8, 8), (2024, 1, 1), (2025, 12, 31), (2000, 2, 29)] {
+                let days = days_from_civil(y, m, d);
+                assert_eq!(civil_from_days(days), (y, m, d), "互逆失败 {y}-{m}-{d}");
+                let (py, pm, pd) = prev_day(y, m, d);
+                let days2 = days_from_civil(py, pm, pd);
+                assert_eq!(days2, days - 1, "prev_day 差一天 {y}-{m}-{d}");
+            }
+        }
     }
 }
 
@@ -386,6 +523,50 @@ mod tests {
         assert_eq!(load_from(&path), options);
         // 临时文件不得残留
         assert!(!path.with_extension("json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn modify_并发串行化_两端增量不丢失() {
+        // 模拟设置中心与 TSF 并发"翻转两个不同开关"：不配锁时后写会覆盖先写；
+        // 走 modify_at 同一把 lib 文件锁，两次增量都应当保留。
+        let dir = temp_dir("options-modify");
+        let path = path_in(&dir);
+        let lock = dir.join("options.json.lock");
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let p1 = path.clone();
+        let l1 = lock.clone();
+        let b1 = start.clone();
+        let t1 = std::thread::spawn(move || {
+            b1.wait();
+            for _ in 0..16 {
+                modify_at(&p1, &l1, |o| ImeOptions {
+                    shift_switch_cn_en: !o.shift_switch_cn_en,
+                    ..o.clone()
+                })
+                .unwrap();
+            }
+        });
+        let p2 = path.clone();
+        let l2 = lock.clone();
+        let b2 = start.clone();
+        let t2 = std::thread::spawn(move || {
+            b2.wait();
+            for _ in 0..16 {
+                modify_at(&p2, &l2, |o| ImeOptions {
+                    capslock_to_english: !o.capslock_to_english,
+                    ..o.clone()
+                })
+                .unwrap();
+            }
+        });
+        t1.join().unwrap();
+        t2.join().unwrap();
+        let final_opts = load_from(&path);
+        // 偶数次翻转后两端都回到 true；关键是途中没有丢失任何一方的写。
+        assert!(final_opts.shift_switch_cn_en);
+        assert!(final_opts.capslock_to_english);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

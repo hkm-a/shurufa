@@ -158,3 +158,79 @@ async fn 配对后双向同步文本() {
         "未配对设备不应收到同步"
     );
 }
+
+/// 双机搜索：乙机注入搜索回调，甲机发请求后应收到乙机的命中结果。
+#[tokio::test(flavor = "multi_thread")]
+async fn 跨设备搜索请求得到响应() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let (tx_a, mut rx_a) = mpsc::channel(16);
+    let (tx_b, mut _rx_b) = mpsc::channel(16);
+
+    let auto_confirm: sync_core::ConfirmFn = Arc::new(|_| true);
+
+    let a = SyncService::start(
+        test_config(dir_a.path(), "甲机"),
+        tx_a,
+        Some(auto_confirm.clone()),
+        Box::new(|m| println!("[甲] {m}")),
+    )
+    .await
+    .unwrap();
+    let b = SyncService::start(
+        test_config(dir_b.path(), "乙机"),
+        tx_b,
+        Some(auto_confirm.clone()),
+        Box::new(|m| println!("[乙] {m}")),
+    )
+    .await
+    .unwrap();
+
+    // 乙机提供两条假历史命中
+    b.set_search_handler(Arc::new(|query: &str| {
+        assert!(!query.is_empty());
+        vec![
+            sync_core::SearchHit {
+                text: "主题：周报邮件".into(),
+                source_app: "Mail".into(),
+                updated_at: 1720000000000,
+            },
+            sync_core::SearchHit {
+                text: "转发：邮件模板".into(),
+                source_app: "Notes".into(),
+                updated_at: 1720000001000,
+            },
+        ]
+    }));
+
+    a.pair_with(
+        &format!("127.0.0.1:{}", b.local_port()),
+        auto_confirm.clone(),
+    )
+    .await
+    .expect("配对失败");
+
+    for _ in 0..50 {
+        if !a.connected_fingerprints().is_empty() && !b.connected_fingerprints().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(!a.connected_fingerprints().is_empty(), "数据连接未建立");
+
+    a.send_search_request("邮件", "req-1".into());
+    let got = recv_clip(&mut rx_a).await;
+    match got {
+        Incoming::SearchResults {
+            from_name,
+            req_id,
+            hits,
+        } => {
+            assert_eq!(from_name, "乙机");
+            assert_eq!(req_id.as_deref(), Some("req-1"));
+            assert_eq!(hits.len(), 2);
+            assert_eq!(hits[0].text, "主题：周报邮件");
+        }
+        other => panic!("期待 SearchResults，实际 {other:?}"),
+    }
+}

@@ -408,6 +408,37 @@ fn save_ime_options(opts: ImeOptionsDto) -> Result<(), String> {
     shurufa_options::save(&opts.into()).map_err(|error| format!("保存输入选项失败：{error}"))
 }
 
+/// 打字统计面板 DTO：四项合计 + 最近 8 天字符数序列。
+#[derive(Serialize, Clone)]
+struct TypingStatsDto {
+    total_chars: u64,
+    today_chars: u64,
+    total_keys: u64,
+    today_keys: u64,
+    /// (日期 "MM-DD", 字符数)，最近 8 天
+    days: Vec<(String, u64)>,
+}
+
+#[tauri::command]
+fn typing_stats() -> TypingStatsDto {
+    let totals = shurufa_options::stats::totals();
+    // "2026-08-08" -> "08-08"：截取月日短格式，兼容非法输入原样透出
+    let days = shurufa_options::stats::last_days(8)
+        .into_iter()
+        .map(|(date, chars)| {
+            let short = date.get(5..).map(str::to_owned).unwrap_or(date);
+            (short, chars)
+        })
+        .collect();
+    TypingStatsDto {
+        total_chars: totals.total_chars,
+        today_chars: totals.today_chars,
+        total_keys: totals.total_keys,
+        today_keys: totals.today_keys,
+        days,
+    }
+}
+
 #[derive(Serialize)]
 struct DictionaryInfo {
     revision: String,
@@ -469,6 +500,7 @@ fn main() {
         clear_unpinned_history,
         ime_options,
         save_ime_options,
+        typing_stats,
         dictionary_info,
         rollback_dictionary
     ]);
@@ -494,12 +526,27 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{history_entry, sync_dir};
+    use super::{history_entry, sync_dir, TypingStatsDto};
     use clipboard_store::{ClipEntry, ClipKind};
 
     #[test]
     fn 默认同步目录位于应用数据目录下() {
         assert!(sync_dir().ends_with("shurufa\\sync"));
+    }
+
+    #[test]
+    fn 打字统计序列化含天数序列与今日计数() {
+        let dto = TypingStatsDto {
+            total_chars: 12345,
+            today_chars: 67,
+            total_keys: 8901,
+            today_keys: 23,
+            days: vec![("08-07".to_owned(), 40), ("08-08".to_owned(), 67)],
+        };
+        let value = serde_json::to_value(&dto).expect("DTO 序列化失败");
+        assert!(value.get("days").is_some());
+        assert_eq!(value["today_chars"], serde_json::json!(67_u64));
+        assert_eq!(value["days"][1][0], serde_json::json!("08-08"));
     }
 
     #[test]

@@ -68,16 +68,16 @@ pub fn acquire_singleton(name: &str) -> std::io::Result<Option<SingletonLock>> {
 
 /// Debug 隔离验收可指定独立 worker 锁，避免与用户常驻进程互相阻塞。
 pub fn worker_mutex_name() -> String {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, test))]
     {
         return debug_worker_mutex(std::env::var("SHURUFA_TEST_WORKER_MUTEX").ok());
     }
 
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, test)))]
     WORKER_MUTEX.to_owned()
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn debug_worker_mutex(value: Option<String>) -> String {
     value
         .filter(|name| !name.trim().is_empty())

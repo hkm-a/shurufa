@@ -48,6 +48,58 @@ pub struct TextService {
     inner: RefCell<Inner>,
 }
 
+/// 前台是否处于安全桌面（锁屏 / UAC consent / 登录）。
+///
+/// 判定方法二选一即为安全桌面：
+/// - GetForegroundWindow 为空（桌面切换中、锁屏触发的瞬间）；
+/// - 前台窗口所在进程名属于安全外壳集合（LogonUI / consent / SecureFolder 等）。
+///
+/// 任何一环 API 失败都按"安全"处理（保守错杀），避免在未知状态下吞按键。
+fn is_secure_desktop() -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return true;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return true;
+        }
+        let Ok(proc_handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return true;
+        };
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let got = QueryFullProcessImageNameW(
+            proc_handle,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
+        let _ = CloseHandle(proc_handle);
+        if got.is_err() {
+            return true;
+        }
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        let lower = path.to_ascii_lowercase();
+        const SECURE: &[&str] = &[
+            "\\logonui.exe",
+            "\\consent.exe",
+            "\\securesystemfolder",
+            "\\credentialuibroker.exe",
+        ];
+        SECURE.iter().any(|p| lower.ends_with(p))
+    }
+}
+
 impl TextService {
     pub fn new() -> Self {
         TextService {
@@ -385,12 +437,21 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     ) -> Result<BOOL> {
         // TSF 会先试探再投递实际按键。这里绝不能向引擎喂键或写文档，
         // 否则只调用试探回调的宿主会丢失中文输入并退化成英文直通。
+        // 安全桌面守卫：前台是锁屏/UAC/登录时一律不接管按键，全部交还系统
+        //（Shift/CapsLock/Ctrl+. 在 LogonUI 上绝不能落 IME 状态，否则会造成
+        // 锁屏提权类隐患，搜狗先例 2024.8）。
+        if is_secure_desktop() {
+            return Ok(false.into());
+        }
         // CapsLock 接管与否取决于选项缓存（不读文件，只有 handle_key 周期性重载）。
         let caps_managed = self.inner.borrow().opts.capslock_to_english;
         Ok(keys::is_ime_key(wparam.0 as u32, keys::current_modifiers(), caps_managed).into())
     }
 
     fn OnKeyDown(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+        if is_secure_desktop() {
+            return Ok(false.into());
+        }
         let mut inner = self.inner.borrow_mut();
         let context = pic.ok()?;
         let sink: ITfCompositionSink = self.to_interface();

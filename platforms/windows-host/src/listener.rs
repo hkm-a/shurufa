@@ -127,6 +127,10 @@ pub fn run(store: ClipboardStore) -> Result<()> {
                     crate::ai_panel::show();
                     continue;
                 }
+                if id == crate::ai_panel::POLISH_HOTKEY_ID {
+                    crate::ai_panel::polish_selection();
+                    continue;
+                }
             }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
@@ -228,18 +232,18 @@ fn listener_window() -> Option<HWND> {
 }
 
 fn listener_window_title() -> HSTRING {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, test))]
     {
         return HSTRING::from(debug_listener_title(
             std::env::var("SHURUFA_TEST_LISTENER_TITLE").ok(),
         ));
     }
 
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, test)))]
     HSTRING::new()
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn debug_listener_title(value: Option<String>) -> String {
     value
         .filter(|title| !title.trim().is_empty())

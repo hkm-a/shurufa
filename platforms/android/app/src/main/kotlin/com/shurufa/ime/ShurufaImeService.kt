@@ -827,9 +827,17 @@ class ShurufaImeService : InputMethodService() {
             return
         }
         aiStatusLine?.text = "思考中…"
+        aiDraftView?.text = ""
         aiPasteButton?.isEnabled = false
         ioExecutor.execute {
-            val result = callAgnesChat(apiKey, prompt)
+            val result = callAgnesChat(apiKey, prompt) { partial ->
+                // SSE 流式增量：每收到一段就把当前累积的 partial 推到主线程刷新。
+                // 不必再渲染节流 —— ioExecutor 单线程执行 + mainHandler.post 不会拥塞。
+                mainHandler.post {
+                    aiDraftView?.text = partial
+                    aiStatusLine?.text = "生成中…（${partial.length} 字）"
+                }
+            }
             mainHandler.post {
                 when (result) {
                     is AiResult.Ok -> {
@@ -871,8 +879,17 @@ class ShurufaImeService : InputMethodService() {
         null
     }
 
-    /** 与 PC 端同一接口：https://apihub.agnes-ai.com/v1/chat/completions */
-    private fun callAgnesChat(apiKey: String, prompt: String): AiResult {
+    /**
+     * 与 PC 端同一接口：https://apihub.agnes-ai.com/v1/chat/completions
+     * `onPartial` 非空则启用 SSE 流式（`"stream": true`），每解析到一段
+     * choices[0].delta.content 就回调一次当前累积的部分；否则按整段 JSON 读
+     * `choices[0].message.content`。返回的是最终结果；onPartial 只是过程预览。
+     */
+    private fun callAgnesChat(
+        apiKey: String,
+        prompt: String,
+        onPartial: ((String) -> Unit)? = null,
+    ): AiResult {
         val endpoint = java.net.URL("https://apihub.agnes-ai.com/v1/chat/completions")
         var conn: java.net.HttpURLConnection? = null
         return try {
@@ -884,9 +901,10 @@ class ShurufaImeService : InputMethodService() {
                 setRequestProperty("Content-Type", "application/json")
                 setRequestProperty("Authorization", "Bearer $apiKey")
             }
+            val stream = onPartial != null
             val body = org.json.JSONObject()
                 .put("model", "agnes-2.5-flash")
-                .put("stream", false)
+                .put("stream", stream)
                 .put("temperature", 0.5)
                 .put("messages", org.json.JSONArray()
                     .put(org.json.JSONObject().put("role", "system").put("content",
@@ -897,20 +915,47 @@ class ShurufaImeService : InputMethodService() {
                 os.write(body.toByteArray(Charsets.UTF_8))
             }
             val code = conn.responseCode
-            val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             if (code !in 200..299) {
-                AiResult.Err("HTTP $code: ${text.take(120)}")
-            } else {
-                val root = org.json.JSONObject(text)
-                val content = root.optJSONArray("choices")
-                    ?.optJSONObject(0)
-                    ?.optJSONObject("message")
-                    ?.optString("content")
-                    ?.trim()
-                    .orEmpty()
-                if (content.isEmpty()) AiResult.Err("返回内容为空") else AiResult.Ok(content)
+                val errText = conn.errorStream
+                    ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+                return AiResult.Err("HTTP $code: ${errText.take(120)}")
             }
+            if (stream) {
+                // SSE：逐行解析 "data: {...}"，[DONE] 终止。
+                val acc = StringBuilder()
+                conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (!line.startsWith("data:")) continue
+                        val payload = line.removePrefix("data:").trim()
+                        if (payload == "[DONE]") break
+                        val delta = try {
+                            org.json.JSONObject(payload)
+                                .optJSONArray("choices")
+                                ?.optJSONObject(0)
+                                ?.optJSONObject("delta")
+                                ?.optString("content")
+                                .orEmpty()
+                        } catch (_: Exception) { "" }
+                        if (delta.isNotEmpty()) {
+                            acc.append(delta)
+                            onPartial?.invoke(acc.toString())
+                        }
+                    }
+                }
+                val full = acc.toString().trim()
+                return if (full.isEmpty()) AiResult.Err("返回内容为空") else AiResult.Ok(full)
+            }
+            val text = conn.inputStream
+                ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            val root = org.json.JSONObject(text)
+            val content = root.optJSONArray("choices")
+                ?.optJSONObject(0)
+                ?.optJSONObject("message")
+                ?.optString("content")
+                ?.trim()
+                .orEmpty()
+            if (content.isEmpty()) AiResult.Err("返回内容为空") else AiResult.Ok(content)
         } catch (e: Exception) {
             AiResult.Err(e.message ?: e.javaClass.simpleName)
         } finally {

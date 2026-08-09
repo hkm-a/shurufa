@@ -140,6 +140,14 @@ pub enum Incoming {
         mime_type: String,
         data: Vec<u8>,
     },
+    /// 跨设备剪贴板搜索的响应结果（来自某一台对端）。
+    SearchResults {
+        from_name: String,
+        /// 与本端 SearchRequest 关联的请求 id；对端未回传时为 None。
+        req_id: Option<String>,
+        /// 命中摘要（至多 8 条，仅文本预览）。
+        hits: Vec<crate::protocol::SearchHit>,
+    },
 }
 
 /// 出站广播内容：文本或图片，经 broadcast 通道推给所有活跃连接。
@@ -158,6 +166,8 @@ enum Outbound {
         mime_type: String,
         data: Vec<u8>,
     },
+    /// 跨设备剪贴板搜索请求；由所有协商了 search-v1 的连接各自写出。
+    SearchRequest { query: String, req_id: String },
 }
 
 /// 生成一条出站消息 id（uuid v4，无连字符小写）。
@@ -202,6 +212,9 @@ pub struct PairPrompt {
 
 pub type ConfirmFn = Arc<dyn Fn(PairPrompt) -> bool + Send + Sync>;
 
+/// 搜索回调类型：输入查询串，返回命中摘要列表（由本端历史库提供）。
+pub type SearchHandler = Arc<dyn Fn(&str) -> Vec<crate::protocol::SearchHit> + Send + Sync>;
+
 struct Shared {
     identity: Arc<DeviceIdentity>,
     peers: Arc<PeerStore>,
@@ -223,6 +236,8 @@ struct Shared {
     reconnect_now: Notify,
     /// 近期本端发出的 (msg_id, sent_at_ms)，用于回声剔除（跨端 LWW 辅助）。
     recent_out: Mutex<Vec<(String, i64)>>,
+    /// 本端剪贴板历史搜索回调；启动后由宿主注入（None 时返回空结果）。
+    search_handler: Mutex<Option<SearchHandler>>,
     log: Box<dyn Fn(&str) + Send + Sync>,
 }
 
@@ -308,6 +323,8 @@ impl SyncService {
             relay_addr: config.relay_addr.clone(),
             reconnect_now: Notify::new(),
             recent_out: Mutex::new(Vec::new()),
+            // 搜索留给宿主在历史库就绪后再注入，避免阻塞服务启动。
+            search_handler: Mutex::new(None),
             log,
         });
 
@@ -463,6 +480,29 @@ impl SyncService {
         let peer = pair_initiate(&self.shared, &connector, addr, confirm).await?;
         self.shared.reconnect_now.notify_one();
         Ok(peer)
+    }
+
+    /// 向所有已连接且协商了 search-v1 的对端广播搜索请求。
+    pub fn send_search_request(&self, query: &str, req_id: String) {
+        let query = query.trim();
+        // 空查询或对超长查询直接忽略，避免无效请求占用对端历史库查询资源。
+        if query.is_empty() || query.len() > 200 {
+            return;
+        }
+        // 无活跃连接时发送失败属正常，静默
+        let _ = self.shared.outgoing.send(Outbound::SearchRequest {
+            query: query.to_string(),
+            req_id,
+        });
+    }
+
+    /// 注入本端剪贴板历史搜索回调；可在服务启动后随时调用。
+    pub fn set_search_handler(&self, handler: SearchHandler) {
+        *self
+            .shared
+            .search_handler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handler);
     }
 }
 
@@ -881,6 +921,8 @@ where
     }
     let peer_has_msg_id =
         crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_MSG_ID_V1);
+    let peer_has_search =
+        crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_SEARCH_V1);
     shared.log(&format!(
         "已连接 {peer_name}（协议 {}：{} msg_id）",
         if peer_has_msg_id { "v2" } else { "v1" },
@@ -971,6 +1013,45 @@ where
                         }
                     }
                     Ok(Ok((Message::Ping, _))) => {}
+                    Ok(Ok((Message::SearchRequest { query, req_id }, _))) => {
+                        // 仅在对端协商了 search-v1 时响应：老端不认识该消息，
+                        // 不会发送；这里多一层判定是防止对端特性表与实际行为不一致。
+                        if peer_has_search {
+                            let handler = shared
+                                .search_handler
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .clone();
+                            // 未注入回调时返回空列表而不是出错：宿主可能尚未就绪。
+                            let hits = handler
+                                .map(|h| h(&query))
+                                .unwrap_or_default()
+                                .into_iter()
+                                .take(8)
+                                .map(|mut hit| {
+                                    // 预览截断到 200 字符，避免超长条目撑爆查询响应帧预算。
+                                    hit.text = hit.text.chars().take(200).collect();
+                                    hit
+                                })
+                                .collect();
+                            let reply = Message::SearchResponse { req_id, hits };
+                            if let Err(e) = write_msg_with_format(&mut tls, &reply, format).await {
+                                break Err(e);
+                            }
+                        }
+                    }
+                    Ok(Ok((Message::SearchResponse { req_id, hits }, _))) => {
+                        // 命中数截断到 8 做防御：不信任对端自觉守约。
+                        let hits = hits.into_iter().take(8).collect();
+                        let _ = shared
+                            .incoming
+                            .send(Incoming::SearchResults {
+                                from_name: peer_name.clone(),
+                                req_id,
+                                hits,
+                            })
+                            .await;
+                    }
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => break Err(e),
                     Err(_) => break Err(format!(
@@ -1028,6 +1109,20 @@ where
                         sent_at_ms: now_ms(),
                         msg_id: None,
                         origin_device_fp: None,
+                    };
+                    if let Err(e) = write_msg_with_format(&mut tls, &msg, format).await {
+                        break Err(e);
+                    }
+                }
+                Ok(Outbound::SearchRequest { query, req_id }) => {
+                    // 仅向协商了 search-v1 的对端发送，避免老端反序列化失败断连。
+                    if !peer_has_search {
+                        shared.log("对端不支持 search-v1，跳过搜索");
+                        continue;
+                    }
+                    let msg = Message::SearchRequest {
+                        query,
+                        req_id: Some(req_id),
                     };
                     if let Err(e) = write_msg_with_format(&mut tls, &msg, format).await {
                         break Err(e);

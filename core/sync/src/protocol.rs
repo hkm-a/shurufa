@@ -72,6 +72,30 @@ pub enum Message {
     },
     /// 保活
     Ping,
+    /// 跨设备剪贴板历史搜索请求（特性 "search-v1" 协商后启用）。
+    SearchRequest {
+        query: String,
+        /// 关联响应的请求 id（发送端生成的短随机串）。
+        #[serde(default)]
+        req_id: Option<String>,
+    },
+    /// 搜索响应：命中条目摘要（不含图片/文件字节，只给文本预览）。
+    SearchResponse {
+        #[serde(default)]
+        req_id: Option<String>,
+        /// 命中预览列表（至多 8 条）。
+        #[serde(default)]
+        hits: Vec<SearchHit>,
+    },
+}
+
+/// 搜索命中摘要：仅文本预览，避免把图片/文件字节挤进查询响应。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct SearchHit {
+    pub text: String,
+    pub source_app: String,
+    pub updated_at: i64,
 }
 
 fn default_protocol_version() -> u32 {
@@ -81,6 +105,8 @@ fn default_protocol_version() -> u32 {
 /// 本端声明的特性列表；接收端将其存入 PeerCapabilities。
 pub const FEATURE_MSG_ID_V1: &str = "msg-id-v1";
 pub const FEATURE_LWW_V1: &str = "lww-v1";
+/// "search-v1"：跨设备剪贴板历史搜索（SearchRequest/SearchResponse）。
+pub const FEATURE_SEARCH_V1: &str = "search-v1";
 
 /// 当前协议版本：v1 = Hello+Ping+Clip*；v2 = Hello 带 features 协商，
 /// ClipText 带 msg_id/origin_device_fp，可用于跨端回声抑制。
@@ -96,6 +122,7 @@ pub fn local_features() -> Vec<String> {
     vec![
         FEATURE_MSG_ID_V1.to_string(),
         FEATURE_LWW_V1.to_string(),
+        FEATURE_SEARCH_V1.to_string(),
     ]
 }
 
@@ -270,5 +297,71 @@ mod tests {
         let bytes = serde_json::to_vec(&msg).unwrap();
         let parsed: Message = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed, msg);
+    }
+
+    #[tokio::test]
+    async fn 旧版消息不含搜索变体仍可解析() {
+        // 老版本端只发 ClipText/Ping，新端解析不应受新增变体影响
+        let legacy = serde_json::json!({"type": "ping"});
+        let parsed: Message = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed, Message::Ping);
+        let legacy_clip = serde_json::json!({
+            "type": "clip_text",
+            "text": "旧端文本",
+            "sent_at_ms": 42,
+        });
+        let parsed: Message = serde_json::from_value(legacy_clip).unwrap();
+        match parsed {
+            Message::ClipText { text, msg_id, .. } => {
+                assert_eq!(text, "旧端文本");
+                assert_eq!(msg_id, None);
+            }
+            other => panic!("应解析为 ClipText，实际 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn 搜索请求与响应序列化往返() {
+        let request = Message::SearchRequest {
+            query: "邮件".into(),
+            req_id: Some("req-1".into()),
+        };
+        let bytes = serde_json::to_vec(&request).unwrap();
+        let parsed: Message = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed, request);
+
+        // req_id 缺省（旧端或本端未生成 id）也能解析
+        let no_id: Message =
+            serde_json::from_value(serde_json::json!({"type": "search_request", "query": "q"}))
+                .unwrap();
+        assert_eq!(
+            no_id,
+            Message::SearchRequest {
+                query: "q".into(),
+                req_id: None,
+            }
+        );
+
+        let response = Message::SearchResponse {
+            req_id: Some("req-1".into()),
+            hits: vec![
+                SearchHit {
+                    text: "主题：周报邮件".into(),
+                    source_app: "Mail".into(),
+                    updated_at: 1234567890,
+                },
+                SearchHit::default(),
+            ],
+        };
+        let bytes = serde_json::to_vec(&response).unwrap();
+        let parsed: Message = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed, response);
+
+        // hit 字段缺省时走默认，保证与未来扩展字段兼容
+        let sparse: SearchHit =
+            serde_json::from_value(serde_json::json!({"text": "仅文本"})).unwrap();
+        assert_eq!(sparse.text, "仅文本");
+        assert_eq!(sparse.source_app, "");
+        assert_eq!(sparse.updated_at, 0);
     }
 }

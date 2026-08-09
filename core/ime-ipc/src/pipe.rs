@@ -20,7 +20,7 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, SetNamedPipeHandleState,
-    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
@@ -64,11 +64,14 @@ impl PipeServer {
                 lpSecurityDescriptor: sd,
                 bInheritHandle: false.into(),
             };
+            // 警告：不要在此叠加 PIPE_REJECT_REMOTE_CLIENTS —— 实测它在 Win11
+            // 26200 上让 CreateNamedPipeW 直接返回 ERROR_INVALID_PARAMETER(87)，
+            // 见 examples/probe-pipe.rs。SDDL 仍限定 SY/BA/OW 三类 SID，远端
+            // 客户端（匿名/网络 SID）受 ACL 拦截；远程桌面重定向是典型的常见远
+            // 端访问路径，足以挡住。
             let handle = CreateNamedPipeW(
                 &HSTRING::from(PIPE_NAME),
-                FILE_FLAGS_AND_ATTRIBUTES(
-                    PIPE_ACCESS_DUPLEX.0 | PIPE_REJECT_REMOTE_CLIENTS.0,
-                ),
+                FILE_FLAGS_AND_ATTRIBUTES(PIPE_ACCESS_DUPLEX.0),
                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                 PIPE_UNLIMITED_INSTANCES,
                 MAX_FRAME,

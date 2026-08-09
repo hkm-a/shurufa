@@ -76,6 +76,8 @@ let notice = null;
 // 输入法四项快捷键选项；null 表示尚未加载（ssr/失败场景一律禁用态）
 let imeOptions = null;
 let dictionaryInfo = { revision: "" };
+// 打字统计：null 表示尚未加载或读取失败（面板走兜底样式）
+let typingStats = null;
 
 const app = document.querySelector("#app");
 

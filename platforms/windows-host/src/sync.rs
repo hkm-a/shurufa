@@ -212,6 +212,21 @@ pub fn start_daemon() {
                     service.local_port(),
                     &service.fingerprint()[..12]
                 ));
+                // 对端发来的跨设备搜索请求：走本机历史库的 LIKE 搜索，
+                // 结果以 SearchHit 列表回传（仅文本条目，图片/文件不回传内容）。
+                service.set_search_handler(Arc::new(|query: &str| {
+                    let store = crate::open_store();
+                    store
+                        .search(query, 8)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|hit| sync_core::SearchHit {
+                            text: hit.text.clone(),
+                            source_app: hit.source_app.clone(),
+                            updated_at: hit.updated_at,
+                        })
+                        .collect()
+                }));
 
                 loop {
                     tokio::select! {
@@ -265,6 +280,21 @@ pub fn start_daemon() {
                                     }
                                     None => crate::log_line("收到图片解码失败"),
                                 },
+                                Incoming::SearchResults { from_name, req_id, hits } => {
+                                    crate::log_line(&format!(
+                                        "跨设备搜索 {}：{from_name} 返回 {} 条命中",
+                                        req_id.as_deref().unwrap_or("<无 id>"),
+                                        hits.len()
+                                    ));
+                                    for hit in hits.iter().take(8) {
+                                        crate::log_line(&format!(
+                                            "· [{} @{}] {}",
+                                            hit.source_app,
+                                            hit.updated_at,
+                                            crate::single_line_preview(&hit.text, 60)
+                                        ));
+                                    }
+                                }
                                 Incoming::File { from_name, name, data, .. } => {
                                     let Some(path) = received_file_path(&name) else {
                                         crate::log_line("收到文件名无效");
@@ -389,6 +419,65 @@ pub fn cli_devices() {
         }
         Err(e) => println!("读取配对表失败：{e}"),
     }
+}
+
+/// `clip-remote-search` 子命令：连上已配对设备，广播 SearchRequest，
+/// 聚合 8 秒内收到的所有 SearchResults 打印出来，随后退出。
+///
+/// 与常驻守护进程可同时运行：临时实例绑定随机端口（port=0）、关闭 mDNS。
+pub fn cli_remote_search(query: &str) {
+    let rt = tokio::runtime::Runtime::new().expect("创建运行时失败");
+    rt.block_on(async {
+        let (in_tx, mut in_rx) = tokio::sync::mpsc::channel(32);
+        let mut config = SyncConfig::new(sync_config_dir(), device_name());
+        config.port = 0; // 随机端口，避免与常驻 worker 冲突
+        config.enable_mdns = false;
+        config.reconnect_secs = 1;
+        let service = match SyncService::start(config, in_tx, None, Box::new(|_| {})).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("同步服务启动失败：{e}");
+                std::process::exit(1);
+            }
+        };
+        let peers = service.peers();
+        if peers.is_empty() {
+            eprintln!("尚无已配对设备（先 pair）");
+            std::process::exit(1);
+        }
+        println!("搜索关键词：{query}；等待对端响应（至多 8 秒）…");
+        // 给重连循环一点时间连上在线的对端，再发请求
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        let req_id = format!("cli-{}", std::process::id());
+        service.send_search_request(query, req_id.clone());
+
+        let mut hits_total = 0usize;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while let Ok(Some(incoming)) = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            in_rx.recv(),
+        )
+        .await
+        {
+            if let Incoming::SearchResults { from_name, req_id: rid, hits } = incoming {
+                if rid.as_deref() != Some(req_id.as_str()) {
+                    continue;
+                }
+                println!("设备 {from_name} 命中 {} 条：", hits.len());
+                for hit in hits.iter().take(8) {
+                    println!(
+                        "  · [{}] {}",
+                        hit.source_app,
+                        crate::single_line_preview(&hit.text, 60)
+                    );
+                }
+                hits_total += hits.len();
+            }
+        }
+        if hits_total == 0 {
+            println!("（无命中或对端未在 8 秒内响应）");
+        }
+    });
 }
 
 /// `relay` 子命令：持久化自托管中继地址；下次启动守护进程时生效。
