@@ -3,6 +3,13 @@
 //! 窗口在宿主应用的 UI 线程内创建（TSF 单元线程模型），
 //! 不抢焦点（WS_EX_NOACTIVATE），随组合文本位置移动，
 //! 宽度按候选文本实测宽度自适应，所有尺寸按窗口 DPI 缩放。
+//!
+//! 本轮改动摘要（皮肤 v2 / 现代化外观）：
+//! - 颜色不再硬编码，全部来自 `crate::skin::Skin`（按系统 light/dark 主题选取）。
+//! - 字号乘 `metrics.font_scale`；`metrics.opacity` < 1 时启用分层窗口整体透明。
+//! - 创建后由 `skin::apply_appearance` 应用 Win11 DWM 圆角 + 沉浸式深色边框；
+//!   `skin::ShadowShell` 在主窗下方绘制半透明阴影壳（NOACTIVATE + 命中穿透）。
+//! - WM_SETTINGCHANGE("ImmersiveColorSet") 热切换主题：刷新 Skin 缓存并重绘。
 
 use std::cell::RefCell;
 
@@ -23,13 +30,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, LoadCursorW, MoveWindow,
     RegisterClassW, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW,
     SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
-    WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use ime_ipc::Context;
 
-use crate::skin::{load_candidate_colors, CandidateColors};
+use crate::skin::{self, ShadowShell, Skin};
 
 const CLASS_NAME: PCWSTR = w!("ShurufaCandidateWindow");
 
@@ -61,7 +68,7 @@ struct PaintData {
     preedit: String,
     items: Vec<Item>,
     dpi: u32,
-    colors: CandidateColors,
+    skin: Skin,
     is_ascii: bool,
     is_full_shape: bool,
 }
@@ -72,7 +79,7 @@ thread_local! {
         preedit: String::new(),
         items: Vec::new(),
         dpi: 96,
-        colors: CandidateColors::default(),
+        skin: Skin::default(),
         is_ascii: false,
         is_full_shape: false,
     });
@@ -81,6 +88,11 @@ thread_local! {
 
 fn scale(base: i32, dpi: u32) -> i32 {
     (base * dpi as i32 + 48) / 96
+}
+
+/// DPI 缩放后再乘皮肤字号倍率；下限 8px 防止畸形配置把字压没。
+fn font_height(base: i32, dpi: u32, font_scale: f32) -> i32 {
+    ((scale(base, dpi) as f32) * font_scale).round().max(8.0) as i32
 }
 
 unsafe fn make_font(height: i32) -> HFONT {
@@ -114,14 +126,19 @@ unsafe fn text_width(hdc: HDC, text: &str) -> i32 {
 
 pub struct CandidateUi {
     hwnd: Option<HWND>,
-    colors: CandidateColors,
+    shadow: ShadowShell,
 }
 
 impl CandidateUi {
     pub fn new() -> Self {
+        // 预热皮肤缓存：TSF DLL 部署形态下皮肤文件在 DLL 旁的 schemas 目录
+        let extra = crate::dll_path()
+            .parent()
+            .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
+        let _ = skin::load_with(|| extra);
         CandidateUi {
             hwnd: None,
-            colors: load_candidate_colors(),
+            shadow: ShadowShell::new(),
         }
     }
 
@@ -163,6 +180,8 @@ impl CandidateUi {
                 None,
             )
             .ok()?;
+            // 现代外观：Win11 圆角 + 沉浸式深色边框 + 按皮肤透明度分层
+            skin::apply_appearance(hwnd, &Skin::current());
             self.hwnd = Some(hwnd);
             Some(hwnd)
         }
@@ -173,6 +192,13 @@ impl CandidateUi {
         let Some(hwnd) = self.ensure_window() else {
             return;
         };
+        // 每次弹出重读皮肤：文件改动/主题改动即时生效（候选文件 <128KiB，代价可忽略）
+        let extra = crate::dll_path()
+            .parent()
+            .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
+        let skin = skin::load_with(|| extra);
+        skin::apply_appearance(hwnd, &skin);
+        let font_scale = skin.metrics.font_scale;
         // 部分宿主（DPI 虚拟化）对弹窗返回 96 兜底值，取系统 DPI 兜底
         let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
         let padding = scale(BASE_PADDING, dpi);
@@ -182,11 +208,11 @@ impl CandidateUi {
         // 用与绘制一致的字体实测文本宽度，横向布槽
         let (items, preedit_w) = unsafe {
             let hdc = GetDC(Some(hwnd));
-            let cand_font = make_font(scale(BASE_FONT_HEIGHT, dpi));
-            let preedit_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
+            let cand_font = make_font(font_height(BASE_FONT_HEIGHT, dpi, font_scale));
+            let preedit_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
 
             let old = SelectObject(hdc, HGDIOBJ(cand_font.0));
-            let sub_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
+            let sub_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
             let mut x = padding;
             let items: Vec<Item> = ctx
                 .candidates
@@ -253,7 +279,7 @@ impl CandidateUi {
             data.preedit = ctx.preedit.clone();
             data.items = items;
             data.dpi = dpi;
-            data.colors = self.colors;
+            data.skin = skin;
             data.is_ascii = ctx.is_ascii;
             data.is_full_shape = ctx.is_full_shape;
         });
@@ -279,11 +305,14 @@ impl CandidateUi {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            // 阴影壳贴到主窗正下方（NOACTIVATE、命中穿透，不抢 IME 焦点）
+            self.shadow.sync(hwnd, x, y, width, height, &skin.shadow);
             let _ = InvalidateRect(Some(hwnd), None, true);
         }
     }
 
     pub fn hide(&mut self) {
+        self.shadow.hide();
         if let Some(hwnd) = self.hwnd {
             unsafe {
                 let _ = ShowWindow(hwnd, SW_HIDE);
@@ -292,6 +321,7 @@ impl CandidateUi {
     }
 
     pub fn destroy(&mut self) {
+        self.shadow.destroy();
         if let Some(hwnd) = self.hwnd.take() {
             unsafe {
                 let _ = DestroyWindow(hwnd);
@@ -321,6 +351,17 @@ unsafe extern "system" fn wnd_proc(
         value if value == WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xffff) as i16;
             send_virtual_key(if delta < 0 { 0x22 } else { 0x21 });
+            LRESULT(0)
+        }
+        value if value == WM_SETTINGCHANGE => {
+            // 主题热切换："ImmersiveColorSet" 到达 → 刷新皮肤缓存并重绘
+            if skin::is_immersive_color_change(lparam) {
+                let skin = Skin::refresh_on_setting_change();
+                unsafe {
+                    skin::apply_appearance(hwnd, &skin);
+                    let _ = InvalidateRect(Some(hwnd), None, true);
+                }
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -368,7 +409,8 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let hl_pad = scale(BASE_HL_PAD, dpi);
         let preedit_h = scale(BASE_PREEDIT_HEIGHT, dpi);
         let row_h = scale(BASE_ROW_HEIGHT, dpi);
-        let colors = data.colors;
+        let colors = data.skin.candidate;
+        let font_scale = data.skin.metrics.font_scale;
 
         let bg = CreateSolidBrush(COLORREF(colors.background));
         FillRect(hdc, rc, bg);
@@ -376,7 +418,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         SetBkMode(hdc, TRANSPARENT);
 
         // 预编辑串（小号灰字，第一行）
-        let preedit_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
+        let preedit_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
         let old_font = SelectObject(hdc, HGDIOBJ(preedit_font.0));
         SetTextColor(hdc, COLORREF(colors.preedit));
         // 模式徽标（中/英 + 全/半角），与搜狗主流视觉一致；仅占 preedit 行尾部少量宽度。
@@ -406,7 +448,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         );
 
         // 候选行（第二行横排）
-        let cand_font = make_font(scale(BASE_FONT_HEIGHT, dpi));
+        let cand_font = make_font(font_height(BASE_FONT_HEIGHT, dpi, font_scale));
         SelectObject(hdc, HGDIOBJ(cand_font.0));
         let row_top = padding + preedit_h;
         for item in &data.items {
@@ -449,7 +491,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
             // 这里用 cand_font 实测主文本宽度定位 comment 起点。
             if !item.comment.is_empty() {
                 let pure_text_w = text_width(hdc, &item.text);
-                let sub_font = make_font(scale(BASE_PREEDIT_FONT_HEIGHT, dpi));
+                let sub_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
                 SelectObject(hdc, HGDIOBJ(sub_font.0));
                 SetTextColor(hdc, COLORREF(colors.label));
                 draw_line(

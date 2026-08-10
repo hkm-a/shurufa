@@ -5,6 +5,13 @@
 //! 同步客户端），异步通过 `std::thread::spawn` + `PostMessageW` 回到
 //! UI 线程。API key 从环境变量 `AGNES_API_KEY` 读取，**永不落盘、
 //! 永不混进日志**；缺环境变量时面板只显示配置提示，不发请求。
+//!
+//! 本轮改动摘要（皮肤 v2 / 现代化外观 / 主题热切换）：
+//! - 删除硬编码 COLOR_* 常量；颜色统一来自共享皮肤（`crate::panel::skin`），
+//!   按系统 light/dark 变体取色，主题切换即时生效。
+//! - 字号乘 `metrics.font_scale`；`metrics.opacity` < 1 时整体透明；
+//!   `apply_appearance` 应用 Win11 圆角 + 深色边框，`ShadowShell` 画阴影。
+//! - 新增 `on_theme_changed()`：由 panel.rs 的主题监听窗口统一触发重设+重绘。
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -29,8 +36,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW, MoveWindow, PostMessageW,
     RegisterClassW, SetForegroundWindow, ShowWindow, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO,
     IDC_ARROW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_APP, WM_CHAR, WM_KEYDOWN,
-    WM_KILLFOCUS, WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_KILLFOCUS, WM_PAINT, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
+
+use crate::panel::skin::{self, ShadowShell, Skin};
 
 pub const HOTKEY_ID: i32 = 2;
 /// 划词润色热键：从当前前台抓取选区（Ctrl+C）→ 送 Agnes Rewrite 模板 →
@@ -56,13 +65,37 @@ const BASE_PADDING: i32 = 10;
 const BASE_FONT: i32 = 16;
 const BASE_SMALL_FONT: i32 = 12;
 
-const COLOR_BG: u32 = 0x00FA_FAFA;
-const COLOR_PROMPT_BG: u32 = 0x00FF_FFFF;
-const COLOR_PROMPT_HL: u32 = 0x00D6_E4F0;
-const COLOR_TEXT: u32 = 0x0020_2020;
-const COLOR_DIM: u32 = 0x0080_8080;
-const COLOR_ACCENT: u32 = 0x00A0_5010;
-const COLOR_ERROR: u32 = 0x0000_30C0;
+/// 面板调色板：全部来自皮肤候选窗段，禁止在绘制路径写死颜色。
+/// 映射：prompt 输入行背景取候选高亮色（与底色拉出层级差），强调/错误都走
+/// label（皮肤的强调色），弱化文字走 preedit 灰。
+#[derive(Clone, Copy)]
+struct Palette {
+    bg: u32,
+    prompt_bg: u32,
+    prompt_hl: u32,
+    text: u32,
+    dim: u32,
+    accent: u32,
+    error: u32,
+}
+
+fn palette() -> (Palette, skin::Metrics, skin::Shadow) {
+    let skin = Skin::current();
+    let c = skin.candidate;
+    (
+        Palette {
+            bg: c.background,
+            prompt_bg: c.highlight_background,
+            prompt_hl: c.label,
+            text: c.text,
+            dim: c.preedit,
+            accent: c.label,
+            error: c.label,
+        },
+        skin.metrics,
+        skin.shadow,
+    )
+}
 
 struct PanelState {
     hwnd: HWND,
@@ -99,6 +132,9 @@ struct EditingState {
 thread_local! {
     static PANEL: RefCell<Option<PanelState>> = const { RefCell::new(None) };
     static EDITING: RefCell<EditingState> = RefCell::new(EditingState { query: String::new() });
+    static SHADOW: RefCell<ShadowShell> = RefCell::new(ShadowShell::new());
+    /// 面板窗口句柄：主题切换回调靠它找到并重绘面板。
+    static PANEL_HWND: RefCell<Option<HWND>> = const { RefCell::new(None) };
 }
 
 /// 注册全局热键；首选 Ctrl+Shift+W（与"输入法"的 Writer 思路呼应），失败
@@ -263,6 +299,9 @@ pub fn show() {
         crate::log_line("AI 面板窗口创建失败");
         return;
     };
+    let (_, _, shadow) = palette();
+    let skin = Skin::current();
+    skin::apply_appearance(hwnd, &skin);
     let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
     let width = scale(BASE_WIDTH, dpi);
     let min_height = scale(BASE_PADDING * 2 + BASE_PROMPT_ROW + BASE_HINT_HEIGHT + BASE_PREVIEW_MIN, dpi);
@@ -291,6 +330,8 @@ pub fn show() {
         y = y.min(GetSystemMetrics(SM_CYSCREEN) - min_height - 8).max(0);
         let _ = MoveWindow(hwnd, x, y, width, min_height, true);
         let _ = ShowWindow(hwnd, SW_SHOWNA);
+        // 阴影壳：主窗下一层的半透明黑圆角壳
+        SHADOW.with_borrow_mut(|shell| shell.sync(hwnd, x, y, width, min_height, &shadow));
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
         let _ = InvalidateRect(Some(hwnd), None, true);
@@ -300,6 +341,7 @@ pub fn show() {
 fn hide() {
     // 见 panel.rs：隐藏持焦点的窗口会同步派发 WM_KILLFOCUS → 重入 hide 双重借用。
     let hwnd = PANEL.with_borrow_mut(|slot| slot.take().map(|s| s.hwnd));
+    SHADOW.with_borrow_mut(|shell| shell.hide());
     if let Some(hwnd) = hwnd {
         unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);
@@ -655,8 +697,22 @@ fn ensure_window() -> Option<HWND> {
             None,
         )
         .ok()?;
+        skin::apply_appearance(hwnd, &Skin::current());
         CACHED_HWND.with_borrow_mut(|h| *h = Some(hwnd));
+        PANEL_HWND.with_borrow_mut(|h| *h = Some(hwnd));
         Some(hwnd)
+    }
+}
+
+/// 主题变化后由主题监听窗口（panel.rs）调用：重设外观并重绘可见面板。
+pub fn on_theme_changed() {
+    let hwnd = PANEL_HWND.with_borrow(|h| *h);
+    if let Some(hwnd) = hwnd {
+        let skin = Skin::current();
+        unsafe {
+            skin::apply_appearance(hwnd, &skin);
+            let _ = InvalidateRect(Some(hwnd), None, true);
+        }
     }
 }
 
@@ -684,6 +740,16 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_KILLFOCUS => {
             hide();
+            LRESULT(0)
+        }
+        WM_SETTINGCHANGE => {
+            if skin::is_immersive_color_change(lparam) {
+                let skin = Skin::refresh_on_setting_change();
+                unsafe {
+                    skin::apply_appearance(hwnd, &skin);
+                    let _ = InvalidateRect(Some(hwnd), None, true);
+                }
+            }
             LRESULT(0)
         }
         x if x == WM_AI_DELTA => {
@@ -884,33 +950,36 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let hint_h = scale(BASE_HINT_HEIGHT, dpi);
         let preview_h = scale(BASE_PREVIEW_MIN, dpi);
         let width = scale(BASE_WIDTH, dpi);
+        let (colors, metrics, _) = palette();
+        let fs = metrics.font_scale;
+        let sf = |base: i32| ((scale(base, dpi) as f32) * fs).round().max(8.0) as i32;
 
-        let bg = CreateSolidBrush(COLORREF(COLOR_BG));
+        let bg = CreateSolidBrush(COLORREF(colors.bg));
         FillRect(hdc, rc, bg);
         let _ = DeleteObject(HGDIOBJ(bg.0));
         SetBkMode(hdc, TRANSPARENT);
 
-        let font = make_font(scale(BASE_FONT, dpi), FW_NORMAL.0 as i32);
-        let bold = make_font(scale(BASE_FONT, dpi), FW_BOLD.0 as i32);
-        let small = make_font(scale(BASE_SMALL_FONT, dpi), FW_NORMAL.0 as i32);
+        let font = make_font(sf(BASE_FONT), FW_NORMAL.0 as i32);
+        let bold = make_font(sf(BASE_FONT), FW_BOLD.0 as i32);
+        let small = make_font(sf(BASE_SMALL_FONT), FW_NORMAL.0 as i32);
 
-        // 顶部：提示词输入行（白底）
+        // 顶部：提示词输入行（浅色层）
         let prompt_rect = RECT {
             left: padding,
             top: padding,
             right: width - padding,
             bottom: padding + prompt_h,
         };
-        let prompt_brush = CreateSolidBrush(COLORREF(COLOR_PROMPT_BG));
+        let prompt_brush = CreateSolidBrush(COLORREF(colors.prompt_bg));
         FillRect(hdc, &prompt_rect, prompt_brush);
         let _ = DeleteObject(HGDIOBJ(prompt_brush.0));
         let old_font = SelectObject(hdc, HGDIOBJ(font.0));
         match &state.status {
             Status::Editing => {
-                SetTextColor(hdc, COLORREF(COLOR_TEXT));
+                SetTextColor(hdc, COLORREF(colors.text));
                 let query = EDITING.with_borrow(|e| e.query.clone());
                 let display = if query.is_empty() {
-                    SetTextColor(hdc, COLORREF(COLOR_DIM));
+                    SetTextColor(hdc, COLORREF(colors.dim));
                     "输入想让 AI 写的内容（如：会议纪要开头 200 字）…".to_owned()
                 } else {
                     format!("❯ {query}")
@@ -925,7 +994,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 );
             }
             Status::Pending { started, .. } => {
-                SetTextColor(hdc, COLORREF(COLOR_ACCENT));
+                SetTextColor(hdc, COLORREF(colors.accent));
                 let elapsed = started.elapsed().as_secs();
                 let query = EDITING.with_borrow(|e| e.query.clone());
                 draw_line(
@@ -938,7 +1007,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 );
             }
             Status::Preview { prompt, .. } => {
-                SetTextColor(hdc, COLORREF(COLOR_DIM));
+                SetTextColor(hdc, COLORREF(colors.dim));
                 draw_line(
                     hdc,
                     &format!("❯ {prompt}"),
@@ -949,7 +1018,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 );
             }
             Status::Failed { .. } | Status::Misconfigured => {
-                SetTextColor(hdc, COLORREF(COLOR_DIM));
+                SetTextColor(hdc, COLORREF(colors.dim));
                 let query = EDITING.with_borrow(|e| e.query.clone());
                 draw_line(
                     hdc,
@@ -972,7 +1041,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         match &state.status {
             Status::Editing => {
                 SelectObject(hdc, HGDIOBJ(small.0));
-                SetTextColor(hdc, COLORREF(COLOR_DIM));
+                SetTextColor(hdc, COLORREF(colors.dim));
                 draw_line(
                     hdc,
                     "回车提交 · Esc 关闭 · 草稿成功后再回车即粘贴",
@@ -985,7 +1054,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
             Status::Pending { partial, .. } => {
                 if partial.is_empty() {
                     SelectObject(hdc, HGDIOBJ(small.0));
-                    SetTextColor(hdc, COLORREF(COLOR_DIM));
+                    SetTextColor(hdc, COLORREF(colors.dim));
                     draw_line(
                         hdc,
                         "正在向 Agnes 请求草稿，请稍候；Esc 取消",
@@ -997,10 +1066,10 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 } else {
                     // SSE 流式片段先行渲染，等最终 WM_AI_DONE 落定 Preview。
                     SelectObject(hdc, HGDIOBJ(bold.0));
-                    SetTextColor(hdc, COLORREF(COLOR_PROMPT_HL));
+                    SetTextColor(hdc, COLORREF(colors.prompt_hl));
                     draw_line(hdc, "草稿（生成中…）", padding, mid_top, width - padding * 2, hint_h);
                     SelectObject(hdc, HGDIOBJ(font.0));
-                    SetTextColor(hdc, COLORREF(COLOR_TEXT));
+                    SetTextColor(hdc, COLORREF(colors.text));
                     let preview = crate::single_line_preview(partial, PREVIEW_MAX_CHARS);
                     draw_wrapped(
                         hdc,
@@ -1014,10 +1083,10 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
             }
             Status::Preview { draft, .. } => {
                 SelectObject(hdc, HGDIOBJ(bold.0));
-                SetTextColor(hdc, COLORREF(COLOR_PROMPT_HL));
+                SetTextColor(hdc, COLORREF(colors.prompt_hl));
                 draw_line(hdc, "草稿", padding, mid_top, width - padding * 2, hint_h);
                 SelectObject(hdc, HGDIOBJ(font.0));
-                SetTextColor(hdc, COLORREF(COLOR_TEXT));
+                SetTextColor(hdc, COLORREF(colors.text));
                 let preview = crate::single_line_preview(draft, PREVIEW_MAX_CHARS);
                 draw_wrapped(
                     hdc,
@@ -1030,7 +1099,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
             }
             Status::Failed { reason } => {
                 SelectObject(hdc, HGDIOBJ(bold.0));
-                SetTextColor(hdc, COLORREF(COLOR_ERROR));
+                SetTextColor(hdc, COLORREF(colors.error));
                 draw_line(
                     hdc,
                     "请求失败",
@@ -1051,7 +1120,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
             }
             Status::Misconfigured => {
                 SelectObject(hdc, HGDIOBJ(bold.0));
-                SetTextColor(hdc, COLORREF(COLOR_ERROR));
+                SetTextColor(hdc, COLORREF(colors.error));
                 draw_line(
                     hdc,
                     "未配置 AGNES_API_KEY",
@@ -1061,7 +1130,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                     hint_h,
                 );
                 SelectObject(hdc, HGDIOBJ(small.0));
-                SetTextColor(hdc, COLORREF(COLOR_DIM));
+                SetTextColor(hdc, COLORREF(colors.dim));
                 draw_wrapped(
                     hdc,
                     "在“系统属性 → 环境变量”中添加用户级 AGNES_API_KEY，重启本进程后生效；key 不会被写入任何日志或配置文件。",
@@ -1076,7 +1145,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         // 底部：快捷键提示
         let footer_top = mid_bottom + padding;
         SelectObject(hdc, HGDIOBJ(small.0));
-        SetTextColor(hdc, COLORREF(COLOR_DIM));
+        SetTextColor(hdc, COLORREF(colors.dim));
         let footer = match &state.status {
             Status::Editing => "回车 提交 · Esc 关闭",
             Status::Pending { .. } => "Esc 取消",

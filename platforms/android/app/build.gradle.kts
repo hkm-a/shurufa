@@ -97,5 +97,7 @@ dependencies {
     // FileProvider 与 InputConnectionCompat.commitContent（图片上屏）
     implementation("androidx.core:core:1.13.1")
     implementation("org.json:json:20240303")
+    // MainActivity 首页卡片用 Material3（Theme.Material3 / MaterialCardView）
+    implementation("com.google.android.material:material:1.12.0")
     testImplementation("junit:junit:4.13.2")
 }

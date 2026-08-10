@@ -4,7 +4,7 @@ import android.content.Context
 import java.io.File
 import org.json.JSONObject
 
-/** 键盘与候选窗共用的跨端皮肤颜色语义（ARGB）。 */
+/** 键盘与候选窗共用的跨端皮肤颜色语义（ARGB）。panel_* 系列是 AI/图片预览等浮层面板用色。 */
 internal data class SkinPalette(
     val bg: Int,
     val key: Int,
@@ -17,6 +17,13 @@ internal data class SkinPalette(
     val candidateHl: Int,
     val preedit: Int,
     val accent: Int,
+    val panelBackground: Int,
+    val panelCard: Int,
+    val panelText: Int,
+    val panelMuted: Int,
+    val panelStroke: Int,
+    val panelPreviewBg: Int,
+    val panelAccentPressed: Int,
 ) {
     companion object {
         fun lightDefault() = SkinPalette(
@@ -31,6 +38,13 @@ internal data class SkinPalette(
             candidateHl = 0xFF1B9E77.toInt(),
             preedit = 0xFF9AA2AB.toInt(),
             accent = 0xFF1B9E77.toInt(),
+            panelBackground = 0xFFF7F7F7.toInt(),
+            panelCard = 0xFFFFFFFF.toInt(),
+            panelText = 0xFF333333.toInt(),
+            panelMuted = 0xFF888888.toInt(),
+            panelStroke = 0xFFD9D9D9.toInt(),
+            panelPreviewBg = 0xFFF2F3F5.toInt(),
+            panelAccentPressed = 0xFF157A5C.toInt(),
         )
 
         fun darkDefault() = SkinPalette(
@@ -45,6 +59,13 @@ internal data class SkinPalette(
             candidateHl = 0xFF4ECDA2.toInt(),
             preedit = 0xFF8E9399.toInt(),
             accent = 0xFF4ECDA2.toInt(),
+            panelBackground = 0xFF23262C.toInt(),
+            panelCard = 0xFF2B2F36.toInt(),
+            panelText = 0xFFE6E8EB.toInt(),
+            panelMuted = 0xFF8A8F99.toInt(),
+            panelStroke = 0xFF4A5059.toInt(),
+            panelPreviewBg = 0xFF1A1C20.toInt(),
+            panelAccentPressed = 0xFF3AA985.toInt(),
         )
 
         /** 用共享皮肤 JSON 解析指定变体；任一缺失或非法字段回退到默认颜色。 */
@@ -55,6 +76,8 @@ internal data class SkinPalette(
                 val variant = root.optJSONObject(if (dark) "dark" else "light") ?: return fallback
                 val keyboard = variant.optJSONObject("keyboard") ?: return fallback
                 val candidate = variant.optJSONObject("candidate") ?: return fallback
+                // 向下兼容：老 skin.json 没有 panel 段时整体沿用默认面板色。
+                val panel = variant.optJSONObject("panel")
                 SkinPalette(
                     bg = color(keyboard, "background", fallback.bg),
                     key = color(keyboard, "key", fallback.key),
@@ -67,6 +90,20 @@ internal data class SkinPalette(
                     candidateHl = color(keyboard, "accent", fallback.candidateHl),
                     preedit = color(keyboard, "muted_text", fallback.preedit),
                     accent = color(keyboard, "accent", fallback.accent),
+                    panelBackground = panel?.let { color(it, "background", fallback.panelBackground) }
+                        ?: fallback.panelBackground,
+                    panelCard = panel?.let { color(it, "card", fallback.panelCard) }
+                        ?: fallback.panelCard,
+                    panelText = panel?.let { color(it, "text", fallback.panelText) }
+                        ?: fallback.panelText,
+                    panelMuted = panel?.let { color(it, "muted_text", fallback.panelMuted) }
+                        ?: fallback.panelMuted,
+                    panelStroke = panel?.let { color(it, "stroke", fallback.panelStroke) }
+                        ?: fallback.panelStroke,
+                    panelPreviewBg = panel?.let { color(it, "preview_background", fallback.panelPreviewBg) }
+                        ?: fallback.panelPreviewBg,
+                    panelAccentPressed = panel?.let { color(it, "accent_pressed", fallback.panelAccentPressed) }
+                        ?: fallback.panelAccentPressed,
                 )
             } catch (_: Exception) {
                 fallback

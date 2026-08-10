@@ -3,6 +3,14 @@
 //! 交互：Ctrl+Shift+V（冲突时回落 Alt+V）呼出 → 直接键入筛选、↑/↓ 或数字键
 //! 选择 → 回车写回剪贴板并向原前台窗口模拟 Ctrl+V 完成粘贴，Esc 或失焦关闭。
 //! 面板与监听器同属一条 UI 线程，状态挂 thread_local。
+//!
+//! 本轮改动摘要（皮肤 v2 / 现代化外观 / 主题热切换）：
+//! - 删除硬编码 COLOR_* 常量；颜色统一来自共享 `skin::Skin`
+//!   （与 TSF 端同一份 skin.rs，经 `#[path]` 引入，按系统 light/dark 变体）。
+//! - 字号乘 `metrics.font_scale`；`metrics.opacity` < 1 时整体透明；
+//!   `skin::apply_appearance` 应用 Win11 圆角 + 深色边框，`ShadowShell` 画阴影。
+//! - 新增隐藏顶层"心眼"窗口 `ensure_theme_watcher` 接收 WM_SETTINGCHANGE
+//!   （ImmersiveColorSet），触发 Skin 缓存刷新并使历史/AI 两面板即时换肤。
 
 use std::cell::RefCell;
 
@@ -26,9 +34,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
     GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW, MoveWindow, RegisterClassW,
     SetForegroundWindow, ShowWindow, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO, IDC_ARROW, SM_CXSCREEN,
-    SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_CHAR, WM_KEYDOWN, WM_KILLFOCUS, WM_PAINT, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_CHAR, WM_KEYDOWN, WM_KILLFOCUS, WM_PAINT,
+    WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
+
+// 与 TSF 端共享同一份 skin 解析/DWM 助手源码（该文件不引用任何 crate 专属符号）。
+#[path = "../../windows/src/skin.rs"]
+pub(crate) mod skin;
+use skin::{ShadowShell, Skin};
 
 /// 面板一次展示的最大条目数（与数字键 1-9 对应）
 const MAX_ROWS: usize = 9;
@@ -42,11 +55,31 @@ const BASE_PADDING: i32 = 8;
 const BASE_FONT: i32 = 16;
 const BASE_SMALL_FONT: i32 = 13;
 
-const COLOR_BG: u32 = 0x00FA_FAFA;
-const COLOR_ROW_HL: u32 = 0x00F5_E6D8;
-const COLOR_TEXT: u32 = 0x0020_2020;
-const COLOR_DIM: u32 = 0x0090_9090;
-const COLOR_LABEL: u32 = 0x00B0_6030;
+/// 面板调色板：全部来自皮肤候选窗段，任何硬编码颜色都禁止出现在绘制路径。
+#[derive(Clone, Copy)]
+struct Palette {
+    bg: u32,
+    row_hl: u32,
+    text: u32,
+    dim: u32,
+    label: u32,
+}
+
+fn palette() -> (Palette, skin::Metrics, skin::Shadow) {
+    let skin = Skin::current();
+    let c = skin.candidate;
+    (
+        Palette {
+            bg: c.background,
+            row_hl: c.highlight_background,
+            text: c.text,
+            dim: c.preedit,
+            label: c.label,
+        },
+        skin.metrics,
+        skin.shadow,
+    )
+}
 
 struct PanelState {
     hwnd: HWND,
@@ -60,13 +93,19 @@ struct PanelState {
 
 thread_local! {
     static PANEL: RefCell<Option<PanelState>> = const { RefCell::new(None) };
+    static SHADOW: RefCell<ShadowShell> = RefCell::new(ShadowShell::new());
+    /// 面板窗口句柄：主题切换回调靠它找到并重绘面板。
+    static PANEL_HWND: RefCell<Option<HWND>> = const { RefCell::new(None) };
 }
 
 /// 注册全局热键；首选 Ctrl+Shift+V（对齐微信输入法习惯），
 /// 被占用时回落 Alt+V。返回实际生效的描述。
 /// 线程级注册（hwnd=None）：WM_HOTKEY 直接进线程队列，由消息循环
 /// 截获，不依赖窗口消息投递路径。
+/// 同时创建隐藏的主题监听窗口（WM_SETTINGCHANGE 只广播到顶层窗口，
+/// 消息专用窗口收不到，所以这里用一个永不显示的顶层窗口）。
 pub fn register_hotkey() -> &'static str {
+    ensure_theme_watcher();
     unsafe {
         let which = if RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x56).is_ok() {
             "Ctrl+Shift+V"
@@ -88,6 +127,10 @@ pub fn show(entries: Vec<ClipEntry>) {
         return;
     };
     crate::log_line(&format!("面板弹出，条目数 {}", entries.len()));
+    // 每次弹出都按当前皮肤重设外观（圆角/深边框/透明度）
+    let (_, _, shadow) = palette();
+    let skin = Skin::current();
+    skin::apply_appearance(hwnd, &skin);
     let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
 
     let row_count = entries.len().max(1) as i32;
@@ -117,6 +160,8 @@ pub fn show(entries: Vec<ClipEntry>) {
     unsafe {
         let _ = MoveWindow(hwnd, x, y, width, height, true);
         let _ = ShowWindow(hwnd, SW_SHOWNA);
+        // 阴影壳：主窗下一层的半透明黑圆角壳
+        SHADOW.with_borrow_mut(|shell| shell.sync(hwnd, x, y, width, height, &shadow));
         // 热键按下让本线程获得前台权限，此处可以合法抢焦点收键盘
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
@@ -129,6 +174,7 @@ fn hide() {
     // 同步派发 WM_KILLFOCUS，回调里会再次进入 hide()，借用期间
     // 重入会触发 RefCell 双重借用 panic 并拖垮整个进程。
     let hwnd = PANEL.with_borrow_mut(|slot| slot.take().map(|s| s.hwnd));
+    SHADOW.with_borrow_mut(|shell| shell.hide());
     if let Some(hwnd) = hwnd {
         unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);
@@ -267,9 +313,85 @@ fn ensure_window() -> Option<HWND> {
             None,
         )
         .ok()?;
+        skin::apply_appearance(hwnd, &Skin::current());
         CACHED_HWND.with_borrow_mut(|h| *h = Some(hwnd));
+        register_panel_hwnd(hwnd);
         Some(hwnd)
     }
+}
+
+/// 主题（或皮肤文件）变化后由主题监听窗口调用：重设外观并重绘可见面板。
+pub fn on_theme_changed() {
+    let hwnd = PANEL_HWND.with_borrow(|h| *h);
+    if let Some(hwnd) = hwnd {
+        let skin = Skin::current();
+        unsafe {
+            skin::apply_appearance(hwnd, &skin);
+            let _ = InvalidateRect(Some(hwnd), None, true);
+        }
+    }
+}
+
+/// 登记面板窗口句柄，供主题切换回调找到它。
+fn register_panel_hwnd(hwnd: HWND) {
+    PANEL_HWND.with_borrow_mut(|h| *h = Some(hwnd));
+}
+
+/// 心眼窗口：永不显示的顶层窗口，只为接收系统广播 WM_SETTINGCHANGE。
+/// （HWND_MESSAGE 消息专用窗口收不到广播，所以必须是真顶层窗口。）
+fn ensure_theme_watcher() {
+    thread_local! {
+        static WATCHER_CREATED: RefCell<bool> = const { RefCell::new(false) };
+    }
+    if WATCHER_CREATED.with_borrow(|b| *b) {
+        return;
+    }
+    unsafe {
+        let Ok(hinstance) = GetModuleHandleW(PCWSTR::null()) else {
+            return;
+        };
+        let class_name = w!("ShurufaThemeWatcher");
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(theme_watcher_proc),
+            hInstance: hinstance.into(),
+            lpszClassName: class_name,
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        let hwnd = CreateWindowExW(
+            Default::default(),
+            class_name,
+            w!(""),
+            Default::default(),
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            Some(hinstance.into()),
+            None,
+        );
+        if hwnd.is_ok() {
+            WATCHER_CREATED.with_borrow_mut(|b| *b = true);
+        }
+    }
+}
+
+unsafe extern "system" fn theme_watcher_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg == WM_SETTINGCHANGE && skin::is_immersive_color_change(lparam) {
+        // 刷新共享皮肤缓存，随后让两个面板各自按新皮肤重设外观+重绘
+        let _ = Skin::refresh_on_setting_change();
+        crate::panel::on_theme_changed();
+        crate::ai_panel::on_theme_changed();
+        return LRESULT(0);
+    }
+    DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -296,6 +418,17 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_KILLFOCUS => {
             hide();
+            LRESULT(0)
+        }
+        WM_SETTINGCHANGE => {
+            // 面板自身也收到广播：隐藏状态下冷启动时按新皮肤画
+            if skin::is_immersive_color_change(lparam) {
+                let skin = Skin::refresh_on_setting_change();
+                unsafe {
+                    skin::apply_appearance(hwnd, &skin);
+                    let _ = InvalidateRect(Some(hwnd), None, true);
+                }
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -407,6 +540,11 @@ unsafe fn make_font(height: i32, weight: i32) -> HFONT {
     )
 }
 
+/// DPI 缩放后乘皮肤字号倍率。
+fn scaled_font(base: i32, dpi: u32, font_scale: f32) -> i32 {
+    ((scale(base, dpi) as f32) * font_scale).round().max(8.0) as i32
+}
+
 unsafe fn paint(hdc: HDC, rc: &RECT) {
     PANEL.with_borrow(|slot| {
         let Some(state) = slot.as_ref() else {
@@ -416,19 +554,21 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let padding = scale(BASE_PADDING, dpi);
         let row_h = scale(BASE_ROW_HEIGHT, dpi);
         let width = scale(BASE_WIDTH, dpi);
+        let (colors, metrics, _) = palette();
+        let fs = metrics.font_scale;
 
-        let bg = CreateSolidBrush(COLORREF(COLOR_BG));
+        let bg = CreateSolidBrush(COLORREF(colors.bg));
         FillRect(hdc, rc, bg);
         let _ = DeleteObject(HGDIOBJ(bg.0));
         SetBkMode(hdc, TRANSPARENT);
 
-        let font = make_font(scale(BASE_FONT, dpi), FW_NORMAL.0 as i32);
-        let bold = make_font(scale(BASE_FONT, dpi), FW_BOLD.0 as i32);
-        let small = make_font(scale(BASE_SMALL_FONT, dpi), FW_NORMAL.0 as i32);
+        let font = make_font(scaled_font(BASE_FONT, dpi, fs), FW_NORMAL.0 as i32);
+        let bold = make_font(scaled_font(BASE_FONT, dpi, fs), FW_BOLD.0 as i32);
+        let small = make_font(scaled_font(BASE_SMALL_FONT, dpi, fs), FW_NORMAL.0 as i32);
         let old_font = SelectObject(hdc, HGDIOBJ(font.0));
 
         if state.entries.is_empty() {
-            SetTextColor(hdc, COLORREF(COLOR_DIM));
+            SetTextColor(hdc, COLORREF(colors.dim));
             draw_line(
                 hdc,
                 if state.query.is_empty() {
@@ -446,7 +586,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         for (i, entry) in state.entries.iter().enumerate().take(MAX_ROWS) {
             let top = padding + i as i32 * row_h;
             if i == state.selected {
-                let hl = CreateSolidBrush(COLORREF(COLOR_ROW_HL));
+                let hl = CreateSolidBrush(COLORREF(colors.row_hl));
                 let row_rect = RECT {
                     left: scale(4, dpi),
                     top,
@@ -459,7 +599,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
 
             // 序号
             SelectObject(hdc, HGDIOBJ(bold.0));
-            SetTextColor(hdc, COLORREF(COLOR_LABEL));
+            SetTextColor(hdc, COLORREF(colors.label));
             draw_line(
                 hdc,
                 &format!("{}", i + 1),
@@ -471,7 +611,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
 
             // 类型标记 + 置顶星标
             SelectObject(hdc, HGDIOBJ(small.0));
-            SetTextColor(hdc, COLORREF(COLOR_DIM));
+            SetTextColor(hdc, COLORREF(colors.dim));
             let tag = match (entry.kind, entry.pinned) {
                 (ClipKind::Image, p) => {
                     if p {
@@ -501,7 +641,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
 
             // 内容预览
             SelectObject(hdc, HGDIOBJ(font.0));
-            SetTextColor(hdc, COLORREF(COLOR_TEXT));
+            SetTextColor(hdc, COLORREF(colors.text));
             let preview = match entry.kind {
                 ClipKind::Image => format!("[图片 {} KB]", (entry.data_size / 1024).max(1)),
                 _ => crate::single_line_preview(&entry.text, 60),
@@ -519,7 +659,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         // 底部操作提示
         let footer_top = padding + state.entries.len().max(1) as i32 * row_h;
         SelectObject(hdc, HGDIOBJ(small.0));
-        SetTextColor(hdc, COLORREF(COLOR_DIM));
+        SetTextColor(hdc, COLORREF(colors.dim));
         let footer = if state.query.is_empty() {
             "直接键入筛选 · 回车/数字 粘贴 · Esc 关闭".to_owned()
         } else {

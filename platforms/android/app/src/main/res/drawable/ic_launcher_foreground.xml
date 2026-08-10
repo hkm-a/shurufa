@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- “书”简洁线条：竖 + 三横折，白色粗描边、透明底，居中于 108dp 视口安全区内。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M54,30 V78 M37,33 L71,33 V41 L37,41 Z M37,49 L71,49 V57 L37,57 Z M33,65 L75,65"
+        android:strokeWidth="6"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

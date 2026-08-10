@@ -15,6 +15,8 @@ import {
   LayoutDashboard,
   Lightbulb,
   MonitorSmartphone,
+  Moon,
+  Palette,
   Pin,
   Play,
   RadioTower,
@@ -25,6 +27,7 @@ import {
   SlidersHorizontal,
   Square,
   Sparkles,
+  Sun,
   Trash2
 } from "lucide";
 
@@ -42,6 +45,8 @@ const controlCenterIcons = {
   LayoutDashboard,
   Lightbulb,
   MonitorSmartphone,
+  Moon,
+  Palette,
   Pin,
   Play,
   RadioTower,
@@ -52,6 +57,7 @@ const controlCenterIcons = {
   SlidersHorizontal,
   Square,
   Sparkles,
+  Sun,
   Trash2
 };
 
@@ -60,9 +66,38 @@ const pages = [
   { id: "input", label: "输入", icon: "keyboard" },
   { id: "history", label: "历史", icon: "clipboard-list" },
   { id: "dictionary", label: "词库", icon: "book-open-text" },
+  { id: "skin", label: "皮肤", icon: "palette" },
   { id: "sync", label: "跨设备", icon: "monitor-smartphone" },
   { id: "settings", label: "偏好", icon: "sliders-horizontal" }
 ];
+
+// 主题："auto" 跟随系统（默认）；"light"|"dark" 由用户手选，记 localStorage
+const THEME_KEY = "shurufa-settings-theme";
+function currentTheme() {
+  return localStorage.getItem(THEME_KEY) || "auto";
+}
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === "light" || theme === "dark") {
+    root.dataset.theme = theme;
+  } else {
+    delete root.dataset.theme;
+  }
+}
+function toggleTheme() {
+  const next = currentTheme() === "dark" ? "light" : currentTheme() === "light" ? "auto" : "dark";
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+  // 顶部按钮的图标跟用户当前选的主题保持一致
+  const btn = document.querySelector(".theme-toggle");
+  if (btn) {
+    const icon = next === "dark" ? "moon" : next === "light" ? "sun" : "monitor-smartphone";
+    btn.innerHTML = `<i data-lucide="${icon}"></i>`;
+    btn.title = `主题：${next === "auto" ? "跟随系统" : next === "light" ? "亮色" : "暗色"}`;
+    createIcons({ icons: controlCenterIcons, nameAttr: "data-lucide", attrs: { class: "lucide" } });
+  }
+}
+applyTheme(currentTheme());
 
 let activePage = "workspace";
 let dashboard = {
@@ -78,6 +113,8 @@ let imeOptions = null;
 let dictionaryInfo = { revision: "" };
 // 打字统计：null 表示尚未加载或读取失败（面板走兜底样式）
 let typingStats = null;
+// 皮肤编辑器：null=未加载；dirty=待保存；error=JSON 解析失败时给用户的提示
+let skinState = { loaded: false, content: "", source: "none", user_path: "", dirty: false };
 
 const app = document.querySelector("#app");
 
@@ -239,10 +276,30 @@ function pageTemplate() {
     case "input": return inputPage();
     case "history": return historyPage();
     case "dictionary": return dictionaryPage();
+    case "skin": return skinPage();
     case "sync": return syncPage();
     case "settings": return settingsPage();
     default: return workspacePage();
   }
+}
+
+function skinPage() {
+  const status = skinState.source === "user" ? "自定义" : skinState.source === "builtin" ? "内置默认" : "未找到皮肤文件";
+  const statusClass = skinState.dirty ? "warn" : skinState.source === "user" ? "info" : "";
+  return `
+    <section class="page skin-page">
+      <header class="page-header"><div><p class="eyebrow">APPEARANCE</p><h1>皮肤</h1></div><div class="header-actions"><span class="status-pill ${statusClass}">${status}${skinState.dirty ? " · 未保存" : ""}</span></div></header>
+      <article class="setting-panel">
+        <p class="skin-note">编辑 <code>shurufa-skin.json</code> 控制候选窗颜色、圆角、字号与阴影。保存后立即生效（Windows 候选窗 / 历史面板 / AI 帮写面板 / Android 键盘都会读取）。</p>
+        <p class="skin-path">${skinState.user_path ? `<i data-lucide="folder-open"></i><code>${escapeHtml(skinState.user_path)}</code>` : ""}</p>
+        <textarea id="skin-editor" spellcheck="false" placeholder='{"version":2, ...}'>${escapeTextarea(skinState.content)}</textarea>
+        <div class="field-action">
+          <button class="primary-action" data-action="save-skin"><i data-lucide="sparkles"></i>保存并应用</button>
+          <button class="outline-action" data-action="reset-skin"><i data-lucide="trash-2"></i>删除自定义（回退内置）</button>
+          <button class="outline-action" data-action="reload-skin"><i data-lucide="refresh-cw"></i>重新加载</button>
+        </div>
+      </article>
+    </section>`;
 }
 
 function render() {
@@ -253,8 +310,19 @@ function render() {
       <div class="sidebar-footer"><span class="footer-dot"></span><span>后台服务 ${dashboard.service_status}</span></div>
     </aside>
     <main class="content">${pageTemplate()}</main>
-    <div id="toast" class="${notice ? `show${notice.error ? " error" : ""}` : ""}" aria-live="polite">${notice ? escapeHtml(notice.message) : ""}</div>`;
+    <div id="toast" class="${notice ? `show${notice.error ? " error" : ""}` : ""}" aria-live="polite">${notice ? escapeHtml(notice.message) : ""}</div>
+    <button type="button" class="theme-toggle" aria-label="切换主题" title="主题：跟随系统"><i data-lucide="monitor-smartphone"></i></button>`;
   createIcons({ icons: controlCenterIcons });
+  const themeBtn = app.querySelector(".theme-toggle");
+  if (themeBtn) {
+    // 把按钮图标同步成当前主题（render 会重置 DOM，这里要每次 render 后重新点亮）
+    const t = currentTheme();
+    const icon = t === "dark" ? "moon" : t === "light" ? "sun" : "monitor-smartphone";
+    themeBtn.innerHTML = `<i data-lucide="${icon}"></i>`;
+    themeBtn.title = `主题：${t === "auto" ? "跟随系统" : t === "light" ? "亮色" : "暗色"}`;
+    createIcons({ icons: controlCenterIcons });
+    themeBtn.onclick = () => toggleTheme();
+  }
   app.querySelectorAll("button[data-action]").forEach((button) => {
     button.onclick = () => {
       button.disabled = true;
@@ -278,6 +346,18 @@ function render() {
         });
     };
   });
+  // 皮肤编辑器：只更新脏标记（不重渲染，否则丢焦点 / 重写光标）。
+  const skinEditor = app.querySelector("#skin-editor");
+  if (skinEditor) {
+    skinEditor.addEventListener("input", () => {
+      skinState.dirty = skinEditor.value !== skinState.content;
+      // 更新头部 status-pill（仅一次，不深 render）
+      const pill = app.querySelector(".skin-page .status-pill");
+      if (pill) {
+        pill.textContent = `${skinState.source === "user" ? "自定义" : skinState.source === "builtin" ? "内置默认" : "未找到皮肤文件"}${skinState.dirty ? " · 未保存" : ""}`;
+      }
+    });
+  }
 }
 
 async function refreshDashboard() {
@@ -315,6 +395,14 @@ async function navigateTo(page) {
       imeOptions = null;
       showToast(String(error), true);
     }
+  } else if (page === "skin") {
+    try {
+      const payload = await invoke("skin_payload");
+      skinState = { loaded: true, content: payload.content ?? "", source: payload.source, user_path: payload.user_path, dirty: false };
+    } catch (error) {
+      skinState = { loaded: false, content: "", source: "none", user_path: "", dirty: false };
+      showToast(String(error), true);
+    }
   } else if (page === "dictionary") {
     try {
       await refreshDictionaryInfo();
@@ -344,6 +432,34 @@ async function handleAction(button) {
       "refresh-history": [undefined, undefined, "历史已刷新"],
       refresh: [undefined, undefined, "后台状态已刷新"]
     };
+    if (action === "save-skin") {
+      const editor = document.querySelector("#skin-editor");
+      const content = editor ? editor.value : "";
+      await invoke("save_skin", { content });
+      skinState = { ...skinState, content, source: "user", dirty: false };
+      render();
+      showToast("皮肤已保存，候选窗与面板即时应用");
+      return;
+    }
+    if (action === "reset-skin") {
+      if (!window.confirm("删除自定义皮肤，回退到内置默认外观？")) {
+        render();
+        return;
+      }
+      await invoke("reset_skin");
+      const payload = await invoke("skin_payload");
+      skinState = { loaded: true, content: payload.content ?? "", source: payload.source, user_path: payload.user_path, dirty: false };
+      render();
+      showToast("已删除自定义皮肤");
+      return;
+    }
+    if (action === "reload-skin") {
+      const payload = await invoke("skin_payload");
+      skinState = { loaded: true, content: payload.content ?? "", source: payload.source, user_path: payload.user_path, dirty: false };
+      render();
+      showToast("已重新加载");
+      return;
+    }
     if (action === "rollback-dictionary") {
       const last = dictionaryInfo.revision || "上一版";
       if (!window.confirm(`将回滚到 ${last}，继续？`)) {
@@ -387,6 +503,11 @@ function showToast(message, error = false) {
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
+}
+
+// 文本域用：JSON 里的引号/单引号不需要转义，< & > 需要。
+function escapeTextarea(value) {
+  return String(value).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
 }
 
 refreshDashboard().catch((error) => showToast(String(error), true)).finally(render);

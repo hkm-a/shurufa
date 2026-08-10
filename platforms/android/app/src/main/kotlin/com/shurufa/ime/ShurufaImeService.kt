@@ -54,7 +54,7 @@ import kotlin.concurrent.thread
  */
 class ShurufaImeService : InputMethodService() {
 
-    /** 一套主题配色（ARGB）。 */
+    /** 一套主题配色（ARGB）。panel_* 系列来自 SkinPalette，不再硬编码。 */
     internal data class Palette(
         val bg: Int,
         val key: Int,
@@ -67,6 +67,13 @@ class ShurufaImeService : InputMethodService() {
         val candidateHl: Int,
         val preedit: Int,
         val accent: Int,
+        val panelBackground: Int,
+        val panelCard: Int,
+        val panelText: Int,
+        val panelMuted: Int,
+        val panelStroke: Int,
+        val panelPreviewBg: Int,
+        val panelAccentPressed: Int,
     )
 
     companion object {
@@ -389,6 +396,13 @@ class ShurufaImeService : InputMethodService() {
             candidateHl = skin.candidateHl,
             preedit = skin.preedit,
             accent = skin.accent,
+            panelBackground = skin.panelBackground,
+            panelCard = skin.panelCard,
+            panelText = skin.panelText,
+            panelMuted = skin.panelMuted,
+            panelStroke = skin.panelStroke,
+            panelPreviewBg = skin.panelPreviewBg,
+            panelAccentPressed = skin.panelAccentPressed,
         )
     }
 
@@ -670,12 +684,11 @@ class ShurufaImeService : InputMethodService() {
         }
 
     private fun buildAiPanel(): LinearLayout {
-        val dark = isDark()
-        val bg = if (dark) 0xFF23262C.toInt() else 0xFFF7F7F7.toInt()
-        val titleColor = if (dark) 0xFFE6E8EB.toInt() else 0xFF333333.toInt()
-        val hintColor = if (dark) 0xFF8A8F99.toInt() else 0xFF888888.toInt()
-        val inputBg = if (dark) 0xFF2B2F36.toInt() else 0xFFFFFFFF.toInt()
-        val inputStroke = if (dark) 0xFF4A5059.toInt() else 0xFFD9D9D9.toInt()
+        val bg = palette.panelBackground
+        val titleColor = palette.panelText
+        val hintColor = palette.panelMuted
+        val inputBg = palette.panelCard
+        val inputStroke = palette.panelStroke
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -972,15 +985,15 @@ class ShurufaImeService : InputMethodService() {
      */
     private fun buildImagePreviewKeyboard(): LinearLayout {
         val dark = isDark()
-        val toolbarBg = if (dark) 0xFF23262C.toInt() else 0xFFF7F7F7.toInt()
-        val titleColor = if (dark) 0xFFE6E8EB.toInt() else 0xFF333333.toInt()
-        val previewBg = if (dark) 0xFF1A1C20.toInt() else 0xFFF2F3F5.toInt()
-        val btnWhite = if (dark) 0xFF2B2F36.toInt() else 0xFFFFFFFF.toInt()
-        val btnText = if (dark) 0xFFE6E8EB.toInt() else 0xFF33383F.toInt()
-        val btnStroke = if (dark) 0xFF4A5059.toInt() else 0xFFD9D9D9.toInt()
+        val toolbarBg = palette.panelBackground
+        val titleColor = palette.panelText
+        val previewBg = palette.panelPreviewBg
+        val btnWhite = palette.panelCard
+        val btnText = palette.panelText
+        val btnStroke = palette.panelStroke
         // 主按钮用我们自己的品牌色（样式自己定，只借微信输入法的布局结构）
         val primaryColor = palette.accent
-        val primaryPressed = if (dark) 0xFFC98E4E.toInt() else 0xFF9C5A28.toInt()
+        val primaryPressed = palette.panelAccentPressed
 
         // 顶部工具栏：关闭 ✕ + 居中标题（同 S33：mContentInfoLayout 标题区）
         val toolbar = LinearLayout(this).apply {
@@ -1071,7 +1084,7 @@ class ShurufaImeService : InputMethodService() {
                     addState(
                         intArrayOf(android.R.attr.state_pressed),
                         GradientDrawable().apply {
-                            setColor(if (dark) 0xFF3A4048.toInt() else 0xFFEDEFF2.toInt())
+                            setColor(if (dark) palette.keyPressed else 0xFFEDEFF2.toInt())
                             cornerRadius = dp(22f).toFloat()
                             setStroke(dp(1f), btnStroke)
                         },

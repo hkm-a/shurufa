@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "light": {
     "keyboard": {
       "background": "#F2F3F5",
@@ -18,6 +18,11 @@
       "text": "#111418",
       "preedit": "#9AA2AB",
       "label": "#1B9E77"
+    },
+    "metrics": {
+      "radius": 8,
+      "font_scale": 1.0,
+      "opacity": 0.96
     }
   },
   "dark": {
@@ -38,6 +43,16 @@
       "text": "#F0F1F3",
       "preedit": "#8E9399",
       "label": "#4ECDA2"
+    },
+    "metrics": {
+      "radius": 8,
+      "font_scale": 1.0,
+      "opacity": 0.96
     }
+  },
+  "shadow": {
+    "enabled": true,
+    "radius": 18,
+    "alpha": 64
   }
 }

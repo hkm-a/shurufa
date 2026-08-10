@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">Shurufa 输入法</string>
     <string name="ime_name">Shurufa 拼音</string>
+    <string name="pair_activity_label">跨设备同步</string>
     <string name="sync_channel_name">剪贴板同步</string>
     <string name="sync_channel_description">在输入法未打开时同步电脑与手机剪贴板</string>
     <string name="sync_notification_title">Shurufa 剪贴板同步</string>

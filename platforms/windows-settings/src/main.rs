@@ -483,6 +483,79 @@ async fn rollback_dictionary() -> Result<String, String> {
     run_host_capture(&["dict-rollback"]).await
 }
 
+// ---------------------------------------------------------------------------
+// 皮肤文件读写（skin 编辑器）：用户覆盖版与内置版合并供 UI 编辑
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct SkinPayload {
+    /// %APPDATA%\shurufa\shurufa-skin.json 内容；不存在则回退到 exe 旁
+    /// schemas/shurufa-skin.json；两者都无 → None（UI 显示空模板）
+    content: Option<String>,
+    /// 用户覆盖文件路径；UI 保存按钮直接写这里
+    user_path: String,
+    /// 内容来源标记：User 覆盖 / Builtin 内置 / None 都无
+    source: String,
+}
+
+#[tauri::command]
+fn skin_payload() -> Result<SkinPayload, String> {
+    let user_path = app_data_dir().join("shurufa-skin.json");
+    if let Ok(text) = std::fs::read_to_string(&user_path) {
+        return Ok(SkinPayload {
+            content: Some(text),
+            user_path: user_path.display().to_string(),
+            source: "user".to_owned(),
+        });
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let builtin = dir.join("schemas").join("shurufa-skin.json");
+            if let Ok(text) = std::fs::read_to_string(&builtin) {
+                return Ok(SkinPayload {
+                    content: Some(text),
+                    user_path: user_path.display().to_string(),
+                    source: "builtin".to_owned(),
+                });
+            }
+        }
+    }
+    Ok(SkinPayload {
+        content: None,
+        user_path: user_path.display().to_string(),
+        source: "none".to_owned(),
+    })
+}
+
+#[tauri::command]
+fn save_skin(content: String) -> Result<(), String> {
+    // 基本完整性检查：必须是合法 JSON 且 version 字段为 1 或 2。
+    let value: serde_json::Value =
+        serde_json::from_str(&content).map_err(|error| format!("JSON 无效：{error}"))?;
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "缺少 version 字段".to_owned())?;
+    if version != 1 && version != 2 {
+        return Err(format!("version 仅支持 1 或 2，当前为 {version}"));
+    }
+    let path = app_data_dir().join("shurufa-skin.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| format!("创建目录失败：{error}"))?;
+    }
+    std::fs::write(&path, content).map_err(|error| format!("写入失败：{error}"))
+}
+
+#[tauri::command]
+fn reset_skin() -> Result<(), String> {
+    let path = app_data_dir().join("shurufa-skin.json");
+    match std::fs::remove_file(&path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("删除失败：{error}")),
+    }
+}
+
 fn main() {
     let builder = tauri::Builder::default().invoke_handler(tauri::generate_handler![
         dashboard_state,
@@ -502,7 +575,10 @@ fn main() {
         save_ime_options,
         typing_stats,
         dictionary_info,
-        rollback_dictionary
+        rollback_dictionary,
+        skin_payload,
+        save_skin,
+        reset_skin
     ]);
     #[cfg(feature = "ui-e2e")]
     let builder = builder.on_page_load(|webview, payload| {

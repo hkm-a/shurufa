@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 品牌色板：与 schemas/shurufa-skin.json 的 accent 保持一致 -->
+    <color name="ic_launcher_background">#1B9E77</color>
+    <color name="primary">#1B9E77</color>
+    <color name="primary_dark">#4ECDA2</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_dark">#1A1C20</color>
+    <color name="on_surface">#111418</color>
+    <color name="on_surface_dark">#F0F1F3</color>
+</resources>
