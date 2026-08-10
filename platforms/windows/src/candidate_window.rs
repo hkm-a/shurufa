@@ -18,8 +18,8 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, S
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
     GetTextExtentPoint32W, InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
-    DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HBRUSH, HDC, HFONT, HGDIOBJ,
-    PAINTSTRUCT, TRANSPARENT,
+    ValidateRect, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HBRUSH, HDC, HFONT,
+    HGDIOBJ, PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
@@ -30,8 +30,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, LoadCursorW, MoveWindow,
     RegisterClassW, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW,
     SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
-    WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WM_SETTINGCHANGE, WM_SIZE,
+    WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use ime_ipc::Context;
@@ -62,6 +62,8 @@ struct Item {
     label_w: i32,
     text_w: i32,
     highlighted: bool,
+    /// 主文本不含 comment 的实测宽度（GDI show() 时记录）；D2D comment 起点复用。
+    pure_text_w: i32,
 }
 
 struct PaintData {
@@ -71,6 +73,81 @@ struct PaintData {
     skin: Skin,
     is_ascii: bool,
     is_full_shape: bool,
+}
+
+/// 传给 D2D 后端的一帧绘制视图（纯纯值，不持 Ref 避免跨 thread_local 借）。
+/// 所有尺寸都是窗口客户区像素，已按 (dpi, font_scale) 展开。
+pub struct PaintView {
+    pub preedit: String,
+    pub items: Vec<ItemView>,
+    pub dpi: u32,
+    pub skin: Skin,
+    pub padding: i32,
+    pub preedit_h: i32,
+    pub row_h: i32,
+    pub label_gap: i32,
+    pub hl_pad: i32,
+    pub mode_badge: String,
+    /// 候选主字体 em-height（px）
+    pub cand_font_h: i32,
+    /// preedit/副标 小字体 em-height（px）
+    pub sub_font_h: i32,
+}
+
+pub struct ItemView {
+    pub label: String,
+    pub text: String,
+    pub comment: String,
+    pub x: i32,
+    pub label_w: i32,
+    pub text_w: i32,
+    pub pure_text_w: i32,
+    pub highlighted: bool,
+}
+
+/// 生成一帧 D2D 消费的不可变快照；None 表示数据未初始化（窗口还没 show 过）。
+pub fn make_paint_view() -> Option<PaintView> {
+    PAINT_DATA.with_borrow(|data| {
+        let dpi = data.dpi;
+        let font_scale = data.skin.metrics.font_scale;
+        Some(PaintView {
+            preedit: data.preedit.clone(),
+            items: data
+                .items
+                .iter()
+                .map(|it| ItemView {
+                    label: it.label.clone(),
+                    text: it.text.clone(),
+                    comment: it.comment.clone(),
+                    x: it.x,
+                    label_w: it.label_w,
+                    text_w: it.text_w,
+                    pure_text_w: it.pure_text_w,
+                    highlighted: it.highlighted,
+                })
+                .collect(),
+            dpi,
+            skin: data.skin,
+            padding: scale(BASE_PADDING, dpi),
+            preedit_h: scale(BASE_PREEDIT_HEIGHT, dpi),
+            row_h: scale(BASE_ROW_HEIGHT, dpi),
+            label_gap: scale(BASE_LABEL_GAP, dpi),
+            hl_pad: scale(BASE_HL_PAD, dpi),
+            mode_badge: format!(
+                "{}{}",
+                if data.is_ascii { "英" } else { "中" },
+                if data.is_full_shape { "·全" } else { "" },
+            ),
+            cand_font_h: font_height(BASE_FONT_HEIGHT, dpi, font_scale),
+            sub_font_h: font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale),
+        })
+    })
+}
+
+/// 徽标宽度（与 GDI paint 内 text_width + BASE_MODE_BADGE_GAP 同公式；
+/// GDI 实际测宽结果 ∈ [3*cand_h, 3.5*cand_h]，用近似值差 1px 视觉无感）。
+pub fn mode_badge_width(view: &PaintView) -> i32 {
+    view.cand_font_h * 3 + scale(BASE_MODE_BADGE_GAP, view.dpi)
 }
 
 // 绘制数据挂在线程本地：窗口与 TSF 回调同属宿主 UI 线程
@@ -86,12 +163,13 @@ thread_local! {
     static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) };
 }
 
-fn scale(base: i32, dpi: u32) -> i32 {
+pub(crate) fn scale(base: i32, dpi: u32) -> i32 {
     (base * dpi as i32 + 48) / 96
 }
 
 /// DPI 缩放后再乘皮肤字号倍率；下限 8px 防止畸形配置把字压没。
-fn font_height(base: i32, dpi: u32, font_scale: f32) -> i32 {
+/// D2D 后端按同一公式取 em-height → IDWriteTextFormat 字号。
+pub(crate) fn font_height(base: i32, dpi: u32, font_scale: f32) -> i32 {
     ((scale(base, dpi) as f32) * font_scale).round().max(8.0) as i32
 }
 
@@ -136,6 +214,8 @@ impl CandidateUi {
             .parent()
             .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
         let _ = skin::load_with(|| extra);
+        // 预热 D2D 工厂（< 5ms）；失败则本进程整段会话走 GDI 路径
+        crate::candidate_window_d2d::try_init();
         CandidateUi {
             hwnd: None,
             shadow: ShadowShell::new(),
@@ -248,6 +328,7 @@ impl CandidateUi {
                         label_w,
                         text_w: text_w + comment_w,
                         highlighted: i == ctx.highlighted,
+                        pure_text_w: text_w,
                     };
                     x += label_w + label_gap + text_w + comment_w + item_gap;
                     item
@@ -327,6 +408,8 @@ impl CandidateUi {
                 let _ = DestroyWindow(hwnd);
             }
         }
+        // 释放 D2D target/brushes（HWND 已死，引用随之失效）
+        crate::candidate_window_d2d::shutdown();
     }
 }
 
@@ -338,11 +421,39 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         value if value == WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            paint(hdc, &ps.rcPaint);
-            let _ = EndPaint(hwnd, &ps);
+            // 调度：D2D 就绪则走 GPU 帧；失败/未就绪当帧落 GDI。
+            // 两条路径共用同一份 thread-local PaintData 布局槽位，视觉 1:1。
+            let try_d2d = make_paint_view()
+                .map(|view| crate::candidate_window_d2d::paint(
+                    hwnd,
+                    &client_rect(hwnd),
+                    &view,
+                ))
+                .unwrap_or(false);
+            if !try_d2d {
+                // GDI 路径（首轮 / Failed / TDR 未完成 / 任何内部错误）
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                paint(hdc, &ps.rcPaint);
+                let _ = EndPaint(hwnd, &ps);
+            } else {
+                // D2D 已完成 BeginDraw/EndDraw；仍须 ValidateRect 清 dirty 区
+                let _ = ValidateRect(Some(hwnd), None);
+            }
             LRESULT(0)
+        }
+        value if value == WM_SIZE => {
+            // 本帧起 target 尺寸失配：标记失效，下一帧按 GetClientRect 重建
+            crate::candidate_window_d2d::notify_resize();
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        value if value == WM_DPICHANGED => {
+            crate::candidate_window_d2d::notify_resize(); // DPI 失配在 paint 内 SetDpi
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        value if value == WM_DESTROY => {
+            crate::candidate_window_d2d::shutdown();
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         value if value == WM_LBUTTONDOWN => {
             select_candidate_at(lparam);
@@ -359,6 +470,7 @@ unsafe extern "system" fn wnd_proc(
                 let skin = Skin::refresh_on_setting_change();
                 unsafe {
                     skin::apply_appearance(hwnd, &skin);
+                    crate::candidate_window_d2d::notify_skin_changed();
                     let _ = InvalidateRect(Some(hwnd), None, true);
                 }
             }
@@ -366,6 +478,14 @@ unsafe extern "system" fn wnd_proc(
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+fn client_rect(hwnd: HWND) -> RECT {
+    let mut r = RECT::default();
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut r);
+    }
+    r
 }
 
 /// 将点击坐标映射到当前候选，并发送 Rime 已支持的数字选词键。
