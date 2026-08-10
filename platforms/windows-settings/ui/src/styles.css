@@ -754,3 +754,23 @@ h3 { margin-bottom: 6px; font-size: var(--font-h3); font-weight: 600; }
 /* JSON 预览面板（只读视觉，实际仍可聚焦编辑——SSOT） */
 .skin-json-panel { margin-top: 0; }
 .skin-json-panel #skin-editor { min-height: 260px; }
+
+/* ============ 统计页（纯 SVG 图表，无第三方图表库） ============ */
+.stats-grid { margin-top: 0; }
+.stats-card { min-height: 132px; padding: 20px 24px; cursor: default; }
+.stats-card > span { margin: 12px 0 6px; }
+.stats-card strong { font-size: 24px; font-variant-numeric: tabular-nums; }
+
+.stats-chart-panel { margin-top: 18px; padding-bottom: 18px; }
+.stats-chart { display: block; width: 100%; height: auto; margin-top: 8px; }
+
+.stats-bar { fill: var(--brand-300); transition: fill .15s ease; }
+.stats-bar:hover { fill: var(--brand-400); }
+.stats-bar.today { fill: var(--brand-500); }
+
+.stats-axis-label { fill: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.stats-axis-label.today { fill: var(--accent-tinted-fg); font-weight: 600; }
+
+.stats-line { fill: none; stroke: var(--brand-500); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.stats-line-area { fill: var(--accent-tinted-bg); }
+.stats-line-today { fill: var(--brand-500); stroke: var(--surface-1); stroke-width: 2; }

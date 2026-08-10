@@ -76,4 +76,9 @@
     <string name="ai_panel_no_key">未配置 AGNES_API_KEY；请在 PC 端配置后重试</string>
     <string name="ai_panel_prompt_empty">请先输入提示词</string>
     <string name="ai_panel_no_key_short">未配置 AGNES_API_KEY</string>
+    <string name="ai_panel_thinking_secs">思考中…（%1$d s）</string>
+    <string name="ai_panel_ready">共 %1$d 字 · 已就绪</string>
+    <string name="ai_panel_cancel">取消</string>
+    <string name="ai_panel_stream_aborted">（已取消）</string>
+    <string name="ai_panel_error_stream">流式请求失败：%1$s</string>
 </resources>

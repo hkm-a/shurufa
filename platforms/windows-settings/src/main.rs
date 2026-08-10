@@ -408,34 +408,53 @@ fn save_ime_options(opts: ImeOptionsDto) -> Result<(), String> {
     shurufa_options::save(&opts.into()).map_err(|error| format!("保存输入选项失败：{error}"))
 }
 
-/// 打字统计面板 DTO：四项合计 + 最近 8 天字符数序列。
+/// 打字统计面板 DTO：四项合计 + 最近 8 天字符数序列 + 最近 7/30 天序列。
+///
+/// stats.json 由 shurufa-options 维护：`days` 是永久按日历史（BTreeMap），
+/// `last_days(n)` 已内含"无数据日补 0"，所以 7/30 天序列永远定长，图表无需判空。
 #[derive(Serialize, Clone)]
 struct TypingStatsDto {
     total_chars: u64,
     today_chars: u64,
     total_keys: u64,
     today_keys: u64,
-    /// (日期 "MM-DD", 字符数)，最近 8 天
+    /// (日期 "MM-DD", 字符数)，最近 8 天（工作台/旧 UI 消费，保留兼容）
     days: Vec<(String, u64)>,
+    /// 今日完整日期 "YYYY-MM-DD"（UTC 日，与写入端 today_utc 一致）
+    today: String,
+    /// (日期 "YYYY-MM-DD", 字符数)，最近 7 天升序（统计页 7 天柱状图）
+    last7: Vec<(String, u64)>,
+    /// (日期 "YYYY-MM-DD", 字符数)，最近 30 天升序（统计页折线图）
+    last30: Vec<(String, u64)>,
 }
 
 #[tauri::command]
 fn typing_stats() -> TypingStatsDto {
     let totals = shurufa_options::stats::totals();
     // "2026-08-08" -> "08-08"：截取月日短格式，兼容非法输入原样透出
+    let shorten = |(date, chars): (String, u64)| {
+        let short = date.get(5..).map(str::to_owned).unwrap_or(date);
+        (short, chars)
+    };
     let days = shurufa_options::stats::last_days(8)
         .into_iter()
-        .map(|(date, chars)| {
-            let short = date.get(5..).map(str::to_owned).unwrap_or(date);
-            (short, chars)
-        })
+        .map(shorten)
         .collect();
+    // 今日完整日期取 last_days(1) 的最后一项，避免依赖 crate 内部私有函数。
+    let today = shurufa_options::stats::last_days(1)
+        .into_iter()
+        .next()
+        .map(|(date, _)| date)
+        .unwrap_or_default();
     TypingStatsDto {
         total_chars: totals.total_chars,
         today_chars: totals.today_chars,
         total_keys: totals.total_keys,
         today_keys: totals.today_keys,
         days,
+        today,
+        last7: shurufa_options::stats::last_days(7),
+        last30: shurufa_options::stats::last_days(30),
     }
 }
 
@@ -739,11 +758,17 @@ mod tests {
             total_keys: 8901,
             today_keys: 23,
             days: vec![("08-07".to_owned(), 40), ("08-08".to_owned(), 67)],
+            today: "2026-08-08".to_owned(),
+            last7: vec![("2026-08-08".to_owned(), 67)],
+            last30: vec![("2026-08-08".to_owned(), 67)],
         };
         let value = serde_json::to_value(&dto).expect("DTO 序列化失败");
         assert!(value.get("days").is_some());
         assert_eq!(value["today_chars"], serde_json::json!(67_u64));
         assert_eq!(value["days"][1][0], serde_json::json!("08-08"));
+        assert_eq!(value["today"], serde_json::json!("2026-08-08"));
+        assert_eq!(value["last7"][0][0], serde_json::json!("2026-08-08"));
+        assert_eq!(value["last30"][0][1], serde_json::json!(67_u64));
     }
 
     #[test]

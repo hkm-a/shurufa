@@ -117,6 +117,16 @@ class ShurufaImeService : InputMethodService() {
     private var aiPasteButton: TextView? = null
     /// 最近一次成功返回的 AI 草稿；点击「粘贴」写入编辑器。
     private var aiLastDraft: String? = null
+    /// 进行中的 SSE 连接；标题栏 ✕ 在流式期间对其 disconnect 即中止（Android 上跨线程安全）。
+    @Volatile private var aiActiveConn: java.net.HttpURLConnection? = null
+    /// 用户点了「取消流式生成」的标记；readLine 抛异常后据此区分「取消」与「网络错误」。
+    @Volatile private var aiStreamCancelled = false
+    /// 上次推到 UI 的草稿长度：SSE 增量每满 12 个新字符才刷新一次，避免高频 setText。
+    @Volatile private var aiLastPushedLen = 0
+    /// 流式请求开始时刻（毫秒）；状态行用来显示「思考中…（X s）」。
+    @Volatile private var aiStreamStartMs = 0L
+    /// 「思考中」阶段标记：进入等待连接时置 true，出现终态（成功/失败/取消）或流开始置 false。
+    @Volatile private var aiThinkingActive = false
     private val mainHandler = Handler(Looper.getMainLooper())
     /// 图片解码 / 相册写入 / 剪贴板大查询走 IO 线程：避免阻塞 IME 主线程导致按键抖动。
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
@@ -716,8 +726,13 @@ class ShurufaImeService : InputMethodService() {
             setTextColor(hintColor)
             setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
             setOnClickListener {
-                aiPanel?.visibility = View.GONE
-                keyArea.visibility = View.VISIBLE
+                // 流式期间 ✕ = 取消生成（保留已生成的部分草稿）；否则直接关面板。
+                if (aiActiveConn != null) {
+                    cancelAiStream()
+                } else {
+                    aiPanel?.visibility = View.GONE
+                    keyArea.visibility = View.VISIBLE
+                }
             }
         }, LinearLayout.LayoutParams(dp(44f), dp(40f)))
         root.addView(header)
@@ -834,38 +849,79 @@ class ShurufaImeService : InputMethodService() {
         }
         // 与 PC 端一致：key 从环境变量读；Android 进程不直读用户环境，
         // 通过 BuildConfig 由打包时 gradle 属性注入（仅 release 本机构建可用）。
+        // key 只在发起的这一刻于内存中短暂存在：绝不落日志 / 剪贴板 / 磁盘。
         val apiKey = readAiApiKey()
         if (apiKey.isNullOrBlank()) {
             aiStatusLine?.text = getString(R.string.ai_panel_no_key_short)
             return
         }
-        aiStatusLine?.text = getString(R.string.ai_panel_thinking)
+        aiStreamCancelled = false
+        aiLastPushedLen = 0
+        aiThinkingActive = true
+        aiStreamStartMs = android.os.SystemClock.elapsedRealtime()
+        updateAiThinkingStatus()
         aiDraftView?.text = ""
         aiPasteButton?.isEnabled = false
         ioExecutor.execute {
             val result = callAgnesChat(apiKey, prompt) { partial ->
-                // SSE 流式增量：每收到一段就把当前累积的 partial 推到主线程刷新。
-                // 不必再渲染节流 —— ioExecutor 单线程执行 + mainHandler.post 不会拥塞。
-                mainHandler.post {
-                    aiDraftView?.text = partial
-                    aiStatusLine?.text = getString(R.string.ai_panel_generating, partial.length)
+                // SSE 流式增量节流：累积 12 个新字符以上才推到主线程刷新，
+                // 避免逐 token setText 触发高频重排。
+                if (partial.length - aiLastPushedLen >= 12) {
+                    aiLastPushedLen = partial.length
+                    mainHandler.post {
+                        if (aiActiveConn != null) {
+                            aiDraftView?.text = partial
+                            aiStatusLine?.text = getString(R.string.ai_panel_generating, partial.length)
+                        }
+                    }
                 }
             }
             mainHandler.post {
+                aiThinkingActive = false
                 when (result) {
                     is AiResult.Ok -> {
                         aiLastDraft = result.text
                         aiDraftView?.text = result.text
-                        aiStatusLine?.text = getString(R.string.ai_panel_done, result.text.length)
+                        aiStatusLine?.text = getString(R.string.ai_panel_ready, result.text.length)
                         aiPasteButton?.isEnabled = true
                     }
+                    is AiResult.Aborted -> {
+                        // ✕ 取消：保留预览里的部分草稿，标记（已取消）；有可粘贴内容就放开粘贴。
+                        val partial = result.partial
+                        if (partial.isNotEmpty()) aiLastDraft = partial
+                        aiStatusLine?.text = getString(R.string.ai_panel_stream_aborted)
+                        aiPasteButton?.isEnabled = !aiLastDraft.isNullOrBlank()
+                    }
                     is AiResult.Err -> {
-                        aiStatusLine?.text = getString(R.string.ai_panel_error_prefix, result.message)
+                        aiStatusLine?.text = getString(R.string.ai_panel_error_stream, result.message)
                         aiPasteButton?.isEnabled = aiLastDraft != null
                     }
                 }
             }
         }
+    }
+
+    /** 标题栏 ✕ 在流式期间的行为：打断连接、保留部分草稿、回到可编辑状态。 */
+    private fun cancelAiStream() {
+        aiStreamCancelled = true
+        // HttpURLConnection.disconnect() 在 Android 上跨线程调用是安全的：
+        // 正在 readLine 的 io 线程会以异常退出，进入 AiResult.Aborted 分支。
+        aiActiveConn?.disconnect()
+        aiActiveConn = null
+    }
+
+    /** 「思考中…（X s）」每秒自更新，直至 SSE 首段到达覆盖为「生成中…」。 */
+    private fun updateAiThinkingStatus() {
+        mainHandler.post(object : Runnable {
+            override fun run() {
+                // 连接建立（流开始）或被清空（结束/取消）后停止计时刷新
+                if (aiActiveConn != null) return
+                if (!aiThinkingActive) return
+                val seconds = ((android.os.SystemClock.elapsedRealtime() - aiStreamStartMs) / 1000L).toInt()
+                aiStatusLine?.text = getString(R.string.ai_panel_thinking_secs, seconds)
+                mainHandler.postDelayed(this, 1000L)
+            }
+        })
     }
 
     private fun commitAiDraft() {
@@ -883,6 +939,8 @@ class ShurufaImeService : InputMethodService() {
     sealed class AiResult {
         data class Ok(val text: String) : AiResult()
         data class Err(val message: String) : AiResult()
+        /// 用户主动取消：partial 为已到达的部分草稿（可能为空串）
+        data class Aborted(val partial: String) : AiResult()
     }
 
     private fun readAiApiKey(): String? = try {
@@ -935,27 +993,37 @@ class ShurufaImeService : InputMethodService() {
             }
             if (stream) {
                 // SSE：逐行解析 "data: {...}"，[DONE] 终止。
+                aiActiveConn = conn
                 val acc = StringBuilder()
-                conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    while (true) {
-                        val line = reader.readLine() ?: break
-                        if (!line.startsWith("data:")) continue
-                        val payload = line.removePrefix("data:").trim()
-                        if (payload == "[DONE]") break
-                        val delta = try {
-                            org.json.JSONObject(payload)
-                                .optJSONArray("choices")
-                                ?.optJSONObject(0)
-                                ?.optJSONObject("delta")
-                                ?.optString("content")
-                                .orEmpty()
-                        } catch (_: Exception) { "" }
-                        if (delta.isNotEmpty()) {
-                            acc.append(delta)
-                            onPartial?.invoke(acc.toString())
+                try {
+                    conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                        while (true) {
+                            val line = reader.readLine() ?: break
+                            if (!line.startsWith("data:")) continue
+                            val payload = line.removePrefix("data:").trim()
+                            if (payload == "[DONE]") break
+                            val delta = try {
+                                org.json.JSONObject(payload)
+                                    .optJSONArray("choices")
+                                    ?.optJSONObject(0)
+                                    ?.optJSONObject("delta")
+                                    ?.optString("content")
+                                    .orEmpty()
+                            } catch (_: Exception) { "" }
+                            if (delta.isNotEmpty()) {
+                                acc.append(delta)
+                                onPartial?.invoke(acc.toString())
+                            }
                         }
                     }
+                } catch (e: Exception) {
+                    // 取消路径：disconnect 会让 readLine 抛 SocketException
+                    if (aiStreamCancelled) return AiResult.Aborted(acc.toString())
+                    return AiResult.Err(e.message ?: e.javaClass.simpleName)
+                } finally {
+                    aiActiveConn = null
                 }
+                if (aiStreamCancelled) return AiResult.Aborted(acc.toString())
                 val full = acc.toString().trim()
                 return if (full.isEmpty()) AiResult.Err("返回内容为空") else AiResult.Ok(full)
             }
@@ -970,8 +1038,9 @@ class ShurufaImeService : InputMethodService() {
                 .orEmpty()
             if (content.isEmpty()) AiResult.Err("返回内容为空") else AiResult.Ok(content)
         } catch (e: Exception) {
-            AiResult.Err(e.message ?: e.javaClass.simpleName)
+            if (aiStreamCancelled) AiResult.Aborted("") else AiResult.Err(e.message ?: e.javaClass.simpleName)
         } finally {
+            aiActiveConn = null
             conn?.disconnect()
         }
     }
@@ -1373,14 +1442,23 @@ class ShurufaImeService : InputMethodService() {
         val thumb: android.graphics.Bitmap?,
     )
 
-    /** A6 长按菜单：置顶/取消置顶、删除。置顶靠 SQL 层排序体现，不做角标。 */
+    /** A6 长按菜单：置顶/取消置顶、删除，文件/图片条目追加「发送为文件」。 */
     private fun showHistoryEntryActions(entry: ClipStore.Entry, onlyImages: Boolean) {
         // 无 pin 字段回传：当前置顶状态不明，菜单同时给出「置顶」与「取消置顶」。
-        val options = arrayOf(
+        val base = listOf(
             getString(R.string.history_menu_pin),
             getString(R.string.history_menu_unpin),
             getString(R.string.history_menu_delete),
         )
+        // 仅图/文件类条目追加 v3 文件同步入口
+        val sendIndex: Int?
+        val options = if (entry.kind == "image" || entry.kind == "files") {
+            sendIndex = base.size
+            (base + "发送为文件").toTypedArray()
+        } else {
+            sendIndex = null
+            base.toTypedArray()
+        }
         android.app.AlertDialog.Builder(this)
             .setTitle(entry.text.replace('\n', ' ').take(24))
             .setItems(options) { dialog, which ->
@@ -1388,6 +1466,13 @@ class ShurufaImeService : InputMethodService() {
                     0 -> ClipStore.setPinned(entry.id, true)
                     1 -> ClipStore.setPinned(entry.id, false)
                     2 -> ClipStore.delete(entry.id)
+                    else -> if (sendIndex != null && which == sendIndex) {
+                        // 同步 v3：把本地落盘文件经 SyncBridge 分块下发
+                        val path = entry.text.lineSequence().firstOrNull()?.trim()
+                        if (!path.isNullOrEmpty()) {
+                            SyncBridge.sendFile(path)
+                        }
+                    }
                 }
                 dialog.dismiss()
                 historyPanel?.let { populateHistory(it, onlyImages) }

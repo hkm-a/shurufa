@@ -76,4 +76,9 @@
     <string name="ai_panel_no_key">AGNES_API_KEY not configured; set it on the PC side and retry</string>
     <string name="ai_panel_prompt_empty">Enter a prompt first</string>
     <string name="ai_panel_no_key_short">AGNES_API_KEY not configured</string>
+    <string name="ai_panel_thinking_secs">Thinking… (%1$d s)</string>
+    <string name="ai_panel_ready">Ready · %1$d chars</string>
+    <string name="ai_panel_cancel">Cancel</string>
+    <string name="ai_panel_stream_aborted">(cancelled)</string>
+    <string name="ai_panel_error_stream">Stream failed: %1$s</string>
 </resources>

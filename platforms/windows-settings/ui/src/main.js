@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowUpRight,
   BookOpenText,
+  ChartColumn,
   CircleDot,
   ClipboardList,
   Copy,
@@ -35,6 +36,7 @@ import {
 const controlCenterIcons = {
   ArrowUpRight,
   BookOpenText,
+  ChartColumn,
   CircleDot,
   ClipboardList,
   Copy,
@@ -66,6 +68,7 @@ const controlCenterIcons = {
 const pages = [
   { id: "workspace", label: "工作台", icon: "layout-dashboard" },
   { id: "input", label: "输入", icon: "keyboard" },
+  { id: "stats", label: "统计", icon: "chart-column" },
   { id: "history", label: "历史", icon: "clipboard-list" },
   { id: "dictionary", label: "词库", icon: "book-open-text" },
   { id: "skin", label: "皮肤", icon: "palette" },
@@ -286,9 +289,133 @@ function settingsPage() {
     </section>`;
 }
 
+// ---------------------------------------------------------------------------
+// 统计页：3 张合计卡 + 7 天柱状图 + 30 天折线图（纯手写 SVG，不引任何图表库）。
+// 数据来自后端 typing_stats 命令：last7/last30 均为 (YYYY-MM-DD, 字数) 升序定长序列。
+// ---------------------------------------------------------------------------
+
+// 千分位格式化：12,345 / 1.2万（中文习惯大额缩写）
+function formatCount(value) {
+  const n = Number(value) || 0;
+  return n.toLocaleString("zh-CN");
+}
+
+// 取 MM-DD 短标签（后端给 YYYY-MM-DD；非法输入原样透出）
+function shortDateLabel(date) {
+  return typeof date === "string" && date.length >= 10 ? date.slice(5) : String(date ?? "");
+}
+
+// 7 天柱状图：柱高与当日字数成正比，今日高亮（accent），其余降透明度。
+function statsBarChartSvg(days, today) {
+  if (!Array.isArray(days) || days.length === 0) return "";
+  const width = 640;
+  const height = 180;
+  const padX = 10;
+  const padTop = 14;
+  const padBottom = 26;
+  const plotH = height - padTop - padBottom;
+  const max = Math.max(1, ...days.map(([, chars]) => Number(chars) || 0));
+  const slot = (width - padX * 2) / days.length;
+  const barW = Math.min(44, slot * 0.58);
+  const bars = days
+    .map(([date, chars], index) => {
+      const value = Number(chars) || 0;
+      const h = value === 0 ? 2 : Math.max(4, (value / max) * plotH);
+      const x = padX + slot * index + (slot - barW) / 2;
+      const y = padTop + plotH - h;
+      const isToday = date === today;
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="4"
+        class="stats-bar${isToday ? " today" : ""}"><title>${shortDateLabel(date)} · ${formatCount(value)} 字</title></rect>`;
+    })
+    .join("");
+  const labels = days
+    .map(([date], index) => {
+      const x = padX + slot * index + slot / 2;
+      const isToday = date === today;
+      return `<text x="${x.toFixed(1)}" y="${height - 8}" text-anchor="middle"
+        class="stats-axis-label${isToday ? " today" : ""}">${shortDateLabel(date)}</text>`;
+    })
+    .join("");
+  return `<svg viewBox="0 0 ${width} ${height}" class="stats-chart" role="img" aria-label="近 7 天打字柱状图">${bars}${labels}</svg>`;
+}
+
+// 30 天折线：单调面积+折线，末点（今日）画高亮圆点；全为 0 时折线贴底仍可见。
+function statsLineChartSvg(days, today) {
+  if (!Array.isArray(days) || days.length === 0) return "";
+  const width = 640;
+  const height = 160;
+  const padX = 12;
+  const padTop = 12;
+  const padBottom = 24;
+  const plotW = width - padX * 2;
+  const plotH = height - padTop - padBottom;
+  const max = Math.max(1, ...days.map(([, chars]) => Number(chars) || 0));
+  const step = days.length > 1 ? plotW / (days.length - 1) : 0;
+  const points = days.map(([date, chars], index) => {
+    const x = padX + step * index;
+    const y = padTop + plotH - ((Number(chars) || 0) / max) * plotH;
+    return { x, y, date, value: Number(chars) || 0 };
+  });
+  const polyline = points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+  const area = `M ${points[0].x.toFixed(1)},${(padTop + plotH).toFixed(1)} L ${points
+    .map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`)
+    .join(" L ")} L ${points[points.length - 1].x.toFixed(1)},${(padTop + plotH).toFixed(1)} Z`;
+  const todayPoint = points.find((p) => p.date === today) || points[points.length - 1];
+  const xLabels = [points[0], points[Math.floor(points.length / 2)], points[points.length - 1]]
+    .filter(Boolean)
+    .map(
+      (p) =>
+        `<text x="${p.x.toFixed(1)}" y="${height - 6}" text-anchor="middle" class="stats-axis-label">${shortDateLabel(p.date)}</text>`
+    )
+    .join("");
+  return `<svg viewBox="0 0 ${width} ${height}" class="stats-chart" role="img" aria-label="近 30 天打字曲线">
+      <path d="${area}" class="stats-line-area"></path>
+      <polyline points="${polyline}" class="stats-line"></polyline>
+      <circle cx="${todayPoint.x.toFixed(1)}" cy="${todayPoint.y.toFixed(1)}" r="4" class="stats-line-today"><title>今日 ${formatCount(todayPoint.value)} 字</title></circle>
+      ${xLabels}
+    </svg>`;
+}
+
+function statsPage() {
+  if (!typingStats) {
+    return `
+      <section class="page settings-page">
+        <header class="page-header"><div><p class="eyebrow">TYPING STATS</p><h1>统计</h1></div><button class="icon-action" data-action="refresh-stats" title="刷新统计"><i data-lucide="refresh-cw"></i></button></header>
+        <article class="setting-panel"><div class="setting-row"><div class="row-icon dim"><i data-lucide="chart-column"></i></div><div><h3>打字统计</h3><p>读取中或暂不可用…</p></div></div></article>
+      </section>`;
+  }
+  const cards = [
+    { icon: "keyboard", tone: "teal", label: "今日打字", value: `${formatCount(typingStats.today_chars)} 字` },
+    { icon: "circle-dot", tone: "blue", label: "今日按键", value: `${formatCount(typingStats.today_keys)} 次` },
+    { icon: "history", tone: "coral", label: "累计打字", value: `${formatCount(typingStats.total_chars)} 字` }
+  ];
+  const cardsHtml = cards
+    .map(
+      (card) => `<article class="metric-card stats-card"><div class="metric-icon ${card.tone}"><i data-lucide="${card.icon}"></i></div><span>${card.label}</span><strong>${card.value}</strong></article>`
+    )
+    .join("");
+  const today = typingStats.today || "";
+  const weekSvg = statsBarChartSvg(typingStats.last7, today);
+  const monthSvg = statsLineChartSvg(typingStats.last30, today);
+  return `
+    <section class="page settings-page stats-page">
+      <header class="page-header"><div><p class="eyebrow">TYPING STATS</p><h1>统计</h1></div><button class="icon-action" data-action="refresh-stats" title="刷新统计"><i data-lucide="refresh-cw"></i></button></header>
+      <div class="metric-grid stats-grid">${cardsHtml}</div>
+      <article class="setting-panel stats-chart-panel">
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="chart-column"></i></div><div><h3>近 7 天打字</h3><p>单位：字 · 当日高亮</p></div></div>
+        ${weekSvg}
+      </article>
+      <article class="setting-panel stats-chart-panel">
+        <div class="panel-heading"><div class="row-icon teal"><i data-lucide="arrow-up-right"></i></div><div><h3>近 30 天打字曲线</h3><p>单位：字 / 天</p></div></div>
+        ${monthSvg}
+      </article>
+    </section>`;
+}
+
 function pageTemplate() {
   switch (activePage) {
     case "input": return inputPage();
+    case "stats": return statsPage();
     case "history": return historyPage();
     case "dictionary": return dictionaryPage();
     case "skin": return skinPage();
@@ -754,12 +881,23 @@ async function refreshDictionaryInfo() {
   }
 }
 
+async function refreshTypingStats() {
+  typingStats = await invoke("typing_stats");
+}
+
 async function navigateTo(page) {
   activePage = page;
   if (page === "history") {
     try {
       await refreshHistory();
     } catch (error) {
+      showToast(String(error), true);
+    }
+  } else if (page === "stats") {
+    try {
+      await refreshTypingStats();
+    } catch (error) {
+      typingStats = null;
       showToast(String(error), true);
     }
   } else if (page === "settings") {
@@ -811,6 +949,17 @@ async function handleAction(button) {
       "refresh-history": [undefined, undefined, "历史已刷新"],
       refresh: [undefined, undefined, "后台状态已刷新"]
     };
+    if (action === "refresh-stats") {
+      try {
+        await refreshTypingStats();
+        showToast("统计已刷新");
+      } catch (error) {
+        typingStats = null;
+        showToast(String(error), true);
+      }
+      render();
+      return;
+    }
     if (action === "apply-skin") {
       const skinId = String(button.dataset.skinId || "");
       if (!skinId) return;
