@@ -21,8 +21,9 @@ pub use peers::{Peer, PeerStore};
 pub use protocol::{Message, SearchHit};
 pub use relay::{accept_via_relay, connect_via_relay, run_relay};
 pub use service::{
-    load_relay_addr, save_relay_addr, ConfirmFn, Incoming, PairPrompt, SearchHandler, SyncConfig,
-    SyncService, MAX_CLIP_FILE_BYTES, MAX_CLIP_IMAGE_BYTES,
+    load_relay_addr, save_relay_addr, ConfirmFn, FileConfirmFn, FileOfferPrompt, FileSendState,
+    Incoming, PairPrompt, SearchHandler, SendErr, SyncConfig, SyncService, FILE_AUTO_ACCEPT_MAX,
+    MAX_CLIP_FILE_BYTES, MAX_CLIP_IMAGE_BYTES, MAX_FILE_BYTES,
 };
 pub use wan::{Wan, WanProfile};
 

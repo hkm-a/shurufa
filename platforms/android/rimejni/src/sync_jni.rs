@@ -168,6 +168,12 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                                 }
                                 // 对端的搜索响应当前只供 PC 侧 CLI/日志消费，Android 暂不展示。
                                 Incoming::SearchResults { .. } => return,
+                                // 文件 v3 事件：Android 侧仅做日志级提示，
+                                // 由宿主的 ClipboardSyncService 自行弹出
+                                // Notification / 历史入库。
+                                Incoming::FileOffer { .. } => return,
+                                Incoming::FileProgress { .. } => return,
+                                Incoming::FileTransferDone { .. } => return,
                             };
                             let mut q = incoming_task.lock().expect("入站队列锁不可恢复");
                             if q.len() >= 64 {
@@ -307,6 +313,31 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendFile(
             }
         },
         (),
+    )
+}
+
+/// 推送本机路径指向的文件给已配对设备（v3）：由 SyncService 完成
+/// 分块 / 等待 Accept / 等 ACK，全程在同步 runtime 内推进，不占额外线程。
+/// 返回 false=同步未启动 / 路径非法 / 文件超过 64MB。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendFilePath(
+    mut env: JNIEnv,
+    _class: JClass,
+    path: JString,
+) -> jboolean {
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else { return 0 };
+            let path = jstr(&mut env, &path);
+            if path.is_empty() {
+                return 0;
+            }
+            match state.service.send_file_path(std::path::Path::new(&path)) {
+                Ok(_) => 1,
+                Err(_) => 0,
+            }
+        },
+        0,
     )
 }
 

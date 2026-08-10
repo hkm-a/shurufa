@@ -87,6 +87,77 @@ pub enum Message {
         #[serde(default)]
         hits: Vec<SearchHit>,
     },
+    /// 文件传输 v3：发送方宣告文件元数据（file-v1 特性协商后启用）。
+    /// 所有字段带默认值：v2 端序列化时可能缺字段，解析不应失败。
+    FileOffer {
+        /// 传输 id（发送端 uuidv4 风格 32 hex），贯穿整个传输生命周期。
+        #[serde(default)]
+        msg_id: String,
+        /// 文件名（不含路径分隔符，由发送端写死 file_name）。
+        #[serde(default)]
+        name: String,
+        /// 文件总字节数。
+        #[serde(default)]
+        size: u64,
+        /// MIME 类型（未知可为 application/octet-stream）。
+        #[serde(default)]
+        mime: String,
+        /// 整体内容 sha256 十六进制小写（64 字符）。
+        #[serde(default)]
+        sha256: String,
+        /// 每块最大字节（约定 64 KiB；最后一块可更小）。
+        #[serde(default)]
+        chunk_bytes: u32,
+    },
+    /// 接收方同意接收。
+    FileAccept {
+        #[serde(default)]
+        msg_id: String,
+    },
+    /// 接收方拒绝（too_large / user_declined / timeout 等）。
+    FileDecline {
+        #[serde(default)]
+        msg_id: String,
+        #[serde(default)]
+        reason: String,
+    },
+    /// 流式数据块：data 为 base64；last 表示最后一块。
+    FileChunk {
+        #[serde(default)]
+        msg_id: String,
+        /// 本块在文件中的偏移（自 0 起，块按序到达）。
+        #[serde(default)]
+        offset: u64,
+        #[serde(default)]
+        data: String,
+        #[serde(default)]
+        last: bool,
+    },
+    /// 发送方发完全部块后的收尾（含校验值）。
+    FileDone {
+        #[serde(default)]
+        msg_id: String,
+        #[serde(default)]
+        sha256: String,
+    },
+    /// 接收方落盘校验后的最终应答。
+    FileAck {
+        #[serde(default)]
+        msg_id: String,
+        #[serde(default)]
+        received_bytes: u64,
+        #[serde(default)]
+        ok: bool,
+        #[serde(default)]
+        error: Option<String>,
+    },
+    /// 接收方周期性回报已收字节数（供发送端渲染进度）。
+    FileProgress {
+        #[serde(default)]
+        msg_id: String,
+        #[serde(default)]
+        received_bytes: u64,
+    },
 }
 
 /// 搜索命中摘要：仅文本预览，避免把图片/文件字节挤进查询响应。
@@ -107,10 +178,13 @@ pub const FEATURE_MSG_ID_V1: &str = "msg-id-v1";
 pub const FEATURE_LWW_V1: &str = "lww-v1";
 /// "search-v1"：跨设备剪贴板历史搜索（SearchRequest/SearchResponse）。
 pub const FEATURE_SEARCH_V1: &str = "search-v1";
+/// "file-v1"：文件同步 v3（FileOffer/Accept/Chunk/Done/Ack/Progress）。
+pub const FEATURE_FILE_V1: &str = "file-v1";
 
 /// 当前协议版本：v1 = Hello+Ping+Clip*；v2 = Hello 带 features 协商，
-/// ClipText 带 msg_id/origin_device_fp，可用于跨端回声抑制。
-pub const PROTOCOL_VERSION: u32 = 2;
+/// ClipText 带 msg_id/origin_device_fp，可用于跨端回声抑制；
+/// v3 = 分块文件传输（Offer/Accept/Chunk/Done/Ack/Progress）。
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// 对端特性闭包：判断 hello 协商出的特性是否包含某项。
 pub fn peer_supports<'a>(features: &'a [String], name: &str) -> bool {
@@ -123,6 +197,7 @@ pub fn local_features() -> Vec<String> {
         FEATURE_MSG_ID_V1.to_string(),
         FEATURE_LWW_V1.to_string(),
         FEATURE_SEARCH_V1.to_string(),
+        FEATURE_FILE_V1.to_string(),
     ]
 }
 
@@ -363,5 +438,80 @@ mod tests {
         assert_eq!(sparse.text, "仅文本");
         assert_eq!(sparse.source_app, "");
         assert_eq!(sparse.updated_at, 0);
+    }
+
+    #[tokio::test]
+    async fn 文件变体序列化往返且v3缺省字段可解析() {
+        let offer = Message::FileOffer {
+            msg_id: "m1".into(),
+            name: "报告.pdf".into(),
+            size: 1024,
+            mime: "application/pdf".into(),
+            sha256: "ab".repeat(32),
+            chunk_bytes: 64 * 1024,
+        };
+        let bytes = serde_json::to_vec(&offer).unwrap();
+        let parsed: Message = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed, offer);
+
+        // v3 接收端应能容忍缺省字段（v2 端不会发这些变体，但若字段缺失仍可解析）
+        let sparse: Message = serde_json::from_value(serde_json::json!({
+            "type": "file_offer",
+            "msg_id": "m2",
+            "name": "x.bin",
+        }))
+        .unwrap();
+        match sparse {
+            Message::FileOffer {
+                msg_id,
+                name,
+                size,
+                mime,
+                sha256,
+                chunk_bytes,
+            } => {
+                assert_eq!(msg_id, "m2");
+                assert_eq!(name, "x.bin");
+                assert_eq!(size, 0);
+                assert_eq!(mime, "");
+                assert_eq!(sha256, "");
+                assert_eq!(chunk_bytes, 0);
+            }
+            other => panic!("应解析为 FileOffer，实际 {other:?}"),
+        }
+
+        let ack = Message::FileAck {
+            msg_id: "m1".into(),
+            received_bytes: 1024,
+            ok: true,
+            error: None,
+        };
+        let bytes = serde_json::to_vec(&ack).unwrap();
+        let parsed: Message = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed, ack);
+
+        // error 缺省（v3 对端省略）应为 None
+        let sparse_ack: Message = serde_json::from_value(serde_json::json!({
+            "type": "file_ack",
+            "msg_id": "m",
+            "received_bytes": 10,
+            "ok": false,
+        }))
+        .unwrap();
+        match sparse_ack {
+            Message::FileAck { ok, error, .. } => {
+                assert!(!ok);
+                assert_eq!(error, None);
+            }
+            other => panic!("应解析为 FileAck，实际 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn v2_老端不含_file_v1_特性() {
+        // v2 local_features 只到 search-v1；v3 追加 file-v1 后，老端解析不会受影响。
+        let features = local_features();
+        assert!(features.iter().any(|f| f == FEATURE_FILE_V1));
+        assert_eq!(PROTOCOL_VERSION, 3);
     }
 }

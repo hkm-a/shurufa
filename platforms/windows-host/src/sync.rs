@@ -19,6 +19,8 @@ enum Broadcast {
         mime_type: String,
         data: Vec<u8>,
     },
+    /// v3 文件：整路径交由 SyncService 内部分块、跟踪 ACK/Progress。
+    FileV3(std::path::PathBuf),
 }
 
 /// 守护进程内广播出口；`run` 模式启动后可用
@@ -86,6 +88,22 @@ pub fn broadcast_file(path: &std::path::Path) {
             mime_type,
             data,
         });
+    }
+}
+
+/// 以 v3 文件路径方式向所有 file-v1 对端广播一个本机文件。
+///
+/// 这是同步 v3 的对外入口；面板层调它即可。同步线程内由 `Broadcast::FileV3`
+/// 匹配 `SyncService::send_file_path` 驱动 Offer/Chunk/Done/Ack 状态机。
+/// 对端不支持 file-v1 时该调用会自然走 v2 `ClipFile` 单帧广播，由
+/// `SyncService::send_file_path` 接管。
+///
+/// 当前宿主 UI（panel.rs / ai_panel.rs）尚无专门的「以文件形式转发」右
+/// 键菜单 hook，本函数仅暴露能力；需要接入 UI 时由对应面板调用层补一行。
+pub fn send_file_to_all(path: &std::path::Path) {
+    let path_buf = path.to_path_buf();
+    if let Some(tx) = CLIP_TX.get() {
+        let _ = tx.send(Broadcast::FileV3(path_buf));
     }
 }
 
@@ -236,6 +254,21 @@ pub fn start_daemon() {
                             Broadcast::File { name, mime_type, data } => {
                                 service.send_file(&name, &mime_type, &data)
                             }
+                            Broadcast::FileV3(path) => {
+                                match service.send_file_path(&path) {
+                                    Ok(msg_id) => crate::log_line(&format!(
+                                        "已发送 {} → 等待对端接收（msg {}）",
+                                        path.file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("?"),
+                                        &msg_id[..8]
+                                    )),
+                                    Err(e) => crate::log_line(&format!(
+                                        "文件发送失败 {}：{e}",
+                                        path.display()
+                                    )),
+                                }
+                            }
                         },
                         Some(incoming) = in_rx.recv() => {
                             // 入库/落盘/图片转码/写系统剪贴板均为阻塞或 CPU 密集
@@ -292,6 +325,37 @@ pub fn start_daemon() {
                                             hit.source_app,
                                             hit.updated_at,
                                             crate::single_line_preview(&hit.text, 60)
+                                        ));
+                                    }
+                                }
+                                Incoming::FileOffer { from_name, name, size, mime, msg_id, .. } => {
+                                    // 入站文件 Offer：在宿主层面只打日志；后续
+                                    // 若要弹「接收/拒绝」对话框应在此调用
+                                    // service.set_file_confirm_handler(...) 注入。
+                                    crate::log_line(&format!(
+                                        "收到文件 Offer：来自 {from_name} 的 {name}（{size} B, {mime}, msg {})",
+                                        &msg_id[..8.min(msg_id.len())]
+                                    ));
+                                }
+                                Incoming::FileProgress { msg_id, received_bytes } => {
+                                    crate::log_line(&format!(
+                                        "文件传输进度 msg={} 已收 {} B",
+                                        &msg_id[..8.min(msg_id.len())],
+                                        received_bytes
+                                    ));
+                                }
+                                Incoming::FileTransferDone { msg_id, name, ok, detail } => {
+                                    if ok {
+                                        let bytes = detail.unwrap_or(0);
+                                        crate::log_line(&format!(
+                                            "对方已接收 {name}（{}，{} B）",
+                                            &msg_id[..8.min(msg_id.len())],
+                                            bytes
+                                        ));
+                                    } else {
+                                        let reason = detail.err().unwrap_or_else(|| "未知".into());
+                                        crate::log_line(&format!(
+                                            "文件发送失败 {name}：{reason}"
                                         ));
                                     }
                                 }

@@ -20,6 +20,8 @@ object SyncBridge {
     external fun nativeSendClip(text: String)
     external fun nativeSendImage(png: ByteArray)
     external fun nativeSendFile(name: String, mimeType: String, data: ByteArray)
+    /** v3 文件同步：整路径直送，由 SyncService 内部完成分块/ACK 状态机。 */
+    external fun nativeSendFilePath(path: String): Boolean
     external fun nativeMaxImageBytes(): Int
     external fun nativeMaxFileBytes(): Int
     external fun nativeDevices(): String
@@ -64,7 +66,16 @@ object SyncBridge {
         val raw = nativeDevices()
         if (raw.isEmpty()) return emptyList()
         return raw.lines().mapNotNull { line ->
-            line.split('').getOrNull(1)
+            line.split('\u0001').getOrNull(1)
         }
+    }
+
+    /**
+     * 文件 v3：把本机 path 指向的文件分块流给所有协商了 file-v1 的对端。
+     * 失败（文件过大 / 路径非法 / 同步未启动）返回 false。
+     */
+    fun sendFile(path: String): Boolean {
+        if (path.isBlank()) return false
+        return runCatching { nativeSendFilePath(path) }.getOrDefault(false)
     }
 }

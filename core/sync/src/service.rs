@@ -31,6 +31,10 @@ const MAX_CLIP_TEXT: usize = 64 * 1024;
 pub const MAX_CLIP_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 /// 单文件同步上限（字节）：与图片共用协议帧预算。
 pub const MAX_CLIP_FILE_BYTES: usize = 8 * 1024 * 1024;
+/// 文件 v3 单文件上限：64 MB。两端都遵守；超出按 too_large 拒绝。
+pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// 文件 v3 接收侧自动接受的体量阈值（<5MB）+ MIME 白名单。
+pub const FILE_AUTO_ACCEPT_MAX: u64 = 5 * 1024 * 1024;
 
 /// TCP 连接到达超时（秒）：避免对黑洞/不可达地址无限挂起。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -148,6 +152,31 @@ pub enum Incoming {
         /// 命中摘要（至多 8 条，仅文本预览）。
         hits: Vec<crate::protocol::SearchHit>,
     },
+    /// 收到对端文件 Offer（v3 file-v1 协商后）。宿主应提示用户；
+    /// 自动接收条件（小文件 + 白名单 MIME）由宿主判定后调用
+    /// `respond_file_offer(msg_id, true)`。
+    FileOffer {
+        from_name: String,
+        msg_id: String,
+        name: String,
+        size: u64,
+        mime: String,
+        sha256: String,
+        chunk_bytes: u32,
+    },
+    /// 文件传输进度（对端→本端）：已收字节数。
+    FileProgress {
+        msg_id: String,
+        received_bytes: u64,
+    },
+    /// 本端发起的文件传输被对端确认/拒绝/出错后的终态。
+    FileTransferDone {
+        msg_id: String,
+        name: String,
+        ok: bool,
+        /// Ok 时为接收方报回的字节数；Err 时为人类可读原因。
+        detail: Result<u64, String>,
+    },
 }
 
 /// 出站广播内容：文本或图片，经 broadcast 通道推给所有活跃连接。
@@ -168,6 +197,8 @@ enum Outbound {
     },
     /// 跨设备剪贴板搜索请求；由所有协商了 search-v1 的连接各自写出。
     SearchRequest { query: String, req_id: String },
+    /// 文件 v3 控制/数据面消息；仅在协商了 file-v1 的连接上写出。
+    FileWire(Box<Message>),
 }
 
 /// 生成一条出站消息 id（uuid v4，无连字符小写）。
@@ -215,6 +246,19 @@ pub type ConfirmFn = Arc<dyn Fn(PairPrompt) -> bool + Send + Sync>;
 /// 搜索回调类型：输入查询串，返回命中摘要列表（由本端历史库提供）。
 pub type SearchHandler = Arc<dyn Fn(&str) -> Vec<crate::protocol::SearchHit> + Send + Sync>;
 
+/// 入站文件确认回调：返回 true=接受 false=拒绝。宿主在 UI 线程同步
+/// 弹系统对话框/托盘气泡；回调在 tokio 运行时外被调用。
+pub type FileConfirmFn = Arc<dyn Fn(FileOfferPrompt) -> bool + Send + Sync>;
+
+/// 入站文件 Offer 提示；接收方宿主据此弹「接收/拒绝」。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileOfferPrompt {
+    pub from_name: String,
+    pub name: String,
+    pub size: u64,
+    pub mime: String,
+}
+
 struct Shared {
     identity: Arc<DeviceIdentity>,
     peers: Arc<PeerStore>,
@@ -238,7 +282,38 @@ struct Shared {
     recent_out: Mutex<Vec<(String, i64)>>,
     /// 本端剪贴板历史搜索回调；启动后由宿主注入（None 时返回空结果）。
     search_handler: Mutex<Option<SearchHandler>>,
+    /// 入站 Offer 弹出回调（宿主注入）；None 时按白名单+体量自动收。
+    file_confirm: Mutex<Option<FileConfirmFn>>,
+    /// 传输中 msg_id → 状态；宿主轮询/测试断言用。
+    transfers: Mutex<HashMap<String, FileSendState>>,
+    /// 出站 Offer 发出时刻，用于计算 30s 无响应超时。
+    offer_sent_at: Mutex<HashMap<String, Instant>>,
+    /// 出站 Streaming 阶段最近一次收到 FileProgress（或发送 Chunk）时刻，
+    /// 60s 无动静判定对端停滞。
+    stream_progress_at: Mutex<HashMap<String, Instant>>,
+    /// 入站文件接收中（msg_id → 状态）。
+    file_recv: Mutex<HashMap<String, FileRecvState>>,
+    /// 测试用替身目标目录；正常为 None → Downloads\shurufa（或平台对应目录）。
+    file_recv_dir_override: Mutex<Option<PathBuf>>,
     log: Box<dyn Fn(&str) + Send + Sync>,
+}
+
+/// 入站文件传输的内部状态（按连接隔离、由 duplex 管理）。
+#[derive(Clone)]
+pub struct FileRecvState {
+    pub from_name: String,
+    pub name: String,
+    pub size: u64,
+    /// 保留给后续 UI 按 MIME 分组（图片/文本/归档等），当前未读但保留。
+    #[allow(dead_code)]
+    pub mime: String,
+    pub sha256: String,
+    /// 累积已写字节。
+    pub received: u64,
+    /// 临时落地目录；落地完成后 .part 会被原子改名。
+    pub part_path: PathBuf,
+    /// 最近一次收到 FileChunk 时刻（测试与超时用）。
+    pub last_chunk_at: Instant,
 }
 
 impl Shared {
@@ -276,6 +351,114 @@ impl Shared {
     fn clear_backoff(&self, fp: &str) {
         self.backoff.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(fp);
     }
+
+    /// 把 msg_id 对应的传输切到指定状态；保留既有终态不动。
+    fn set_transfer(&self, msg_id: &str, next: FileSendState) {
+        let mut map = self
+            .transfers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if matches!(
+            map.get(msg_id),
+            Some(FileSendState::Acked { .. })
+                | Some(FileSendState::Declined { .. })
+                | Some(FileSendState::Failed { .. })
+        ) {
+            return;
+        }
+        map.insert(msg_id.to_string(), next);
+    }
+
+    /// 当前传输状态副本（测试 / 宿主 UI 轮询用）。
+    pub fn transfer_state(&self, msg_id: &str) -> Option<FileSendState> {
+        self.transfers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(msg_id)
+            .cloned()
+    }
+
+    /// 把 msg_id 转入 StreamDone；供 send_file 在推送完 Done 后调用。
+    fn mark_stream_done(&self, msg_id: &str) {
+        self.set_transfer(
+            msg_id,
+            FileSendState::StreamDone {
+                msg_id: msg_id.to_string(),
+            },
+        );
+    }
+
+    /// 启动后台任务：扫描 transfers，把卡 OfferSent >30s / Streaming 停滞 >60s 的标 Failed。
+    fn start_transfer_watchdog(self: &Arc<Self>) {
+        let shared = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tick.tick().await;
+                let now = Instant::now();
+                let mut to_fail: Vec<(String, &'static str)> = Vec::new();
+                {
+                    let mut send_map = shared
+                        .offer_sent_at
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let mut prog_map = shared
+                        .stream_progress_at
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let transfers = shared
+                        .transfers
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    for (msg_id, sent_at) in send_map.iter() {
+                        if let Some(FileSendState::OfferSent { .. }) = transfers.get(msg_id) {
+                            if now.duration_since(*sent_at) > Duration::from_secs(30) {
+                                to_fail.push((msg_id.clone(), "对方未响应"));
+                            }
+                        }
+                    }
+                    for (msg_id, last) in prog_map.iter() {
+                        if let Some(FileSendState::Streaming { .. }) = transfers.get(msg_id) {
+                            if now.duration_since(*last) > Duration::from_secs(60) {
+                                to_fail.push((msg_id.clone(), "传输进度停滞超时"));
+                            }
+                        }
+                    }
+                    send_map.retain(|mid, _| {
+                        !to_fail.iter().any(|(o_mid, _)| o_mid == mid)
+                            && !matches!(
+                                transfers.get(mid),
+                                Some(FileSendState::Acked { .. })
+                                    | Some(FileSendState::Declined { .. })
+                                    | Some(FileSendState::Failed { .. })
+                            )
+                    });
+                    prog_map.retain(|mid, _| {
+                        !to_fail.iter().any(|(o_mid, _)| o_mid == mid)
+                            && matches!(
+                                transfers.get(mid),
+                                Some(FileSendState::Streaming { .. })
+                            )
+                    });
+                }
+                for (msg_id, reason) in to_fail {
+                    shared.set_transfer(&msg_id, FileSendState::Failed {
+                        msg_id: msg_id.clone(),
+                        error: reason.into(),
+                    });
+                    let _ = shared
+                        .incoming
+                        .send(Incoming::FileTransferDone {
+                            msg_id: msg_id.clone(),
+                            name: String::new(),
+                            ok: false,
+                            detail: Err(reason.into()),
+                        })
+                        .await;
+                }
+            }
+        });
+    }
 }
 
 pub struct SyncService {
@@ -283,6 +466,30 @@ pub struct SyncService {
     local_addr: SocketAddr,
     /// mDNS 守护线程句柄；持有以维持广播
     _mdns: Option<mdns_sd::ServiceDaemon>,
+}
+
+/// 出站文件传输状态机（供 send_file 驱动、duplex 辅助推进）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum FileSendState {
+    /// Offer 已发出，等待 Accept/Decline（或 30s 超时）。
+    OfferSent { msg_id: String },
+    /// 收到 Accept，开始流式发送 Chunk。
+    Streaming { msg_id: String, sent_bytes: u64 },
+    /// 全部 Chunk 已发并送 FileDone；等待 FileAck。
+    StreamDone { msg_id: String },
+    /// 对端 FileAck 已收到，传输结束（detail 为接收方报回字节数或错误）。
+    Acked { msg_id: String, received: u64 },
+    /// 对端明确拒绝。
+    Declined { msg_id: String, reason: String },
+    /// 本地错或对端无响应。
+    Failed { msg_id: String, error: String },
+}
+
+/// 接收侧默认落地目录占位：测试经 `set_file_recv_dir_override` 覆盖，
+/// 生产端走系统 Downloads/shurufa（见 incoming_file_part_path）。
+#[allow(dead_code)]
+pub fn file_received_dir(config_dir: &Path) -> PathBuf {
+    config_dir.join("received")
 }
 
 impl Clone for SyncService {
@@ -335,6 +542,12 @@ impl SyncService {
             recent_out: Mutex::new(Vec::new()),
             // 搜索留给宿主在历史库就绪后再注入，避免阻塞服务启动。
             search_handler: Mutex::new(None),
+            file_confirm: Mutex::new(None),
+            transfers: Mutex::new(HashMap::new()),
+            offer_sent_at: Mutex::new(HashMap::new()),
+            stream_progress_at: Mutex::new(HashMap::new()),
+            file_recv: Mutex::new(HashMap::new()),
+            file_recv_dir_override: Mutex::new(None),
             log,
         });
 
@@ -412,6 +625,8 @@ impl SyncService {
                 }
             }
         });
+
+        shared.start_transfer_watchdog();
 
         Ok(SyncService {
             shared,
@@ -533,6 +748,252 @@ impl SyncService {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handler);
     }
+
+    /// 以文件形式发送给所有已连接且协商了 file-v1 的对端（无 v3 对端时
+    /// 自动退化为 v2 的 `ClipFile` 广播）。整个流程在单条 tokio task 中
+    /// 走完，不占额外线程；进度/终态通过 `Incoming::FileProgress` /
+    /// `Incoming::FileTransferDone` 通知宿主。
+    ///
+    /// 返回的 msg_id 用于关联后续进度事件。
+    ///
+    /// 与既有 `send_file(name, mime, data)` 共存：后者是 v2 ClipFile 广播
+    /// 入口（`ClipboardSyncService.broadcast_file` 使用），不作改动。
+    pub fn send_file_path(&self, path: &Path) -> Result<String, SendErr> {
+        send_file_impl(self.shared.clone(), path.to_path_buf())
+    }
+
+    /// 当前出站/入站传输的状态副本（宿主 UI 轮询用）。
+    pub fn transfer_state(&self, msg_id: &str) -> Option<FileSendState> {
+        self.shared.transfer_state(msg_id)
+    }
+
+    /// 在接收侧注入 Offer 确认回调：宿主弹系统对话框 / Toast，返回
+    /// true=接受 false=拒绝。None 时按体量+MIME 白名单自动决策。
+    pub fn set_file_confirm_handler(&self, handler: FileConfirmFn) {
+        *self
+            .shared
+            .file_confirm
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handler);
+    }
+
+    /// 测试用：将入站文件落盘目录 override 到指定路径；生产代码无需调用。
+    #[doc(hidden)]
+    pub fn set_file_recv_dir_override(&self, dir: Option<PathBuf>) {
+        *self
+            .shared
+            .file_recv_dir_override
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = dir;
+    }
+}
+
+/// 文件发送侧错误：仅包含同步词法/大小/打开失败等启动即知的问题。
+/// 传输过程中出现的对端拒绝、超时、sha256 不一致等以 `Incoming::FileTransferDone`
+/// 上报。
+#[derive(Debug, Clone, PartialEq)]
+pub enum SendErr {
+    /// 路径无法读为普通文件（不存在、不是文件等）。
+    Io(String),
+    /// 文件超过 64 MB 上限。
+    TooLarge(u64),
+    /// 无法从路径提取合法文件名。
+    BadName,
+}
+
+impl std::fmt::Display for SendErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SendErr::Io(e) => write!(f, "读取文件失败: {e}"),
+            SendErr::TooLarge(n) => write!(f, "文件超过 64MB 上限: {n}"),
+            SendErr::BadName => write!(f, "无法从路径取文件名"),
+        }
+    }
+}
+
+impl std::error::Error for SendErr {}
+
+/// 构建文件传输任务并返回 msg_id。
+///
+/// 流程：读盘 + sha256 + 分块 base64 → 广播 Offer → 30s 内等 Accept/Decline
+/// → 按序推送 Chunk → 发 Done → 60s 静默超时由 watchdog 判定。
+/// 全程只用既有 outgoing broadcast；接收端对 Offer 的应答会以 duplex 收
+/// 到的 FileAccept/Decline/Ack 形式回流到 Shared::transfers（由 duplex
+/// 更新状态并 emit Incoming::FileTransferDone）。
+fn send_file_impl(shared: Arc<Shared>, path: PathBuf) -> Result<String, SendErr> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .ok_or(SendErr::BadName)?
+        .to_string();
+    let mut file = std::fs::File::open(&path).map_err(|e| SendErr::Io(e.to_string()))?;
+    let size = file
+        .metadata()
+        .map_err(|e| SendErr::Io(e.to_string()))?
+        .len();
+    if size > MAX_FILE_BYTES {
+        return Err(SendErr::TooLarge(size));
+    }
+
+    let msg_id = new_msg_id();
+    let chunk_bytes: u32 = 64 * 1024;
+    let name_for_log = name.clone();
+    let shared_for_task = shared.clone();
+    let msg_id_for_task = msg_id.clone();
+    tokio::spawn(async move {
+        let ret = tokio::task::spawn_blocking(move || {
+            // 一次性读完 + sha256 + 分块 base64；64MB 内可接受，
+            // 且与 `ClipFile` 既有路径一致，避免在大文件前引入流式编码复杂度。
+            let mut hasher = Sha256::new();
+            let mut buf = Vec::with_capacity(size as usize);
+            file.read_to_end(&mut buf)
+                .map_err(|e| format!("读文件失败: {e}"))?;
+            hasher.update(&buf);
+            let sha256 = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            let chunks: Vec<String> = buf
+                .chunks(chunk_bytes as usize)
+                .map(|c| base64::engine::general_purpose::STANDARD.encode(c))
+                .collect();
+            Ok::<_, String>((buf.len() as u64, sha256, chunks))
+        })
+        .await;
+        let (actual_size, sha256, chunks) = match ret {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                shared_for_task.log(&format!("文件 {name_for_log} 读取失败：{e}"));
+                return;
+            }
+            Err(e) => {
+                shared_for_task.log(&format!("文件 {name_for_log} 读取任务失败：{e}"));
+                return;
+            }
+        };
+        if actual_size != size {
+            // 元数据与实读不一致（文件被截短/替换）仍以实读为准。
+            shared_for_task.log(&format!(
+                "文件 {name_for_log} 大小从 {size} 变为 {actual_size}"
+            ));
+        }
+
+        // 记 OfferSent + offer_sent_at，让 watchdog 30s 后判定「对方未响应」。
+        shared_for_task.set_transfer(
+            &msg_id_for_task,
+            FileSendState::OfferSent {
+                msg_id: msg_id_for_task.clone(),
+            },
+        );
+        shared_for_task
+            .offer_sent_at
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(msg_id_for_task.clone(), Instant::now());
+
+        let offer = Message::FileOffer {
+            msg_id: msg_id_for_task.clone(),
+            name: name_for_log.clone(),
+            size: actual_size,
+            mime: "application/octet-stream".into(),
+            sha256: sha256.clone(),
+            chunk_bytes,
+        };
+        if shared_for_task
+            .outgoing
+            .send(Outbound::FileWire(Box::new(offer)))
+            .is_err()
+        {
+            shared_for_task.log(&format!("无对端可接收文件 {name_for_log}，已忽略"));
+            return;
+        }
+
+        // 等 Accept / Decline：最多 30s（与 watchdog 相同节奏，提前 5s 粒度轮询）。
+        let accept_deadline = Instant::now() + Duration::from_secs(30);
+        'wait_accept: loop {
+            let state = shared_for_task.transfer_state(&msg_id_for_task);
+            match state {
+                Some(FileSendState::Declined { reason, .. }) => {
+                    let _ = shared_for_task
+                        .incoming
+                        .send(Incoming::FileTransferDone {
+                            msg_id: msg_id_for_task.clone(),
+                            name: name_for_log.clone(),
+                            ok: false,
+                            detail: Err(format!("对方拒绝：{reason}")),
+                        })
+                        .await;
+                    return;
+                }
+                Some(FileSendState::Streaming { .. }) => break 'wait_accept,
+                Some(FileSendState::OfferSent { .. }) => {
+                    if Instant::now() > accept_deadline {
+                        // watchdog 会标 Failed 并发事件，这里直接退出。
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                _ => {
+                    // Failed/其它已由 watchdog 处理
+                    return;
+                }
+            }
+        }
+
+        // 按序推 Chunk；每发一块登记流式进度时间戳，供 watchdog 检测停滞。
+        // 节流：每 4 块让出一次调度（≈2MB/s 量级），既避免把对端压垮，
+        // 也给接收端 FileProgress 与人工破坏/调试窗口留下缝隙。
+        let total = chunks.len();
+        for (idx, data) in chunks.into_iter().enumerate() {
+            let last = idx + 1 == total;
+            let chunk = Message::FileChunk {
+                msg_id: msg_id_for_task.clone(),
+                offset: (idx as u64) * (chunk_bytes as u64),
+                data,
+                last,
+            };
+            if shared_for_task
+                .outgoing
+                .send(Outbound::FileWire(Box::new(chunk)))
+                .is_err()
+            {
+                shared_for_task.log(&format!(
+                    "发送块 {idx}/{total} 时广播通道已闭，中止 {name_for_log}"
+                ));
+                return;
+            }
+            if idx % 4 == 3 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            let sent_bytes: u64 = ((idx + 1) as u64) * (chunk_bytes as u64).min(actual_size);
+            shared_for_task.set_transfer(
+                &msg_id_for_task,
+                FileSendState::Streaming {
+                    msg_id: msg_id_for_task.clone(),
+                    sent_bytes,
+                },
+            );
+            shared_for_task
+                .stream_progress_at
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(msg_id_for_task.clone(), Instant::now());
+        }
+        let done = Message::FileDone {
+            msg_id: msg_id_for_task.clone(),
+            sha256,
+        };
+        let _ = shared_for_task
+            .outgoing
+            .send(Outbound::FileWire(Box::new(done)));
+        shared_for_task.mark_stream_done(&msg_id_for_task);
+    });
+    Ok(msg_id)
 }
 
 /// mDNS：广播自身并缓存同类设备地址。
@@ -952,6 +1413,8 @@ where
         crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_MSG_ID_V1);
     let peer_has_search =
         crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_SEARCH_V1);
+    let peer_has_file_v1 =
+        crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_FILE_V1);
     shared.log(&format!(
         "已连接 {peer_name}（协议 {}：{} msg_id）",
         if peer_has_msg_id { "v2" } else { "v1" },
@@ -1040,6 +1503,313 @@ where
                             }
                             _ => {}
                         }
+                    }
+                    Ok(Ok((Message::FileOffer {
+                        msg_id,
+                        name,
+                        size,
+                        mime,
+                        sha256,
+                        chunk_bytes,
+                    }, _))) => {
+                        // 64MB 上限先测：超出立即拒。
+                        if size > MAX_FILE_BYTES {
+                            let reply = Message::FileDecline {
+                                msg_id: msg_id.clone(),
+                                reason: "too_large".into(),
+                            };
+                            if let Err(e) = write_msg_with_format(&mut tls, &reply, format).await {
+                                break Err(e);
+                            }
+                            continue;
+                        }
+                        // 让宿主无论决策如何都能看到 Offer 事件（UI 渲染/日志）。
+                        let _ = shared
+                            .incoming
+                            .send(Incoming::FileOffer {
+                                from_name: peer_name.clone(),
+                                msg_id: msg_id.clone(),
+                                name: name.clone(),
+                                size,
+                                mime: mime.clone(),
+                                sha256: sha256.clone(),
+                                chunk_bytes,
+                            })
+                            .await;
+                        let accepted = {
+                            let cb = shared
+                                .file_confirm
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .clone();
+                            match cb {
+                                Some(f) => f(FileOfferPrompt {
+                                    from_name: peer_name.clone(),
+                                    name: name.clone(),
+                                    size,
+                                    mime: mime.clone(),
+                                }),
+                                None => {
+                                    size < FILE_AUTO_ACCEPT_MAX
+                                        && mime_is_whitelisted(&mime)
+                                }
+                            }
+                        };
+                        if !accepted {
+                            let reply = Message::FileDecline {
+                                msg_id: msg_id.clone(),
+                                reason: "user_declined".into(),
+                            };
+                            if let Err(e) = write_msg_with_format(&mut tls, &reply, format).await {
+                                break Err(e);
+                            }
+                            continue;
+                        }
+                        // 同意：准备 .part 落盘路径并 touch（让测试/宿主立刻可见）。
+                        let part_path = incoming_file_part_path(&shared, &msg_id, &name);
+                        if part_path.is_none() {
+                            let reply = Message::FileDecline {
+                                msg_id: msg_id.clone(),
+                                reason: "io_error".into(),
+                            };
+                            if let Err(e) = write_msg_with_format(&mut tls, &reply, format).await {
+                                break Err(e);
+                            }
+                            continue;
+                        }
+                        let part_path = part_path.unwrap();
+                        if let Some(parent) = part_path.parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+                        // touch 空 .part：首个 Chunk 追加之前界面/测试即可观察。
+                        let _ = fs::OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .open(&part_path);
+                        {
+                            let mut recv = shared.file_recv.lock().unwrap_or_else(|p| p.into_inner());
+                            recv.insert(
+                                msg_id.clone(),
+                                FileRecvState {
+                                    from_name: peer_name.clone(),
+                                    name: name.clone(),
+                                    size,
+                                    mime: mime.clone(),
+                                    sha256: sha256.clone(),
+                                    received: 0,
+                                    part_path: part_path.clone(),
+                                    last_chunk_at: Instant::now(),
+                                },
+                            );
+                        }
+                        let reply = Message::FileAccept { msg_id };
+                        if let Err(e) = write_msg_with_format(&mut tls, &reply, format).await {
+                            break Err(e);
+                        }
+                    }
+                    Ok(Ok((Message::FileAccept { msg_id }, _))) => {
+                        // 出站方向：对端同意，切 Streaming 并唤醒等待循环。
+                        shared.set_transfer(&msg_id, FileSendState::Streaming {
+                            msg_id: msg_id.clone(),
+                            sent_bytes: 0,
+                        });
+                        shared
+                            .stream_progress_at
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .insert(msg_id, Instant::now());
+                    }
+                    Ok(Ok((Message::FileDecline { msg_id, reason }, _))) => {
+                        shared.set_transfer(&msg_id, FileSendState::Declined {
+                            msg_id: msg_id.clone(),
+                            reason,
+                        });
+                    }
+                    Ok(Ok((Message::FileChunk { msg_id, offset, data, last }, _))) => {
+                        let _ = last; // 是否最后一块由 FileDone 落地，块本身无需标记
+                        let bytes = match base64::engine::general_purpose::STANDARD.decode(&data) {
+                            Ok(b) => b,
+                            Err(_) => continue,
+                        };
+                        enum ChunkStep {
+                            Continue,
+                            Progress(u64),
+                            Reject(&'static str),
+                        }
+                        let step = {
+                            let mut recv = shared.file_recv.lock().unwrap_or_else(|p| p.into_inner());
+                            match recv.get_mut(&msg_id) {
+                                Some(st) => {
+                                    if offset != st.received {
+                                        recv.remove(&msg_id);
+                                        ChunkStep::Reject("chunk_out_of_order")
+                                    } else {
+                                        let mut opened = std::fs::OpenOptions::new()
+                                            .create(true)
+                                            .append(true)
+                                            .open(&st.part_path);
+                                        match opened.as_mut().map(|f| {
+                                            use std::io::Write;
+                                            f.write_all(&bytes)
+                                        }) {
+                                            Ok(Ok(())) => {
+                                                st.received += bytes.len() as u64;
+                                                st.last_chunk_at = Instant::now();
+                                                // 节流：每 16 块（≈1MB @ 64KB）或刚好收满时回 progress
+                                                if st.received % (64 * 1024 * 16) < 64 * 1024 || st.received >= st.size {
+                                                    ChunkStep::Progress(st.received)
+                                                } else {
+                                                    ChunkStep::Continue
+                                                }
+                                            }
+                                            _ => {
+                                                recv.remove(&msg_id);
+                                                ChunkStep::Reject("io_error")
+                                            }
+                                        }
+                                    }
+                                }
+                                None => ChunkStep::Continue,
+                            }
+                        };
+                        match step {
+                            ChunkStep::Continue => {}
+                            ChunkStep::Progress(received) => {
+                                let progress = Message::FileProgress {
+                                    msg_id: msg_id.clone(),
+                                    received_bytes: received,
+                                };
+                                if let Err(e) = write_msg_with_format(&mut tls, &progress, format).await {
+                                    break Err(e);
+                                }
+                            }
+                            ChunkStep::Reject(reason) => {
+                                let reply = Message::FileDecline {
+                                    msg_id: msg_id.clone(),
+                                    reason: reason.into(),
+                                };
+                                let _ = write_msg_with_format(&mut tls, &reply, format).await;
+                                continue;
+                            }
+                        }
+                    }
+                    Ok(Ok((Message::FileDone { msg_id, sha256 }, _))) => {
+                        let (path, expected, from_name, name, size) = {
+                            let recv = shared.file_recv.lock().unwrap_or_else(|p| p.into_inner());
+                            match recv.get(&msg_id) {
+                                Some(st) => (
+                                    st.part_path.clone(),
+                                    st.sha256.clone(),
+                                    st.from_name.clone(),
+                                    st.name.clone(),
+                                    st.size,
+                                ),
+                                None => continue,
+                            }
+                        };
+                        if sha256 != expected {
+                            let _ = fs::remove_file(&path);
+                            let reply = Message::FileAck {
+                                msg_id: msg_id.clone(),
+                                received_bytes: 0,
+                                ok: false,
+                                error: Some("sha256_mismatch".into()),
+                            };
+                            let _ = write_msg_with_format(&mut tls, &reply, format).await;
+                            shared.file_recv.lock().unwrap_or_else(|p| p.into_inner()).remove(&msg_id);
+                            continue;
+                        }
+                        // 校验 .part 实际 sha256
+                        let actual = sha256_of_file(&path);
+                        let ok = matches!(actual.as_deref(), Some(h) if h == expected);
+                        if !ok {
+                            let _ = fs::remove_file(&path);
+                            let reply = Message::FileAck {
+                                msg_id: msg_id.clone(),
+                                received_bytes: 0,
+                                ok: false,
+                                error: Some("sha256_mismatch".into()),
+                            };
+                            let _ = write_msg_with_format(&mut tls, &reply, format).await;
+                            shared.file_recv.lock().unwrap_or_else(|p| p.into_inner()).remove(&msg_id);
+                            continue;
+                        }
+                        // 原子改名 .part → 最终文件名
+                        let final_path = unique_landing_path(&path, &name);
+                        let rename_ok = fs::rename(&path, &final_path).is_ok();
+                        if !rename_ok {
+                            let _ = fs::remove_file(&path);
+                            let reply = Message::FileAck {
+                                msg_id: msg_id.clone(),
+                                received_bytes: 0,
+                                ok: false,
+                                error: Some("io_error".into()),
+                            };
+                            let _ = write_msg_with_format(&mut tls, &reply, format).await;
+                            shared.file_recv.lock().unwrap_or_else(|p| p.into_inner()).remove(&msg_id);
+                            continue;
+                        }
+                        let reply = Message::FileAck {
+                            msg_id: msg_id.clone(),
+                            received_bytes: size,
+                            ok: true,
+                            error: None,
+                        };
+                        let _ = write_msg_with_format(&mut tls, &reply, format).await;
+                        shared.file_recv.lock().unwrap_or_else(|p| p.into_inner()).remove(&msg_id);
+                        let _ = shared
+                            .incoming
+                            .send(Incoming::FileTransferDone {
+                                msg_id: msg_id.clone(),
+                                name: name.clone(),
+                                ok: true,
+                                detail: Ok(size),
+                            })
+                            .await;
+                        shared.log(&format!("已保存 {name}（来自 {from_name}）"));
+                    }
+                    Ok(Ok((Message::FileAck { msg_id, received_bytes, ok, error }, _))) => {
+                        let err_detail = error.unwrap_or_else(|| "unknown".into());
+                        let next = if ok {
+                            FileSendState::Acked { msg_id: msg_id.clone(), received: received_bytes }
+                        } else {
+                            FileSendState::Failed {
+                                msg_id: msg_id.clone(),
+                                error: err_detail.clone(),
+                            }
+                        };
+                        shared.set_transfer(&msg_id, next);
+                        let _ = shared
+                            .incoming
+                            .send(Incoming::FileTransferDone {
+                                msg_id: msg_id.clone(),
+                                name: String::new(),
+                                ok,
+                                detail: if ok {
+                                    Ok(received_bytes)
+                                } else {
+                                    Err(err_detail)
+                                },
+                            })
+                            .await;
+                    }
+                    Ok(Ok((Message::FileProgress { msg_id, received_bytes }, _))) => {
+                        // picker：先更新状态，再通知宿主。
+                        if let Some(FileSendState::Streaming { .. }) = shared.transfer_state(&msg_id) {
+                            shared.set_transfer(&msg_id, FileSendState::Streaming {
+                                msg_id: msg_id.clone(),
+                                sent_bytes: received_bytes,
+                            });
+                            shared
+                                .stream_progress_at
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .insert(msg_id.clone(), Instant::now());
+                        }
+                        let _ = shared
+                            .incoming
+                            .send(Incoming::FileProgress { msg_id, received_bytes })
+                            .await;
                     }
                     Ok(Ok((Message::Ping, _))) => {}
                     Ok(Ok((Message::SearchRequest { query, req_id }, _))) => {
@@ -1157,6 +1927,16 @@ where
                         break Err(e);
                     }
                 }
+                Ok(Outbound::FileWire(msg)) => {
+                    // 文件 v3 控制/数据面消息：file-v1 协商后才允许上路，
+                    // 保证 v2 对端不会因收到未知变体而断开。
+                    if !peer_has_file_v1 {
+                        continue;
+                    }
+                    if let Err(e) = write_msg_with_format(&mut tls, &msg, format).await {
+                        break Err(e);
+                    }
+                }
                 // 落后于广播积压时跳过旧消息继续
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => break Ok(()),
@@ -1182,6 +1962,83 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// 接收侧白名单：满足 (size < 5MB 且 mime 属于列表) + 无用户回调时自动接受。
+fn mime_is_whitelisted(mime: &str) -> bool {
+    mime.starts_with("image/")
+        || mime.starts_with("text/")
+        || mime == "application/pdf"
+        || mime == "application/zip"
+}
+
+/// 入站 .part 落盘路径：测试 override 优先，否则 Downloads/shurufa。
+fn incoming_file_part_path(shared: &Shared, msg_id: &str, name: &str) -> Option<PathBuf> {
+    let base = shared
+        .file_recv_dir_override
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .or_else(default_file_landing_dir)?;
+    let safe_name = Path::new(name).file_name()?.to_str()?;
+    if safe_name.is_empty() || safe_name == "." || safe_name == ".." {
+        return None;
+    }
+    Some(base.join(format!("{msg_id}.part")))
+}
+
+/// 默认文件落地目录：优先系统 Downloads，其次家目录；测试通过 override 覆盖。
+fn default_file_landing_dir() -> Option<PathBuf> {
+    // 读取 USERPROFILE（Windows）或 HOME，附加 Downloads\shurufa
+    let base = std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))?;
+    Some(base.join("Downloads").join("shurufa"))
+}
+
+/// 同目录内生成不冲突的最终文件名：name.ext → name (2).ext → name (3).ext。
+fn unique_landing_path(part: &Path, name: &str) -> PathBuf {
+    let dir = part.parent().map(Path::to_path_buf).unwrap_or_default();
+    let name_path = Path::new(name);
+    let stem = name_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    let ext = name_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    for i in 0..=99 {
+        let candidate = match i {
+            0 => dir.join(name),
+            n => {
+                if ext.is_empty() {
+                    dir.join(format!("{stem} ({n})"))
+                } else {
+                    dir.join(format!("{stem} ({n}).{ext}"))
+                }
+            }
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(name)
+}
+
+/// 计算文件 sha256；读失败返回 None。
+fn sha256_of_file(path: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut f = fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    hasher.update(&buf);
+    Some(
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    )
 }
 
 #[cfg(test)]

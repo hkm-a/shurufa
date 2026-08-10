@@ -36,6 +36,14 @@ path = "tests/stress.rs"
 harness = true
 required-features = ["stress-tests"]
 
+[[test]]
+name = "file_sync"
+path = "tests/file_sync.rs"
+# 文件 v3 走真 TCP+TLS 双端配对；与 stress 共用 stress-tests 开关避免
+# 默认 cargo test 上被 4 条真连接拖慢 CI。
+harness = true
+required-features = ["stress-tests"]
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
