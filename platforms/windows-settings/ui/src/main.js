@@ -8,6 +8,7 @@ import {
   Copy,
   createIcons,
   FolderOpen,
+  History,
   Image,
   Info,
   Keyboard,
@@ -38,6 +39,7 @@ const controlCenterIcons = {
   ClipboardList,
   Copy,
   FolderOpen,
+  History,
   Image,
   Info,
   Keyboard,
@@ -111,6 +113,7 @@ let notice = null;
 // 输入法四项快捷键选项；null 表示尚未加载（ssr/失败场景一律禁用态）
 let imeOptions = null;
 let dictionaryInfo = { revision: "" };
+let dictionaryHistoryList = [];
 // 打字统计：null 表示尚未加载或读取失败（面板走兜底样式）
 let typingStats = null;
 // 皮肤编辑器：null=未加载；dirty=待保存；error=JSON 解析失败时给用户的提示
@@ -213,11 +216,20 @@ function historyPage() {
 
 function dictionaryPage() {
   const revision = dictionaryInfo.revision || "读取中…";
+  const history = Array.isArray(dictionaryHistoryList) ? dictionaryHistoryList : [];
+  const options = history
+    .map((rev) => `<option value="${escapeHtml(rev)}">${escapeHtml(rev)}</option>`)
+    .join("");
+  const historyBlock = history.length
+    ? `<div class="setting-row"><div class="row-icon"><i data-lucide="history"></i></div><div><h3>回滚到指定版本</h3><p>最多保留最近 5 个本地快照；选好后点右侧按钮</p></div><div class="row-side"><select id="dict-rollback-target">${options}</select><button class="outline-action" data-action="rollback-dictionary-to"><i data-lucide="arrow-up-right"></i>回滚到所选</button></div></div>`
+    : `<div class="setting-row"><div class="row-icon dim"><i data-lucide="history"></i></div><div><h3>回滚到指定版本</h3><p>暂无本地历史快照（更新一次后即会出现）</p></div><span class="row-state">空</span></div>`;
   return `
     <section class="page settings-page">
       <header class="page-header"><div><p class="eyebrow">DICTIONARY</p><h1>词库</h1></div></header>
       <article class="setting-panel dictionary-panel">
         <div class="setting-row"><div class="row-icon coral"><i data-lucide="book-open-text"></i></div><div><h3>热门云词库</h3><p>rime-ice · 常用词与流行表达</p><p class="field-note">当前词典版本：${escapeHtml(revision)}</p></div><div class="row-side"><button class="outline-action" data-action="update-dictionary"><i data-lucide="refresh-cw"></i>更新词库</button><button class="outline-action" data-action="rollback-dictionary"><i data-lucide="arrow-up-right"></i>回滚到上一版</button></div></div>
+        <div class="divider"></div>
+        ${historyBlock}
         <div class="divider"></div>
         <div class="setting-row"><div class="row-icon"><i data-lucide="shield-check"></i></div><div><h3>本地校验</h3><p>下载完成后校验内容，再替换本地词典</p></div><span class="row-state">已保护</span></div>
       </article>
@@ -286,11 +298,19 @@ function pageTemplate() {
 function skinPage() {
   const status = skinState.source === "user" ? "自定义" : skinState.source === "builtin" ? "内置默认" : "未找到皮肤文件";
   const statusClass = skinState.dirty ? "warn" : skinState.source === "user" ? "info" : "";
+  const skin = parseSkinJson(skinState.content);
+  const formHtml = skin ? skinFormHtml(skin) : "";
+  const previewHtml = skinPreviewHtml(skin);
   return `
     <section class="page skin-page">
       <header class="page-header"><div><p class="eyebrow">APPEARANCE</p><h1>皮肤</h1></div><div class="header-actions"><span class="status-pill ${statusClass}">${status}${skinState.dirty ? " · 未保存" : ""}</span></div></header>
-      <article class="setting-panel">
-        <p class="skin-note">编辑 <code>shurufa-skin.json</code> 控制候选窗颜色、圆角、字号与阴影。保存后立即生效（Windows 候选窗 / 历史面板 / AI 帮写面板 / Android 键盘都会读取）。</p>
+      <p class="skin-note">编辑候选窗颜色、圆角、字号与阴影。左侧表单实时改动右侧预览与下方 JSON；保存后立即生效（Windows 候选窗 / 历史面板 / AI 帮写面板 / Android 键盘都会读取）。键盘、面板等其余字段保持原值。</p>
+      ${skin ? "" : `<div class="skin-invalid-banner" id="skin-invalid-banner"><i data-lucide="info"></i>JSON 无效，修复 JSON 才能继续编辑（表单已禁用，改动不会被覆盖）</div>`}
+      <div class="skin-grid${skin ? "" : " skin-form-disabled"}" id="skin-grid">
+        <div class="skin-form" id="skin-form">${formHtml}</div>
+        <div class="skin-preview-col">${previewHtml}</div>
+      </div>
+      <article class="setting-panel skin-json-panel">
         <p class="skin-path">${skinState.user_path ? `<i data-lucide="folder-open"></i><code>${escapeHtml(skinState.user_path)}</code>` : ""}</p>
         <textarea id="skin-editor" spellcheck="false" placeholder='{"version":2, ...}'>${escapeTextarea(skinState.content)}</textarea>
         <div class="field-action">
@@ -300,6 +320,333 @@ function skinPage() {
         </div>
       </article>
     </section>`;
+}
+
+// ---------------------------------------------------------------------------
+// 皮肤表单 / 预览（纯 JS，mock 不依赖 TSF；亮暗双模独立渲染）
+// ---------------------------------------------------------------------------
+
+// 与 platforms/windows/src/skin.rs 的 CandidateColors::light()/dark() 保持一致。
+const SKIN_DEFAULTS = {
+  light: {
+    background: "#F5F5F1",
+    highlight_background: "#C6D2B8",
+    text: "#1C1812",
+    preedit: "#9C8F85",
+    label: "#7A9A24"
+  },
+  dark: {
+    background: "#282422",
+    highlight_background: "#323E2C",
+    text: "#F4F2F1",
+    preedit: "#9A938F",
+    label: "#A0CC4C"
+  },
+  metrics: { radius: 8, font_scale: 1.0, opacity: 1.0 },
+  shadow: { enabled: false, radius: 18, alpha: 64 }
+};
+const SKIN_COLOR_FIELDS = [
+  ["background", "背景"],
+  ["highlight_background", "高亮背景"],
+  ["text", "正文文字"],
+  ["preedit", "预编辑（拼音）"],
+  ["label", "序号标签"]
+];
+
+function isHexColor(value) {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+// 读用户 JSON：只挑 candidate(5 色)+metrics+shadow；其他字段一律不碰。
+// 解析失败 / 结构不符一律返回 null（由调用方禁用表单，绝不允许覆盖原文）。
+function parseSkinJson(text) {
+  if (!text || !text.trim()) return null;
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (_error) {
+    return null;
+  }
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+  const readVariant = (key) => {
+    const defaults = SKIN_DEFAULTS[key];
+    const candidate = json[key] && typeof json[key].candidate === "object" ? json[key].candidate : {};
+    const metricsSrc = json[key] && typeof json[key].metrics === "object" ? json[key].metrics : {};
+    const metrics = {};
+    for (const name of ["radius", "font_scale", "opacity"]) {
+      const value = Number(metricsSrc[name]);
+      metrics[name] = Number.isFinite(value) ? value : SKIN_DEFAULTS.metrics[name];
+    }
+    const colors = {};
+    for (const [name] of SKIN_COLOR_FIELDS) {
+      const value = candidate[name];
+      colors[name] = isHexColor(value) ? value.toUpperCase() : defaults[name];
+    }
+    return { colors, metrics };
+  };
+  const shadowSrc = json.shadow && typeof json.shadow === "object" ? json.shadow : {};
+  const shadow = {
+    enabled: typeof shadowSrc.enabled === "boolean" ? shadowSrc.enabled : SKIN_DEFAULTS.shadow.enabled,
+    radius: Number.isFinite(Number(shadowSrc.radius)) ? Number(shadowSrc.radius) : SKIN_DEFAULTS.shadow.radius,
+    alpha: Number.isFinite(Number(shadowSrc.alpha)) ? Math.round(Number(shadowSrc.alpha)) : SKIN_DEFAULTS.shadow.alpha
+  };
+  return { light: readVariant("light"), dark: readVariant("dark"), shadow };
+}
+
+// rgba(hex, alpha) → "rgba(r,g,b,a)"；预览/表单色板共用。
+function hexWithAlpha(hex, alpha) {
+  const value = hex.replace("#", "");
+  const r = parseInt(value.slice(0, 2), 16);
+  const g = parseInt(value.slice(2, 4), 16);
+  const b = parseInt(value.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function numberAttr(value, digits = 2) {
+  const rounded = Number(value);
+  return String(Number.isFinite(rounded) ? Number(rounded.toFixed(digits)) : 0);
+}
+
+function skinColorRowHtml(theme, name, label, value) {
+  return `
+    <div class="skin-color-row" data-skin-field="${theme}.${name}">
+      <label class="skin-color-chip" style="background:${value}"><input type="color" data-skin-color="${theme}.${name}" value="${value}" /></label>
+      <span class="skin-color-label">${label}</span>
+      <span class="skin-color-hex">${value}</span>
+    </div>`;
+}
+
+function skinMetricsHtml(theme, metrics) {
+  return `
+    <div class="skin-slider-row" data-skin-field="${theme}.radius">
+      <label>圆角半径 <output>${numberAttr(metrics.radius, 0)}px</output></label>
+      <input type="range" min="0" max="64" step="1" value="${numberAttr(metrics.radius, 0)}" data-skin-range="${theme}.metrics.radius" />
+    </div>
+    <div class="skin-slider-row" data-skin-field="${theme}.font_scale">
+      <label>字号倍率 <output>${numberAttr(metrics.font_scale)}×</output></label>
+      <input type="range" min="0.5" max="2" step="0.05" value="${numberAttr(metrics.font_scale)}" data-skin-range="${theme}.metrics.font_scale" />
+    </div>
+    <div class="skin-slider-row" data-skin-field="${theme}.opacity">
+      <label>整体透明度 <output>${numberAttr(metrics.opacity)}</output></label>
+      <input type="range" min="0.2" max="1" step="0.05" value="${numberAttr(metrics.opacity)}" data-skin-range="${theme}.metrics.opacity" />
+    </div>`;
+}
+
+function skinFormHtml(skin) {
+  const variantSection = (theme, title) => {
+    const { colors, metrics } = skin[theme];
+    const rows = SKIN_COLOR_FIELDS.map(([name, label]) => skinColorRowHtml(theme, name, label, colors[name])).join("");
+    return `<fieldset class="skin-fieldset"><legend>${title}</legend>${rows}${skinMetricsHtml(theme, metrics)}</fieldset>`;
+  };
+  const shadow = skin.shadow;
+  return `
+    ${variantSection("light", "亮色")}
+    ${variantSection("dark", "暗色")}
+    <fieldset class="skin-fieldset">
+      <legend>阴影</legend>
+      <div class="skin-toggle-row" data-skin-field="shadow.enabled">
+        <label>启用阴影</label>
+        <label class="switch"><input type="checkbox" data-skin-check="shadow.enabled" ${shadow.enabled ? "checked" : ""} /><span></span></label>
+      </div>
+      <div class="skin-slider-row" data-skin-field="shadow.radius">
+        <label>模糊半径 <output>${numberAttr(shadow.radius, 0)}px</output></label>
+        <input type="range" min="0" max="64" step="1" value="${numberAttr(shadow.radius, 0)}" data-skin-range="shadow.radius" />
+      </div>
+      <div class="skin-slider-row" data-skin-field="shadow.alpha">
+        <label>阴影不透明度 <output>${numberAttr(shadow.alpha, 0)}</output></label>
+        <input type="range" min="0" max="255" step="1" value="${numberAttr(shadow.alpha, 0)}" data-skin-range="shadow.alpha" />
+      </div>
+    </fieldset>`;
+}
+
+// 实盘预览 mock：仿真候选窗 layout（预编辑区 + 5 个候选 + 高亮），
+// 亮暗两栏独立渲染，与设置中心当前主题完全解耦。
+function skinMockCandidateHtml(theme, colors, metrics, shadow, candidateIndex) {
+  const scale = metrics.font_scale;
+  const candidates = [
+    ["1", "书法", "shū fǎ"],
+    ["2", "输入法", "shū rù fǎ"],
+    ["3", "舒服", "shū fu"],
+    ["4", "叔父", "shū fù"],
+    ["5", "抒发", "shū fā"]
+  ];
+  const items = candidates
+    .map(([num, word, pinyin], index) => {
+      const active = index === candidateIndex;
+      return `<span class="mock-candidate${active ? " active" : ""}" style="${active ? `background:${hexWithAlpha(colors.highlight_background, metrics.opacity)};` : ""}border-radius:${Math.max(0, metrics.radius - 2)}px;padding:${Math.round(3 * scale)}px ${Math.round(8 * scale)}px;"><i style="color:${colors.label};font-size:${(11 * scale).toFixed(1)}px;">${num}</i><b style="color:${colors.text};font-size:${(15 * scale).toFixed(1)}px;">${word}</b><small style="color:${colors.preedit};font-size:${(10.5 * scale).toFixed(1)}px;">${pinyin}</small></span>`;
+    })
+    .join("");
+  const shadowCss = shadow.enabled ? `box-shadow:0 6px ${shadow.radius}px rgba(0,0,0,${(shadow.alpha / 255).toFixed(3)});` : "box-shadow:0 2px 8px rgba(0,0,0,0.12);";
+  return `<div class="mock-candidate-bar" data-theme-variant="${theme}" style="background:${hexWithAlpha(colors.background, metrics.opacity)};border-radius:${metrics.radius}px;${shadowCss}">
+      <div class="mock-preedit" style="color:${colors.preedit};font-size:${(12.5 * scale).toFixed(1)}px;">ni hao <span class="mock-caret" style="background:${colors.preedit}"></span></div>
+      <div class="mock-candidates">${items}</div>
+    </div>`;
+}
+
+function skinPreviewHtml(skin) {
+  const renderVariant = (theme, title, colors, metrics, shadowCssVars) => {
+    const mockA = skinMockCandidateHtml(theme, colors, metrics, skin.shadow, 1);
+    const mockB = skinMockCandidateHtml(theme, colors, metrics, { ...skin.shadow, enabled: false }, 2);
+    return `<div class="skin-preview-variant" data-variant="${theme}" style="${shadowCssVars}">
+        <p class="skin-preview-title">${title}</p>
+        ${mockA}
+        <p class="skin-preview-sub">无阴影对照</p>
+        ${mockB}
+      </div>`;
+  };
+  if (!skin) {
+    return `<div class="skin-preview-variant"><p class="skin-preview-title">实时预览</p><p class="skin-preview-empty">修复 JSON 后恢复预览</p></div>`;
+  }
+  return `
+    ${renderVariant("light", "亮色候选窗", skin.light.colors, skin.light.metrics)}
+    ${renderVariant("dark", "暗色候选窗", skin.dark.colors, skin.dark.metrics)}`;
+}
+
+// 表单改动 → 内存 JSON → 100ms debounce 写回 textarea（textarea 仍是 SSOT，
+// 保存按钮直接读 textarea；表单绝不主动 render 以免打断输入）。
+const skinFormSync = { timer: 0, lastSignature: "" };
+
+function applySkinField(skin, path, value) {
+  const [a, b, c] = path.split(".");
+  if (a === "shadow") {
+    skin.shadow[b] = value;
+    return true;
+  }
+  if ((a === "light" || a === "dark") && b === "metrics") {
+    skin[a].metrics[c] = value;
+    return true;
+  }
+  if ((a === "light" || a === "dark") && Object.prototype.hasOwnProperty.call(skin[a].colors, b)) {
+    skin[a].colors[b] = String(value).toUpperCase();
+    return true;
+  }
+  return false;
+}
+
+// 把表单状态写回 JSON 文本：只更新 candidate+metrics+shadow，其余字段原样保留。
+function writeSkinJson(content, skin) {
+  let json;
+  try {
+    json = JSON.parse(content);
+  } catch (_error) {
+    return null;
+  }
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+  for (const theme of ["light", "dark"]) {
+    const variant = skin[theme];
+    json[theme] = json[theme] && typeof json[theme] === "object" ? json[theme] : {};
+    json[theme].candidate = { ...variant.colors };
+    json[theme].metrics = {
+      radius: Math.round(variant.metrics.radius),
+      font_scale: Number(Number(variant.metrics.font_scale).toFixed(2)),
+      opacity: Number(Number(variant.metrics.opacity).toFixed(2))
+    };
+  }
+  json.shadow = {
+    enabled: !!skin.shadow.enabled,
+    radius: Math.round(skin.shadow.radius),
+    alpha: Math.max(0, Math.min(255, Math.round(skin.shadow.alpha)))
+  };
+  if (json.version !== 1 && json.version !== 2) json.version = 2;
+  return JSON.stringify(json, null, 2);
+}
+
+function skinSignature(skin) {
+  return JSON.stringify(skin);
+}
+
+// 表单 input/change（颜色、滑杆、开关都要走进来；event delegation 挂在 #skin-grid）。
+function onSkinFormInput(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) return;
+  const path = target.dataset.skinColor || target.dataset.skinRange || target.dataset.skinCheck;
+  if (!path) return;
+  const skin = parseSkinJson(skinState.content);
+  if (!skin) return;
+  let value;
+  if (target.dataset.skinCheck !== undefined) {
+    value = target.checked;
+  } else if (target.dataset.skinRange !== undefined) {
+    value = Number(target.value);
+    if (!Number.isFinite(value)) return;
+  } else {
+    value = target.value;
+  }
+  if (!applySkinField(skin, path, value)) return;
+  // 1) 同步旁边的显示（color 的 hex 文本 / range 的 output），不做整页 render
+  syncSkinFieldChrome(target, path, value);
+  // 2) debounce 写回 textarea + 刷新预览（100ms 内最多一次）
+  const signature = skinSignature(skin);
+  if (signature === skinFormSync.lastSignature) return;
+  skinFormSync.lastSignature = signature;
+  window.clearTimeout(skinFormSync.timer);
+  skinFormSync.timer = window.setTimeout(() => {
+    const editor = document.querySelector("#skin-editor");
+    const latest = parseSkinJson(skinState.content);
+    if (!latest) return;
+    const nextContent = writeSkinJson(skinState.content, skin);
+    if (nextContent === null) return;
+    skinState.content = nextContent;
+    skinState.dirty = true;
+    const pill = document.querySelector(".skin-page .status-pill");
+    if (pill) {
+      pill.textContent = `${skinState.source === "user" ? "自定义" : skinState.source === "builtin" ? "内置默认" : "未找到皮肤文件"} · 未保存`;
+      pill.className = "status-pill warn";
+    }
+    if (editor) editor.value = nextContent;
+    refreshSkinPreview(skin);
+  }, 100);
+}
+
+function syncSkinFieldChrome(target, path, value) {
+  const row = target.closest("[data-skin-field]");
+  if (!row) return;
+  if (target.dataset.skinColor !== undefined) {
+    const hex = String(value).toUpperCase();
+    const chip = row.querySelector(".skin-color-chip");
+    const label = row.querySelector(".skin-color-hex");
+    if (chip) chip.style.background = hex;
+    if (label) label.textContent = hex;
+  } else if (target.dataset.skinRange !== undefined) {
+    const output = row.querySelector("output");
+    if (!output) return;
+    if (path.endsWith("radius") || path.endsWith("alpha")) {
+      output.textContent = `${Math.round(Number(value))}${path.endsWith("radius") ? "px" : ""}`;
+    } else if (path.endsWith("font_scale")) {
+      output.textContent = `${Number(Number(value).toFixed(2))}×`;
+    } else {
+      output.textContent = Number(Number(value).toFixed(2));
+    }
+  }
+}
+
+// 仅替换预览列 innerHTML（不动表单焦点 / textarea）。
+function refreshSkinPreview(skin) {
+  const col = document.querySelector(".skin-preview-col");
+  if (!col) return;
+  col.innerHTML = skinPreviewHtml(skin);
+}
+
+// 绑定 / 解绑表单（render 后由 bindSkinForm 调一次；JSON 无效时表单整块禁用 + 黄条提示）。
+function bindSkinForm() {
+  const grid = document.querySelector("#skin-grid");
+  if (!grid) return;
+  const editor = document.querySelector("#skin-editor");
+  const syncDisabled = () => {
+    const skin = parseSkinJson(editor ? editor.value : skinState.content);
+    grid.classList.toggle("skin-form-disabled", !skin);
+    const banner = document.querySelector("#skin-invalid-banner");
+    if (banner) banner.style.display = skin ? "none" : "";
+    if (!editor) return;
+    if (skin) {
+      // 用户在 textarea 里手改 JSON：只要整份 JSON 有效就刷新预览，
+      // 但不改写表单值（避免打断正在打字的手）——首次加载/reset 已在 render 时完成 JSON→表单。
+      refreshSkinPreview(skin);
+    }
+  };
+  if (editor) editor.addEventListener("input", syncDisabled);
+  grid.removeEventListener("input", onSkinFormInput);
+  grid.addEventListener("input", onSkinFormInput);
 }
 
 function render() {
@@ -357,6 +704,7 @@ function render() {
         pill.textContent = `${skinState.source === "user" ? "自定义" : skinState.source === "builtin" ? "内置默认" : "未找到皮肤文件"}${skinState.dirty ? " · 未保存" : ""}`;
       }
     });
+    bindSkinForm();
   }
 }
 
@@ -377,6 +725,11 @@ async function refreshDictionaryInfo() {
     dictionaryInfo = await invoke("dictionary_info");
   } catch (error) {
     dictionaryInfo = { revision: "读取失败" };
+  }
+  try {
+    dictionaryHistoryList = await invoke("dictionary_history");
+  } catch (_error) {
+    dictionaryHistoryList = [];
   }
 }
 
@@ -434,6 +787,10 @@ async function handleAction(button) {
     };
     if (action === "save-skin") {
       const editor = document.querySelector("#skin-editor");
+      // 若表单 debounce 尚在等待，先等它落盘到 textarea（textarea 是 SSOT）
+      if (skinFormSync.timer) {
+        await new Promise((resolve) => window.setTimeout(resolve, 130));
+      }
       const content = editor ? editor.value : "";
       await invoke("save_skin", { content });
       skinState = { ...skinState, content, source: "user", dirty: false };
@@ -468,6 +825,28 @@ async function handleAction(button) {
       }
       try {
         const result = await invoke("rollback_dictionary");
+        await refreshDictionaryInfo().catch(() => {});
+        render();
+        showToast(result || "已回滚");
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "rollback-dictionary-to") {
+      const select = document.querySelector("#dict-rollback-target");
+      const target = select ? select.value : "";
+      if (!target) {
+        showToast("请先选择要回滚到的历史版本", true);
+        render();
+        return;
+      }
+      if (!window.confirm(`将回滚到 ${target}，继续？`)) {
+        render();
+        return;
+      }
+      try {
+        const result = await invoke("rollback_dictionary_to", { revision: target });
         await refreshDictionaryInfo().catch(() => {});
         render();
         showToast(result || "已回滚");
