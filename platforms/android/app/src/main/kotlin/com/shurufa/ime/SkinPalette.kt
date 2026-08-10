@@ -68,11 +68,13 @@ internal data class SkinPalette(
             panelAccentPressed = 0xFF3AA985.toInt(),
         )
 
-        /** 用共享皮肤 JSON 解析指定变体；任一缺失或非法字段回退到默认颜色。 */
+        /** 用共享皮肤 JSON 解析指定变体；任一缺失或非法字段回退到默认颜色。
+         *  v2 只是 v1 的向后兼容超集（新增 metrics/shadow 段供 Windows 端消费），颜色字段完全一致；两端都接受。 */
         fun fromJson(text: String, dark: Boolean, fallback: SkinPalette): SkinPalette {
             return try {
                 val root = JSONObject(text)
-                if (root.optInt("version", 0) != 1) return fallback
+                val version = root.optInt("version", 0)
+                if (version != 1 && version != 2) return fallback
                 val variant = root.optJSONObject(if (dark) "dark" else "light") ?: return fallback
                 val keyboard = variant.optJSONObject("keyboard") ?: return fallback
                 val candidate = variant.optJSONObject("candidate") ?: return fallback
