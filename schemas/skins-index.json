@@ -1,0 +1,47 @@
+[
+  {
+    "id": "mist",
+    "name_zh": "雾灰蓝",
+    "name_en": "Mist",
+    "file": "mist.json",
+    "author": "Shurufa",
+    "tags": ["light", "soft"],
+    "preview_hint": "#F7FAFC"
+  },
+  {
+    "id": "dark-pro",
+    "name_zh": "深空专业",
+    "name_en": "Dark Pro",
+    "file": "dark-pro.json",
+    "author": "Shurufa",
+    "tags": ["dark", "contrast"],
+    "preview_hint": "#16181C"
+  },
+  {
+    "id": "terminal",
+    "name_zh": "终端绿",
+    "name_en": "Terminal",
+    "file": "terminal.json",
+    "author": "Shurufa",
+    "tags": ["dark", "retro"],
+    "preview_hint": "#0A0D09"
+  },
+  {
+    "id": "paper",
+    "name_zh": "纸墨",
+    "name_en": "Paper",
+    "file": "paper.json",
+    "author": "Shurufa",
+    "tags": ["light", "warm"],
+    "preview_hint": "#FAF6EA"
+  },
+  {
+    "id": "minimal",
+    "name_zh": "极简",
+    "name_en": "Minimal",
+    "file": "minimal.json",
+    "author": "Shurufa",
+    "tags": ["minimal", "mono"],
+    "preview_hint": "#FFFFFF"
+  }
+]

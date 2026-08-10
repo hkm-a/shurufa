@@ -90,6 +90,8 @@ struct Brushes {
     text: ID2D1SolidColorBrush,
     preedit: ID2D1SolidColorBrush,
     label: ID2D1SolidColorBrush,
+    /// 滚动条轨道色（skin.candidate.background 略深一档），随皮肤重建
+    sb_track: ID2D1SolidColorBrush,
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +336,35 @@ impl D2dCore {
                 }
             }
 
+            // ===== 翻页滚动条（皮肤开启且多页时；纯视觉，布局宽度已在 show() 预留）=====
+            if crate::candidate_window::scrollbar_active(v) {
+                let track_w = crate::candidate_window::scrollbar_width(v);
+                let item_w = v
+                    .items
+                    .iter()
+                    .map(|it| it.label_w + v.label_gap + it.text_w + v.hl_pad * 2)
+                    .max()
+                    .unwrap_or(crate::candidate_window::scale(96, v.dpi));
+                if let Some(geo) = crate::skin::scrollbar_geo(
+                    rc.right,
+                    rc.bottom,
+                    item_w,
+                    v.padding,
+                    track_w,
+                    v.page.page_no,
+                    v.page.total_pages(),
+                ) {
+                    let r = |g: [i32; 4]| D2D_RECT_F {
+                        left: g[0] as f32,
+                        top: g[1] as f32,
+                        right: g[2] as f32,
+                        bottom: g[3] as f32,
+                    };
+                    target.FillRectangle(&r(geo.track), &br.sb_track);
+                    target.FillRectangle(&r(geo.thumb), &br.highlight);
+                }
+            }
+
             match target.EndDraw(None, None) {
                 Ok(()) => true,
                 Err(e) => {
@@ -441,14 +472,24 @@ impl D2dCore {
             let text = t.CreateSolidColorBrush(&mk(skin.candidate.text), None).ok();
             let preedit = t.CreateSolidColorBrush(&mk(skin.candidate.preedit), None).ok();
             let label = t.CreateSolidColorBrush(&mk(skin.candidate.label), None).ok();
-            match (background, highlight, text, preedit, label) {
-                (Some(background), Some(highlight), Some(text), Some(preedit), Some(label)) => {
+            let sb_track_c = crate::skin::scrollbar_colors(&skin).0;
+            let sb_track = t.CreateSolidColorBrush(&mk(sb_track_c), None).ok();
+            match (background, highlight, text, preedit, label, sb_track) {
+                (
+                    Some(background),
+                    Some(highlight),
+                    Some(text),
+                    Some(preedit),
+                    Some(label),
+                    Some(sb_track),
+                ) => {
                     self.brushes = Some(Brushes {
                         background,
                         highlight,
                         text,
                         preedit,
                         label,
+                        sb_track,
                     });
                     self.brush_key = skin;
                     true

@@ -29,7 +29,9 @@
 //!     "metrics": {                      // v2 新增，整体可选
 //!       "radius": 8,                    // 圆角半径基准（像素；Win11 由 DWM 取值）
 //!       "font_scale": 1.0,              // 字号倍率，0.5..=2.0 以外按 1.0 处理
-//!       "opacity": 0.96                 // 窗口整体透明度，(0,1]；>=1 不启用分层窗口
+//!       "opacity": 0.96,                // 窗口整体透明度，(0,1]；>=1 不启用分层窗口
+//!       "scrollbar": true,              // 候选窗翻页滚动条（右缘 4px，按页绘制；默认开）
+//!       "icon": "xxx"                   // 候选图标槽位（预留，本版本不渲染）
 //!     }
 //!   },
 //!   "dark":  { ... 同上结构 ... },       // 暗色变体；按系统主题自动切换
@@ -100,7 +102,7 @@ impl Default for CandidateColors {
     }
 }
 
-/// 皮肤度量：圆角、字号倍率、整体透明度。
+/// 皮肤度量：圆角、字号倍率、整体透明度 + 候选窗滚动条/图标槽位。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Metrics {
     /// 圆角半径基准像素（Win11 实际半径由 DWM 决定，此值供绘制与文档）
@@ -109,6 +111,11 @@ pub struct Metrics {
     pub font_scale: f32,
     /// 整体窗口透明度 0..=1；>=1 不启用 WS_EX_LAYERED
     pub opacity: f32,
+    /// 候选窗是否绘制翻页滚动条；缺省 true（v2 老文件无该字段照常工作）
+    pub scrollbar: bool,
+    /// 候选图标槽位（预留字段；本版本仅透传与一次性日志，不渲染）。
+    /// 预留为 Copy 友好的固定槽，避免 Option<String> 破坏 Metrics/Skin 的 Copy。
+    pub icon: Option<IconSlot>,
 }
 
 impl Default for Metrics {
@@ -117,7 +124,45 @@ impl Default for Metrics {
             radius: 8,
             font_scale: 1.0,
             opacity: 1.0,
+            scrollbar: true,
+            icon: None,
         }
+    }
+}
+
+/// metrics.icon 的 Copy 承载体：64 字节 UTF-8 槽（超长内容截断丢弃，永不 panic）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IconSlot {
+    buf: [u8; 64],
+    len: u8,
+}
+
+impl IconSlot {
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.buf[..self.len as usize]).unwrap_or("")
+    }
+}
+
+impl std::fmt::Display for IconSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<&str> for IconSlot {
+    fn from(text: &str) -> Self {
+        let mut slot = IconSlot {
+            buf: [0; 64],
+            len: 0,
+        };
+        // 按 UTF-8 边界截断，避免半个码元
+        let mut end = text.len().min(64);
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        slot.buf[..end].copy_from_slice(&text.as_bytes()[..end]);
+        slot.len = end as u8;
+        slot
     }
 }
 
@@ -264,6 +309,8 @@ struct MetricsSection {
     radius: Option<i32>,
     font_scale: Option<f32>,
     opacity: Option<f32>,
+    scrollbar: Option<bool>,
+    icon: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -337,6 +384,17 @@ fn build_skin(text: Option<&str>, dark: bool) -> Skin {
             .filter(|o| o.is_finite() && *o > 0.0)
             .map(|o| o.min(1.0))
             .unwrap_or(fallback.metrics.opacity),
+        scrollbar: variant
+            .metrics
+            .scrollbar
+            .unwrap_or(fallback.metrics.scrollbar),
+        icon: variant
+            .metrics
+            .icon
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(IconSlot::from),
     };
     let shadow = Shadow {
         enabled: file.shadow.enabled.unwrap_or(fallback.shadow.enabled),
@@ -670,6 +728,76 @@ mod dwm_impl {
 pub use dwm_impl::{apply_appearance, ShadowShell};
 
 // ---------------------------------------------------------------------------
+// 候选窗翻页滚动条（metrics.scrollbar；GDI/D2D 两路径共用的纯计算）
+// ---------------------------------------------------------------------------
+
+/// 滚动条轨道宽度（96 DPI 基准像素），绘制时按 dpi 缩放。
+pub const SCROLLBAR_BASE_WIDTH: i32 = 4;
+
+/// 一页的滚动条几何：thumb 呼吸一个 item 槽位；进度 = page_no / max(total-1,1)。
+/// total_pages <= 1 时调用方应跳过绘制。坐标全为客户区像素。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollbarGeo {
+    pub track: [i32; 4],
+    pub thumb: [i32; 4],
+}
+
+/// 由深色 RGB 明度推一个"略深一档"的轨道色（COLORREF 输入输出）。
+/// 输入 <0x20 视为近黑（暗色皮肤），改为把三色各 +24 提亮；
+/// 避免暗色皮肤的轨道算成死黑导致隐没。
+fn darkened_colorref(c: u32) -> u32 {
+    let r = c & 0xff;
+    let g = (c >> 8) & 0xff;
+    let b = (c >> 16) & 0xff;
+    let near_black = r.max(g).max(b) < 0x20;
+    let ch = |v: u32| -> u32 {
+        if near_black {
+            (v + 24).min(0xff)
+        } else {
+            (v * 29) / 32
+        }
+    };
+    ch(r) | (ch(g) << 8) | (ch(b) << 16)
+}
+
+/// 滚动条几何（track 右缘贴边、上下各留 v_pad；thumb 高度 = 一个 item 槽位）。
+/// `width/height` 客户区像素，`item_w` 当前页最宽槽位，`v_pad` 上下内边距。
+pub fn scrollbar_geo(
+    width: i32,
+    height: i32,
+    item_w: i32,
+    v_pad: i32,
+    track_w: i32,
+    page_no: usize,
+    total_pages: usize,
+) -> Option<ScrollbarGeo> {
+    if total_pages <= 1 || track_w <= 0 || width <= 0 || height <= 0 {
+        return None;
+    }
+    let right = width;
+    let left = right - track_w;
+    let top = v_pad;
+    let bottom = (height - v_pad).max(top);
+    let span = bottom - top;
+    let thumb_h = item_w.clamp(20, span.max(1));
+    let progress_span = (span - thumb_h).max(0);
+    let thumb_y = top
+        + ((progress_span as i64) * (page_no as i64) / ((total_pages - 1).max(1) as i64)) as i32;
+    Some(ScrollbarGeo {
+        track: [left, top, right, bottom],
+        thumb: [left, thumb_y, right, thumb_y + thumb_h],
+    })
+}
+
+/// 皮肤派色的滚动条配色（COLORREF BGR）：track = 背景略深色，thumb = 高亮色。
+pub fn scrollbar_colors(skin: &Skin) -> (u32, u32) {
+    (
+        darkened_colorref(skin.candidate.background),
+        skin.candidate.highlight_background,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // 旧 API（向后兼容，委托到新结构）
 // ---------------------------------------------------------------------------
 
@@ -724,7 +852,7 @@ mod tests {
                 "preedit": "#9AA2AB",
                 "label": "#1B9E77"
             },
-            "metrics": { "radius": 10, "font_scale": 1.25, "opacity": 0.9 }
+            "metrics": { "radius": 10, "font_scale": 1.25, "opacity": 0.9, "scrollbar": false, "icon": "asset://icons/cand" }
         },
         "dark": {
             "candidate": {
@@ -778,6 +906,11 @@ mod tests {
         assert_eq!(skin.metrics.radius, 10);
         assert!((skin.metrics.font_scale - 1.25).abs() < 1e-6);
         assert!((skin.metrics.opacity - 0.9).abs() < 1e-6);
+        assert!(!skin.metrics.scrollbar);
+        assert_eq!(
+            skin.metrics.icon.map(|s| s.as_str().to_owned()).as_deref(),
+            Some("asset://icons/cand")
+        );
         assert_eq!(skin.shadow, Shadow { enabled: true, radius: 18, alpha: 64 });
     }
 
@@ -829,5 +962,37 @@ mod tests {
         assert_eq!(skin.metrics.radius, 8);
         assert!((skin.metrics.font_scale - 1.0).abs() < 1e-6);
         assert!((skin.metrics.opacity - 1.0).abs() < 1e-6);
+        // 新字段缺省：scrollbar 默认开、icon 预留为 None
+        assert!(skin.metrics.scrollbar);
+        assert!(skin.metrics.icon.is_none());
+    }
+
+    #[test]
+    fn scrollbar_requires_multiple_pages() {
+        assert!(super::scrollbar_geo(400, 100, 80, 12, 4, 0, 1).is_none());
+        assert!(super::scrollbar_geo(400, 100, 80, 12, 4, 0, 0).is_none());
+        let geo = super::scrollbar_geo(400, 100, 40, 12, 4, 1, 3).expect("3 页应有几何");
+        assert_eq!(geo.track, [396, 12, 400, 88]);
+        // 轨道跨度 76px；item_w=40 作为 thumb 高 → 进度跨度 76-40=36
+        // 第 2/3 页（page_no=1）：thumb 顶 = 12 + 36*1/2 = 30
+        assert_eq!(geo.thumb, [396, 30, 400, 70]);
+        // 末页归底
+        let last = super::scrollbar_geo(400, 100, 40, 12, 4, 2, 3).expect("末页");
+        assert_eq!(last.thumb, [396, 48, 400, 88]);
+    }
+
+    #[test]
+    fn scrollbar_track_darkens_background() {
+        // 亮底 #F0F0F0 各通道 *29/32 = 217 = 0xD9（整除截断），thumb 取高亮色
+        let mut skin = Skin::default();
+        skin.candidate.background = 0x00F0_F0F0;
+        skin.candidate.highlight_background = 0x0000_80FF;
+        let (track, thumb) = super::scrollbar_colors(&skin);
+        assert_eq!(track, 0x00D9_D9D9);
+        assert_eq!(thumb, 0x0000_80FF);
+        // 暗底 #181818 明度极低：轨道改为提亮而非压成死黑
+        skin.candidate.background = 0x0018_1818;
+        let (track, _) = super::scrollbar_colors(&skin);
+        assert_eq!(track, 0x0030_3030);
     }
 }

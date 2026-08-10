@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "light": {
+    "keyboard": {
+      "background": "#17191D",
+      "key": "#24272D",
+      "key_pressed": "#3A3F47",
+      "function_key": "#2B2F36",
+      "function_key_pressed": "#40454E",
+      "text": "#ECEDEF",
+      "function_text": "#B7BCC4",
+      "muted_text": "#7C828B",
+      "accent": "#E8A33D"
+    },
+    "candidate": {
+      "background": "#1F2227",
+      "highlight_background": "#3A3D2C",
+      "text": "#ECEDEF",
+      "preedit": "#7C828B",
+      "label": "#E8A33D"
+    },
+    "metrics": {
+      "radius": 6,
+      "font_scale": 1.0,
+      "opacity": 0.98,
+      "scrollbar": true
+    }
+  },
+  "dark": {
+    "keyboard": {
+      "background": "#0F1114",
+      "key": "#1D2025",
+      "key_pressed": "#32373F",
+      "function_key": "#252930",
+      "function_key_pressed": "#383E47",
+      "text": "#F4F5F7",
+      "function_text": "#C2C7CE",
+      "muted_text": "#767C85",
+      "accent": "#F0B04C"
+    },
+    "candidate": {
+      "background": "#16181C",
+      "highlight_background": "#403B26",
+      "text": "#F4F5F7",
+      "preedit": "#767C85",
+      "label": "#F0B04C"
+    },
+    "metrics": {
+      "radius": 6,
+      "font_scale": 1.0,
+      "opacity": 0.98,
+      "scrollbar": true
+    }
+  },
+  "shadow": {
+    "enabled": true,
+    "radius": 20,
+    "alpha": 96
+  }
+}

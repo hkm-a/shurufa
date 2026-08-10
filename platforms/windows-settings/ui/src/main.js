@@ -118,6 +118,9 @@ let dictionaryHistoryList = [];
 let typingStats = null;
 // 皮肤编辑器：null=未加载；dirty=待保存；error=JSON 解析失败时给用户的提示
 let skinState = { loaded: false, content: "", source: "none", user_path: "", dirty: false };
+// 预设皮肤列表（schemas/skins-index.json）；banner 为一次性成功/失败提示
+let skinPresets = [];
+let skinPresetBanner = null;
 
 const app = document.querySelector("#app");
 
@@ -301,10 +304,28 @@ function skinPage() {
   const skin = parseSkinJson(skinState.content);
   const formHtml = skin ? skinFormHtml(skin) : "";
   const previewHtml = skinPreviewHtml(skin);
+  const presetsHtml = skinPresets.length
+    ? `<article class="setting-panel skin-presets-panel">
+        <p class="skin-presets-title">预设皮肤</p>
+        <div class="skin-presets-strip">${skinPresets
+          .map(
+            (p) => `<button class="skin-preset-card" data-action="apply-skin" data-skin-id="${escapeHtml(p.id)}" title="${escapeHtml(p.name_en)}">
+              <span class="skin-preset-swatch" style="background:${escapeHtml(p.preview_hint)}"></span>
+              <span class="skin-preset-name">${escapeHtml(p.name_zh)}</span>
+            </button>`
+          )
+          .join("")}</div>
+      </article>`
+    : "";
+  const bannerHtml = skinPresetBanner
+    ? `<div class="skin-preset-banner ${skinPresetBanner.error ? "error" : "ok"}"><i data-lucide="${skinPresetBanner.error ? "info" : "sparkles"}"></i>${escapeHtml(skinPresetBanner.message)}</div>`
+    : "";
   return `
     <section class="page skin-page">
       <header class="page-header"><div><p class="eyebrow">APPEARANCE</p><h1>皮肤</h1></div><div class="header-actions"><span class="status-pill ${statusClass}">${status}${skinState.dirty ? " · 未保存" : ""}</span></div></header>
       <p class="skin-note">编辑候选窗颜色、圆角、字号与阴影。左侧表单实时改动右侧预览与下方 JSON；保存后立即生效（Windows 候选窗 / 历史面板 / AI 帮写面板 / Android 键盘都会读取）。键盘、面板等其余字段保持原值。</p>
+      ${bannerHtml}
+      ${presetsHtml}
       ${skin ? "" : `<div class="skin-invalid-banner" id="skin-invalid-banner"><i data-lucide="info"></i>JSON 无效，修复 JSON 才能继续编辑（表单已禁用，改动不会被覆盖）</div>`}
       <div class="skin-grid${skin ? "" : " skin-form-disabled"}" id="skin-grid">
         <div class="skin-form" id="skin-form">${formHtml}</div>
@@ -756,6 +777,11 @@ async function navigateTo(page) {
       skinState = { loaded: false, content: "", source: "none", user_path: "", dirty: false };
       showToast(String(error), true);
     }
+    try {
+      skinPresets = await invoke("list_skins");
+    } catch (_error) {
+      skinPresets = [];
+    }
   } else if (page === "dictionary") {
     try {
       await refreshDictionaryInfo();
@@ -785,6 +811,38 @@ async function handleAction(button) {
       "refresh-history": [undefined, undefined, "历史已刷新"],
       refresh: [undefined, undefined, "后台状态已刷新"]
     };
+    if (action === "apply-skin") {
+      const skinId = String(button.dataset.skinId || "");
+      if (!skinId) return;
+      try {
+        await invoke("apply_skin", { id: skinId });
+        const payload = await invoke("skin_payload");
+        skinState = { loaded: true, content: payload.content ?? "", source: payload.source, user_path: payload.user_path, dirty: false };
+        try {
+          skinPresets = await invoke("list_skins");
+        } catch (_error) {
+          skinPresets = [];
+        }
+        const meta = skinPresets.find((p) => p.id === skinId);
+        skinPresetBanner = {
+          message: `已应用 ${meta ? meta.name_zh : skinId}（SSOT 文件已更新，候选窗下次启动生效）`,
+          error: false
+        };
+        render();
+        window.setTimeout(() => {
+          skinPresetBanner = null;
+          if (activePage === "skin") render();
+        }, 4200);
+      } catch (error) {
+        skinPresetBanner = { message: String(error), error: true };
+        render();
+        window.setTimeout(() => {
+          skinPresetBanner = null;
+          if (activePage === "skin") render();
+        }, 4200);
+      }
+      return;
+    }
     if (action === "save-skin") {
       const editor = document.querySelector("#skin-editor");
       // 若表单 debounce 尚在等待，先等它落盘到 textarea（textarea 是 SSOT）

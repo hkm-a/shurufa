@@ -578,6 +578,101 @@ fn reset_skin() -> Result<(), String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 预设皮肤包（skins/ 目录 + schemas/skins-index.json 本地清单）
+// ---------------------------------------------------------------------------
+
+/// skins-index.json 中单个预设条目（与 schemas/skins-index.json 一致）。
+#[derive(Serialize, Deserialize, Clone)]
+struct SkinMeta {
+    id: String,
+    name_zh: String,
+    name_en: String,
+    file: String,
+    author: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    preview_hint: String,
+}
+
+/// 与 `skin_payload` 相同的查找顺序：用户覆盖目录 %APPDATA%\shurufa\ 优先，
+/// 然后 exe 旁 schemas/。name 为相对文件名（"skins-index.json" 或 "../skins/x.json"）。
+fn resolve_skins_meta_path(name: &str) -> Option<PathBuf> {
+    let user = app_data_dir().join(name);
+    if user.is_file() {
+        return Some(user);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let builtin = dir.join("schemas").join(name);
+            if builtin.is_file() {
+                return Some(builtin);
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+fn list_skins() -> Result<Vec<SkinMeta>, String> {
+    let path = resolve_skins_meta_path("skins-index.json")
+        .ok_or_else(|| "未找到 skins-index.json".to_owned())?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("读取清单失败：{error}"))?;
+    serde_json::from_str::<Vec<SkinMeta>>(&text).map_err(|error| format!("清单 JSON 无效：{error}"))
+}
+
+/// 应用预设：把 skins/<file> 写入用户覆盖路径（SSOT 文件更新），
+/// 候选窗下次弹出（每次 show 都重读皮肤）即生效；工厂默认不被修改。
+#[tauri::command]
+fn apply_skin(id: String) -> Result<(), String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("皮肤 id 不能为空".to_owned());
+    }
+    let index_path = resolve_skins_meta_path("skins-index.json")
+        .ok_or_else(|| "未找到 skins-index.json".to_owned())?;
+    let index_text = std::fs::read_to_string(&index_path)
+        .map_err(|error| format!("读取清单失败：{error}"))?;
+    let metas: Vec<SkinMeta> = serde_json::from_str(&index_text)
+        .map_err(|error| format!("清单 JSON 无效：{error}"))?;
+    let meta = metas
+        .iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| format!("清单中不存在 id：{id}"))?;
+    // 文件名白名单：仅允许简单相对文件名，防路径穿越
+    if meta.file.contains("..") || meta.file.contains('\\') || meta.file.contains('/') {
+        return Err(format!("清单项 file 不允许路径分隔符：{}", meta.file));
+    }
+    // 皮肤文件先查 index 旁 skins/ 目录（开发期 repo 布局 <index>/../skins/），再退回 exe 旁 skins/
+    let index_dir = index_path.parent().map(|p| p.to_path_buf());
+    let skin_path = index_dir
+        .clone()
+        .and_then(|d| {
+            let p = d.join("..").join("skins").join(&meta.file);
+            if p.is_file() { Some(p) } else { None }
+        })
+        .or_else(|| {
+            index_dir.and_then(|d| {
+                let p = d.join("skins").join(&meta.file);
+                if p.is_file() { Some(p) } else { None }
+            })
+        })
+        .or_else(|| {
+            std::env::current_exe().ok().and_then(|exe| {
+                exe.parent().and_then(|d| {
+                    let p = d.join("skins").join(&meta.file);
+                    if p.is_file() { Some(p) } else { None }
+                })
+            })
+        })
+        .ok_or_else(|| format!("未找到皮肤文件：{}", meta.file))?;
+    let content = std::fs::read_to_string(&skin_path)
+        .map_err(|error| format!("读取皮肤文件失败：{error}"))?;
+    // 与 save_skin 相同的完整性检查（version ∈ {1,2}）
+    save_skin(content)
+}
+
 fn main() {
     let builder = tauri::Builder::default().invoke_handler(tauri::generate_handler![
         dashboard_state,
@@ -602,7 +697,9 @@ fn main() {
         rollback_dictionary_to,
         skin_payload,
         save_skin,
-        reset_skin
+        reset_skin,
+        list_skins,
+        apply_skin
     ]);
     #[cfg(feature = "ui-e2e")]
     let builder = builder.on_page_load(|webview, payload| {
@@ -664,5 +761,40 @@ mod tests {
         });
         assert_eq!(entry.kind, "图片");
         assert_eq!(entry.text, "图片（2 KB）");
+    }
+
+    #[test]
+    fn 预设清单结构可反序列化() {
+        // 与 schemas/skins-index.json 保持一致的字段形态；防后续手改清单破坏编译期固化的字段名
+        let text = r##"[{"id":"mist","name_zh":"雾灰蓝","name_en":"Mist","file":"mist.json","author":"Shurufa","tags":["light"],"preview_hint":"#F7FAFC"}]"##;
+        let metas: Vec<super::SkinMeta> = serde_json::from_str(text).expect("skins-index 行可反序列化");
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].id, "mist");
+        assert_eq!(metas[0].tags, vec!["light".to_owned()]);
+        assert_eq!(metas[0].preview_hint, "#F7FAFC");
+    }
+
+    #[test]
+    fn 预设皮肤文件均通过_version_校验() {
+        // 仓库内 5 套预设 + 索引都在源码树内：直接相对校验
+        let here = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = here.parent().and_then(|p| p.parent()).expect("repo root");
+        let index_path = root.join("schemas").join("skins-index.json");
+        let text = std::fs::read_to_string(&index_path).expect("skins-index.json 存在");
+        let metas: Vec<super::SkinMeta> = serde_json::from_str(&text).expect("skins-index.json 合法");
+        assert_eq!(metas.len(), 5, "本期上线 5 套预设");
+        for meta in &metas {
+            let file = root.join("skins").join(&meta.file);
+            let content = std::fs::read_to_string(&file)
+                .unwrap_or_else(|e| panic!("读取 {} 失败: {}", file.display(), e));
+            let value: serde_json::Value = serde_json::from_str(&content)
+                .unwrap_or_else(|e| panic!("{} JSON 无效: {}", meta.file, e));
+            let version = value
+                .get("version")
+                .and_then(serde_json::Value::as_u64)
+                .expect("version 存在");
+            assert!(version == 2, "皮肤 {} version 应为 2（实际 {version}）", meta.file);
+            assert!(meta.preview_hint.starts_with('#'), "preview_hint 应为 #RRGGBB");
+        }
     }
 }

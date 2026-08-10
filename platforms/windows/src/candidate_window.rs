@@ -73,6 +73,7 @@ struct PaintData {
     skin: Skin,
     is_ascii: bool,
     is_full_shape: bool,
+    page: PageInfo,
 }
 
 /// 传给 D2D 后端的一帧绘制视图（纯纯值，不持 Ref 避免跨 thread_local 借）。
@@ -92,6 +93,8 @@ pub struct PaintView {
     pub cand_font_h: i32,
     /// preedit/副标 小字体 em-height（px）
     pub sub_font_h: i32,
+    /// 当前页分页快照（滚动条用）
+    pub page: PageInfo,
 }
 
 pub struct ItemView {
@@ -103,6 +106,36 @@ pub struct ItemView {
     pub text_w: i32,
     pub pure_text_w: i32,
     pub highlighted: bool,
+}
+
+/// 分页滚动条快照（来自引擎 Context；page 双字段由 ime-ipc 透传）。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PageInfo {
+    pub page_no: usize,
+    pub is_last_page: bool,
+}
+
+impl PageInfo {
+    /// 总页数估计：引擎不直接提供 total；由 page_no + is_last_page 推导
+    /// （末页时 total = page_no+1，非末页时 total = page_no+2 下界），
+    /// 滚动条 thumb 只表达相对位置，无需精确总页数。
+    pub fn total_pages(&self) -> usize {
+        self.page_no + if self.is_last_page { 1 } else { 2 }
+    }
+}
+
+/// 本帧是否需要画滚动条（开皮肤开关 + 非单页；空候选也画——翻页中会出现）。
+pub fn scrollbar_active(v: &PaintView) -> bool {
+    v.skin.metrics.scrollbar && v.page.total_pages() > 1
+}
+
+/// 滚动条轨道像素宽（已按 dpi 缩放；关闭开关/单页时为 0，布局完全不占位）。
+pub fn scrollbar_width(v: &PaintView) -> i32 {
+    if scrollbar_active(v) {
+        scale(skin::SCROLLBAR_BASE_WIDTH, v.dpi)
+    } else {
+        0
+    }
 }
 
 /// 生成一帧 D2D 消费的不可变快照；None 表示数据未初始化（窗口还没 show 过）。
@@ -140,6 +173,7 @@ pub fn make_paint_view() -> Option<PaintView> {
             ),
             cand_font_h: font_height(BASE_FONT_HEIGHT, dpi, font_scale),
             sub_font_h: font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale),
+            page: data.page,
         })
     })
 }
@@ -159,12 +193,24 @@ thread_local! {
         skin: Skin::default(),
         is_ascii: false,
         is_full_shape: false,
+        page: PageInfo::default(),
     });
     static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 pub(crate) fn scale(base: i32, dpi: u32) -> i32 {
     (base * dpi as i32 + 48) / 96
+}
+
+/// metrics.icon 预留槽：当前不渲染任何图标，每次会话仅提示一次（两渲染路径共用）。
+pub fn log_icon_once(skin: &Skin) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    if skin.metrics.icon.is_none() {
+        return;
+    }
+    ONCE.call_once(|| {
+        crate::debug_log("skin: metrics.icon slot reserved, not yet rendered");
+    });
 }
 
 /// DPI 缩放后再乘皮肤字号倍率；下限 8px 防止畸形配置把字压没。
@@ -278,12 +324,23 @@ impl CandidateUi {
             .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
         let skin = skin::load_with(|| extra);
         skin::apply_appearance(hwnd, &skin);
+        log_icon_once(&skin);
         let font_scale = skin.metrics.font_scale;
         // 部分宿主（DPI 虚拟化）对弹窗返回 96 兜底值，取系统 DPI 兜底
         let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
         let padding = scale(BASE_PADDING, dpi);
         let item_gap = scale(BASE_ITEM_GAP, dpi);
         let label_gap = scale(BASE_LABEL_GAP, dpi);
+        // 滚动条：皮肤开启且非单页时右缘预留轨道宽；单页/关闭时 0，宽度零漂移
+        let page = PageInfo {
+            page_no: ctx.page_no,
+            is_last_page: ctx.is_last_page,
+        };
+        let sb_w = if skin.metrics.scrollbar && page.total_pages() > 1 {
+            scale(skin::SCROLLBAR_BASE_WIDTH, dpi)
+        } else {
+            0
+        };
 
         // 用与绘制一致的字体实测文本宽度，横向布槽
         let (items, preedit_w) = unsafe {
@@ -300,7 +357,8 @@ impl CandidateUi {
                 .enumerate()
                 .take(9)
                 .map(|(i, c)| {
-                    let label = format!("{}.", i + 1);
+                    // TSF 端候选域固定 9 列；label 为 1..=9（超过 9 的索引不进此分支）
+            let label = format!("{}.", i + 1);
                     let label_w = text_width(hdc, &label);
                     let text_w = text_width(hdc, &c.text);
                     // 副标（词库附注）；只在文本不重复时展示——同字符的
@@ -352,7 +410,7 @@ impl CandidateUi {
             .unwrap_or(padding);
         // 给模式徽标预留宽度，避免与 preedit 互相压占
         let mode_badge_hint = scale(BASE_FONT_HEIGHT, dpi) * 3 + scale(BASE_MODE_BADGE_GAP, dpi);
-        let width = (items_end.max(padding + preedit_w + mode_badge_hint) + padding)
+        let width = (items_end.max(padding + preedit_w + mode_badge_hint) + padding + sb_w)
             .max(scale(BASE_MIN_WIDTH, dpi));
         let height = scale(BASE_PREEDIT_HEIGHT, dpi) + scale(BASE_ROW_HEIGHT, dpi) + padding * 2;
 
@@ -363,6 +421,7 @@ impl CandidateUi {
             data.skin = skin;
             data.is_ascii = ctx.is_ascii;
             data.is_full_shape = ctx.is_full_shape;
+            data.page = page;
         });
 
         unsafe {
@@ -509,10 +568,26 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
                 // 序号键 1..9 → 0x31..0x39；第 10 项按下标 0 → 0x30。
                 let key = if index >= 9 { 0x30 } else { 0x31 + index as u8 };
                 send_virtual_key(key);
-                break;
+                return;
+            }
+        }
+        // 落在任何 item 之外但命中滚动条轨道：纯视觉条不响应拖动，按系统习惯
+        // 轨道点击 = 向上/下翻一页（PageUp/PageDown，与滚轮一致）。
+        if !data.items.is_empty() && data.skin.metrics.scrollbar && data.page.total_pages() > 1 {
+            let track_w = scale(skin::SCROLLBAR_BASE_WIDTH, dpi);
+            let win_right = PAINT_WIN_W.with(|w| w.get());
+            if win_right > 0 && x >= win_right - track_w {
+                let mid = scale(BASE_PADDING, dpi) + scale(BASE_PREEDIT_HEIGHT, dpi)
+                    + scale(BASE_ROW_HEIGHT, dpi) / 2;
+                send_virtual_key(if y < mid { 0x21 } else { 0x22 });
             }
         }
     });
+}
+
+// paint 时记录客户区宽度供命中测试使用（同 UI 线程，Cell 足够）
+thread_local! {
+    static PAINT_WIN_W: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
 }
 
 /// 无焦点候选窗将操作发送给前台编辑器，继续走 TSF 的正常按键路径。
@@ -536,6 +611,38 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         FillRect(hdc, rc, bg);
         let _ = DeleteObject(HGDIOBJ(bg.0));
         SetBkMode(hdc, TRANSPARENT);
+        PAINT_WIN_W.with(|w| w.set(rc.right));
+
+        // 皮肤滚动条（GDI 路径）：右缘 4px 轨道 + 页位置 thumb；
+        // 仅在开关开启且多页时绘制，纯视觉、不影响布局槽位。
+        if data.skin.metrics.scrollbar && data.page.total_pages() > 1 {
+            let track_w = scale(skin::SCROLLBAR_BASE_WIDTH, dpi);
+            let item_w = data
+                .items
+                .iter()
+                .map(|it| it.label_w + label_gap + it.text_w + hl_pad * 2)
+                .max()
+                .unwrap_or(scale(96, dpi));
+            if let Some(geo) = skin::scrollbar_geo(
+                rc.right,
+                rc.bottom,
+                item_w,
+                padding,
+                track_w,
+                data.page.page_no,
+                data.page.total_pages(),
+            ) {
+                let (track_c, thumb_c) = skin::scrollbar_colors(&data.skin);
+                let (track_b, thumb_b) =
+                    (CreateSolidBrush(COLORREF(track_c)), CreateSolidBrush(COLORREF(thumb_c)));
+                let track_r = RECT { left: geo.track[0], top: geo.track[1], right: geo.track[2], bottom: geo.track[3] };
+                let thumb_r = RECT { left: geo.thumb[0], top: geo.thumb[1], right: geo.thumb[2], bottom: geo.thumb[3] };
+                FillRect(hdc, &track_r, track_b);
+                FillRect(hdc, &thumb_r, thumb_b);
+                let _ = DeleteObject(HGDIOBJ(track_b.0));
+                let _ = DeleteObject(HGDIOBJ(thumb_b.0));
+            }
+        }
 
         // 预编辑串（小号灰字，第一行）
         let preedit_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
