@@ -477,10 +477,32 @@ async fn dictionary_info() -> Result<DictionaryInfo, String> {
     })
 }
 
+/// 列出本地可回滚的历史版本（最近的在前， dict-history 每个 revision 一行）。
+#[tauri::command]
+async fn dictionary_history() -> Result<Vec<String>, String> {
+    let stdout = run_host_capture(&["dict-history"]).await?;
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('（'))
+        .map(str::to_owned)
+        .collect())
+}
+
 /// 回滚到上一代词典并重建。
 #[tauri::command]
 async fn rollback_dictionary() -> Result<String, String> {
     run_host_capture(&["dict-rollback"]).await
+}
+
+/// 回滚到指定 revision 的词典并重建（revision 须存在于本地快照栈）。
+#[tauri::command]
+async fn rollback_dictionary_to(revision: String) -> Result<String, String> {
+    let revision = revision.trim().to_owned();
+    if revision.is_empty() {
+        return Err("目标版本不能为空".to_owned());
+    }
+    run_host_capture(&["dict-rollback", "--revision", &revision]).await
 }
 
 // ---------------------------------------------------------------------------
@@ -575,7 +597,9 @@ fn main() {
         save_ime_options,
         typing_stats,
         dictionary_info,
+        dictionary_history,
         rollback_dictionary,
+        rollback_dictionary_to,
         skin_payload,
         save_skin,
         reset_skin

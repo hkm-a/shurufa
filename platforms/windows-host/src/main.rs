@@ -244,8 +244,31 @@ fn main() {
             };
             dict_update::cli_update(url);
         }
-        "dict-rollback" => dict_update::cli_rollback(),
+        "dict-rollback" => {
+            // 支持 `dict-rollback --revision <rev>` 回滚到任意本地快照中的版本；
+            // 不带参数时保持上一代行为。
+            let mut revision: Option<&str> = None;
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--revision" => {
+                        let Some(value) = args.get(i + 1) else {
+                            eprintln!("用法：shurufa-host dict-rollback [--revision <版本号|内置>]");
+                            std::process::exit(2);
+                        };
+                        revision = Some(value.as_str());
+                        i += 2;
+                    }
+                    other => {
+                        eprintln!("未知参数：{other}\n用法：shurufa-host dict-rollback [--revision <版本号|内置>]");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            dict_update::cli_rollback(revision);
+        }
         "dict-current" => dict_update::cli_current(),
+        "dict-history" => dict_update::cli_history(),
         "retention" => {
             let n = open_store()
                 .apply_retention(&RetentionPolicy::default())
@@ -295,7 +318,8 @@ fn main() {
                  \x20 retention       立即执行留存清理
                  \x20 relay <地址|off> 配置或关闭自托管同步中继
                  \x20 dict-update <HTTPS地址> 更新自托管云词库
-                 \x20 dict-rollback   回滚到上次更新前的词库
+                 \x20 dict-rollback [--revision <版本号|内置>] 回滚词库（默认上一代）
+                 \x20 dict-history     列出本地可回滚的历史版本
                  \x20 dict-current    打印当前词库版本"
             );
         }
