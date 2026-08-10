@@ -14,6 +14,7 @@ mod protocol;
 mod relay;
 mod service;
 mod tls;
+pub mod wan;
 
 pub use identity::DeviceIdentity;
 pub use peers::{Peer, PeerStore};
@@ -23,6 +24,7 @@ pub use service::{
     load_relay_addr, save_relay_addr, ConfirmFn, Incoming, PairPrompt, SearchHandler, SyncConfig,
     SyncService, MAX_CLIP_FILE_BYTES, MAX_CLIP_IMAGE_BYTES,
 };
+pub use wan::{Wan, WanProfile};
 
 use sha2::{Digest, Sha256};
 

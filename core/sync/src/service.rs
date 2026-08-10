@@ -285,6 +285,16 @@ pub struct SyncService {
     _mdns: Option<mdns_sd::ServiceDaemon>,
 }
 
+impl Clone for SyncService {
+    fn clone(&self) -> Self {
+        SyncService {
+            shared: self.shared.clone(),
+            local_addr: self.local_addr,
+            _mdns: None,
+        }
+    }
+}
+
 impl SyncService {
     /// 启动监听/重连/发现任务；在 tokio 运行时内调用。
     /// `accept_confirm` 处理入站配对请求（阻塞回调，内部自动转
@@ -418,8 +428,27 @@ impl SyncService {
         self.shared.identity.fingerprint.clone()
     }
 
+    /// 供压测工具把本端 fp 写入对端 `Peer.last_addr`（不依赖 mDNS）。
+    /// 仅在测试 / tools 中使用；生产路径仍走 mDNS / pair_with。
+    pub fn seed_peer_addr(&self, fingerprint: &str, addr: &str) {
+        let _ = self.shared.peers.upsert(Peer {
+            name: fingerprint.chars().take(8).collect(),
+            fingerprint: fingerprint.to_string(),
+            last_addr: Some(addr.to_string()),
+        });
+    }
+
     pub fn peers(&self) -> Vec<Peer> {
         self.shared.peers.list()
+    }
+
+    /// 当前活跃出/入站连接数（压测脚本用来确认三端全互联）。
+    pub fn connected_count(&self) -> usize {
+        self.shared
+            .connected
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 
     pub fn remove_peer(&self, fp_prefix: &str) -> Result<bool, String> {
