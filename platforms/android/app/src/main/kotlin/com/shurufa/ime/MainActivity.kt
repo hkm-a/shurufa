@@ -1,5 +1,6 @@
 package com.shurufa.ime
 
+import android.app.Activity
 import android.content.Intent
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -12,7 +13,7 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.app.Activity
+import android.widget.Toast
 import com.google.android.material.card.MaterialCardView
 import java.io.File
 import org.json.JSONObject
@@ -22,6 +23,9 @@ import org.json.JSONObject
  *
  * 布局遵循项目惯例纯代码构建（零 XML 布局）；主题用 Material3 DayNight，
  * 颜色语义与 schemas/shurufa-skin.json 的品牌绿保持一致。
+ *
+ * 首次启动（onboarding_done=false）时立即跳到 OnboardingActivity 并 finish，
+ * 保证返回栈干净；版本页脚长按可重新查看引导。
  */
 class MainActivity : Activity() {
 
@@ -41,6 +45,12 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 未完成首次引导：直接进引导并结束自身，保证返回键不会回到半初始化首页。
+        if (!OnboardingActivity.isDone(this)) {
+            startActivity(Intent(this, OnboardingActivity::class.java))
+            finish()
+            return
+        }
         setContentView(buildContent())
     }
 
@@ -63,7 +73,7 @@ class MainActivity : Activity() {
 
         // 品牌标题
         root.addView(TextView(this).apply {
-            text = "Shurufa"
+            text = getString(R.string.main_brand_title)
             textSize = 34f
             setTypeface(typeface, Typeface.BOLD)
         })
@@ -73,7 +83,7 @@ class MainActivity : Activity() {
         }
         root.addView(imeStatusLine)
         imeEnableButton = TextView(this).apply {
-            text = "去启用"
+            text = getString(R.string.main_ime_enable_button)
             textSize = 14f
             gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
@@ -93,32 +103,43 @@ class MainActivity : Activity() {
         // 功能卡片
         cardSync = addCard(
             root,
-            "跨设备同步",
-            "与电脑配对，同步剪贴板 / 图片 / 文件",
+            getString(R.string.main_card_sync_title),
+            getString(R.string.main_card_sync_desc),
         ) {
             startActivity(Intent(this, PairActivity::class.java))
         }
         cardAi = addCard(
             root,
-            "AI 帮写",
+            getString(R.string.main_card_ai_title),
             "",
             onClick = null,
         )
         aiStatusLine = cardAi.findViewById(CARD_DESC_ID)
         cardSkin = addCard(
             root,
-            "皮肤",
+            getString(R.string.main_card_skin_title),
             "",
             onClick = null,
         )
 
-        // About 行
+        // About 行（长按：重置引导标记并重新打开向导）
         root.addView(TextView(this).apply {
-            text = "Shurufa v${BuildConfig.VERSION_NAME} · 雾凇拼音方案"
+            text = getString(R.string.main_footer_version, BuildConfig.VERSION_NAME)
             textSize = 12f
             setTextColor(if (isNight()) 0xFF8A8F99.toInt() else 0xFF888888.toInt())
             gravity = Gravity.CENTER
             setPadding(0, dp(20f), 0, 0)
+            setOnLongClickListener {
+                OnboardingActivity.reset(this@MainActivity)
+                Toast.makeText(
+                    this@MainActivity,
+                    R.string.main_footer_replay_onboarding,
+                    Toast.LENGTH_SHORT,
+                ).show()
+                startActivity(Intent(this@MainActivity, OnboardingActivity::class.java))
+                finish()
+                true
+            }
         })
 
         return scroll
@@ -177,9 +198,9 @@ class MainActivity : Activity() {
     private fun refreshImeStatus() {
         val enabled = isImeEnabled()
         imeStatusLine.text = if (enabled) {
-            "输入法已启用 — 在任意输入框切换为 Shurufa 拼音"
+            getString(R.string.main_ime_status_enabled)
         } else {
-            "输入法未启用 — 去系统设置中打开"
+            getString(R.string.main_ime_status_disabled)
         }
         imeEnableButton.visibility = if (enabled) View.GONE else View.VISIBLE
     }
@@ -188,10 +209,10 @@ class MainActivity : Activity() {
         // 只展示 key 是否配置，绝不读取/显示其内容
         aiStatusLine.text = if (BuildConfig.AGNES_API_KEY.isNotBlank()) {
             aiStatusLine.setTextColor(BRAND_GREEN)
-            "✓ 已配置 API Key，键盘工具条可直接使用"
+            getString(R.string.main_ai_status_configured)
         } else {
             aiStatusLine.setTextColor(if (isNight()) 0xFF8A8F99.toInt() else 0xFF888888.toInt())
-            "未配置 API Key — 在 gradle.properties 写 AGNES_API_KEY 重新打包"
+            getString(R.string.main_ai_status_missing)
         }
     }
 
@@ -206,8 +227,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(10f), 0, 0)
         }
-        row.addView(swatch("浅色", candidateBg(json, "light")))
-        row.addView(swatch("深色", candidateBg(json, "dark")))
+        row.addView(swatch(getString(R.string.main_skin_light), candidateBg(json, "light")))
+        row.addView(swatch(getString(R.string.main_skin_dark), candidateBg(json, "dark")))
         container.addView(row)
     }
 

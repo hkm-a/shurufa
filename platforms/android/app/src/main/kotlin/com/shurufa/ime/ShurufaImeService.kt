@@ -550,14 +550,14 @@ class ShurufaImeService : InputMethodService() {
                 setOnClickListener { onClick() }
             }
         functionRow.addView(
-            functionChip("▾▦", "剪贴板历史") { toggleHistory() },
+            functionChip("▾▦", getString(R.string.ime_chip_history)) { toggleHistory() },
             LinearLayout.LayoutParams(
                 clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
             ).apply { setMargins(dp(8f), clipVerticalMargin, dp(4f), clipVerticalMargin) }
         )
         functionRow.addView(
-            functionChip("🖼", "图片历史（斗图）") { toggleImageHistory() },
+            functionChip("🖼", getString(R.string.ime_chip_images)) { toggleImageHistory() },
             LinearLayout.LayoutParams(
                 clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
@@ -565,7 +565,7 @@ class ShurufaImeService : InputMethodService() {
         )
         // AI 帮写入口：缺 AGNES_API_KEY 时点击显示「未配置」提示。
         functionRow.addView(
-            functionChip("🪄", "AI 帮写") { toggleAiPanel() },
+            functionChip("🪄", getString(R.string.ime_chip_ai_write)) { toggleAiPanel() },
             LinearLayout.LayoutParams(
                 clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
@@ -663,7 +663,7 @@ class ShurufaImeService : InputMethodService() {
         } else {
             // 打开时重置：清空输入框与状态，保留上次草稿预览以便复制
             aiInputBox?.setText("")
-            aiStatusLine?.text = if (hasAiApiKey()) "" else "未配置 AGNES_API_KEY；请在 PC 端配置后重试"
+            aiStatusLine?.text = if (hasAiApiKey()) "" else getString(R.string.ai_panel_no_key)
             aiDraftView?.text = aiLastDraft.orEmpty()
             aiPasteButton?.isEnabled = !aiLastDraft.isNullOrBlank()
             panel.visibility = View.VISIBLE
@@ -703,14 +703,14 @@ class ShurufaImeService : InputMethodService() {
             gravity = Gravity.CENTER_VERTICAL
         }
         header.addView(TextView(this).apply {
-            text = "🪄 AI 帮写"
+            text = getString(R.string.ai_panel_title)
             textSize = 16f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(titleColor)
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         header.addView(TextView(this).apply {
             text = "✕"
-            contentDescription = "关闭"
+            contentDescription = getString(R.string.ai_panel_close)
             gravity = Gravity.CENTER
             textSize = 18f
             setTextColor(hintColor)
@@ -724,7 +724,7 @@ class ShurufaImeService : InputMethodService() {
 
         // 提示输入框（单行；回车由 onEditorAction 提交）
         val input = EditText(this).apply {
-            hint = "想让 AI 写什么？例如「朋友婚礼上台祝福 80 字」"
+            hint = getString(R.string.ai_panel_input_hint)
             textSize = 15f
             setTextColor(titleColor)
             setHintTextColor(hintColor)
@@ -789,7 +789,7 @@ class ShurufaImeService : InputMethodService() {
             setPadding(0, dp(6f), 0, 0)
         }
         val paste = TextView(this).apply {
-            text = "粘贴到输入框"
+            text = getString(R.string.ai_panel_paste)
             textSize = 14f
             gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
@@ -806,7 +806,7 @@ class ShurufaImeService : InputMethodService() {
             rightMargin = dp(6f)
         })
         actions.addView(TextView(this).apply {
-            text = "重试"
+            text = getString(R.string.ai_panel_retry)
             textSize = 14f
             gravity = Gravity.CENTER
             setTextColor(titleColor)
@@ -829,17 +829,17 @@ class ShurufaImeService : InputMethodService() {
     private fun requestAiDraft() {
         val prompt = aiInputBox?.text?.toString()?.trim().orEmpty()
         if (prompt.isEmpty()) {
-            aiStatusLine?.text = "请先输入提示词"
+            aiStatusLine?.text = getString(R.string.ai_panel_prompt_empty)
             return
         }
         // 与 PC 端一致：key 从环境变量读；Android 进程不直读用户环境，
         // 通过 BuildConfig 由打包时 gradle 属性注入（仅 release 本机构建可用）。
         val apiKey = readAiApiKey()
         if (apiKey.isNullOrBlank()) {
-            aiStatusLine?.text = "未配置 AGNES_API_KEY"
+            aiStatusLine?.text = getString(R.string.ai_panel_no_key_short)
             return
         }
-        aiStatusLine?.text = "思考中…"
+        aiStatusLine?.text = getString(R.string.ai_panel_thinking)
         aiDraftView?.text = ""
         aiPasteButton?.isEnabled = false
         ioExecutor.execute {
@@ -848,7 +848,7 @@ class ShurufaImeService : InputMethodService() {
                 // 不必再渲染节流 —— ioExecutor 单线程执行 + mainHandler.post 不会拥塞。
                 mainHandler.post {
                     aiDraftView?.text = partial
-                    aiStatusLine?.text = "生成中…（${partial.length} 字）"
+                    aiStatusLine?.text = getString(R.string.ai_panel_generating, partial.length)
                 }
             }
             mainHandler.post {
@@ -856,11 +856,11 @@ class ShurufaImeService : InputMethodService() {
                     is AiResult.Ok -> {
                         aiLastDraft = result.text
                         aiDraftView?.text = result.text
-                        aiStatusLine?.text = "已生成 ${result.text.length} 字；点击「粘贴到输入框」插入"
+                        aiStatusLine?.text = getString(R.string.ai_panel_done, result.text.length)
                         aiPasteButton?.isEnabled = true
                     }
                     is AiResult.Err -> {
-                        aiStatusLine?.text = "请求失败：${result.message}"
+                        aiStatusLine?.text = getString(R.string.ai_panel_error_prefix, result.message)
                         aiPasteButton?.isEnabled = aiLastDraft != null
                     }
                 }
@@ -1234,7 +1234,11 @@ class ShurufaImeService : InputMethodService() {
             setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
         }
         titleRow.addView(TextView(this).apply {
-            text = if (onlyImages) "斗图 · 点图片预览 · 再点 ▾▦ 返回" else "剪贴板历史 · 点击上屏 · 再点 ▾▦ 返回"
+            text = if (onlyImages) {
+                getString(R.string.history_title_images)
+            } else {
+                getString(R.string.history_title_text)
+            }
             textSize = 12f
             setTextColor(palette.preedit)
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -1253,7 +1257,7 @@ class ShurufaImeService : InputMethodService() {
         historySearchBox = null
         if (!onlyImages) {
             val searchBox = EditText(this).apply {
-                hint = "搜索历史…"
+                hint = getString(R.string.history_search_hint)
                 textSize = 14f
                 setTextColor(palette.keyText)
                 setHintTextColor(palette.preedit)
@@ -1359,7 +1363,7 @@ class ShurufaImeService : InputMethodService() {
         target.text = if (totalChars == null || todayChars == null) {
             ""
         } else {
-            "今日 $todayChars 字 · 累计 $totalChars 字"
+            getString(R.string.history_stats_typing, todayChars, totalChars)
         }
     }
 
@@ -1372,7 +1376,11 @@ class ShurufaImeService : InputMethodService() {
     /** A6 长按菜单：置顶/取消置顶、删除。置顶靠 SQL 层排序体现，不做角标。 */
     private fun showHistoryEntryActions(entry: ClipStore.Entry, onlyImages: Boolean) {
         // 无 pin 字段回传：当前置顶状态不明，菜单同时给出「置顶」与「取消置顶」。
-        val options = arrayOf("置顶", "取消置顶", "删除")
+        val options = arrayOf(
+            getString(R.string.history_menu_pin),
+            getString(R.string.history_menu_unpin),
+            getString(R.string.history_menu_delete),
+        )
         android.app.AlertDialog.Builder(this)
             .setTitle(entry.text.replace('\n', ' ').take(24))
             .setItems(options) { dialog, which ->
@@ -2087,7 +2095,10 @@ class ShurufaImeService : InputMethodService() {
 
     /** B8 候选长按菜单：复制 / 删除该词。 */
     private fun showCandidateActions(text: String, index: Int) {
-        val options = arrayOf("复制", "删除该词")
+        val options = arrayOf(
+            getString(R.string.candidate_menu_copy),
+            getString(R.string.candidate_menu_forget),
+        )
         android.app.AlertDialog.Builder(this)
             .setTitle(text)
             .setItems(options) { dialog, which ->

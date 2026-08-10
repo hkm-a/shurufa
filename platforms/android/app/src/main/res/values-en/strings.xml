@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Shurufa IME</string>
+    <string name="ime_name">Shurufa Pinyin</string>
+    <string name="pair_activity_label">Cross-device sync</string>
+    <string name="sync_channel_name">Clipboard sync</string>
+    <string name="sync_channel_description">Syncs clipboard between PC and phone while the keyboard is closed</string>
+    <string name="sync_notification_title">Shurufa clipboard sync</string>
+    <string name="sync_notification_text">Syncing text, images and files in the background</string>
+
+    <!-- MainActivity -->
+    <string name="main_brand_title">Shurufa</string>
+    <string name="main_ime_status_enabled">Keyboard enabled — switch to Shurufa Pinyin in any text field</string>
+    <string name="main_ime_status_disabled">Keyboard not enabled — turn it on in system settings</string>
+    <string name="main_ime_enable_button">Enable</string>
+    <string name="main_card_sync_title">Cross-device sync</string>
+    <string name="main_card_sync_desc">Pair with your PC to sync clipboard / images / files</string>
+    <string name="main_card_ai_title">AI Writer</string>
+    <string name="main_card_skin_title">Skins</string>
+    <string name="main_ai_status_configured">✓ API key configured, ready in the keyboard toolbar</string>
+    <string name="main_ai_status_missing">No API key — set AGNES_API_KEY in gradle.properties and rebuild</string>
+    <string name="main_skin_light">Light</string>
+    <string name="main_skin_dark">Dark</string>
+    <string name="main_footer_version">Shurufa v%1$s · Rime Ice schema</string>
+    <string name="main_footer_replay_onboarding">Replay onboarding</string>
+
+    <!-- Onboarding wizard -->
+    <string name="onboarding_welcome_title">Welcome to Shurufa</string>
+    <string name="onboarding_welcome_subtitle">An open-source, local-first pinyin keyboard with cross-device clipboard sync</string>
+    <string name="onboarding_welcome_bullet_1">Open source: fully auditable, build it yourself</string>
+    <string name="onboarding_welcome_bullet_2">Local first: dictionaries and typing data stay on device</string>
+    <string name="onboarding_welcome_bullet_3">Clipboard sync: pick up right where your PC left off</string>
+    <string name="onboarding_welcome_start">Get started</string>
+    <string name="onboarding_enable_title">Enable keyboard</string>
+    <string name="onboarding_enable_desc">Enable Shurufa Pinyin in system settings so you can switch to it in any text field.</string>
+    <string name="onboarding_enable_button">Open system settings</string>
+    <string name="onboarding_enable_waiting">Waiting for activation…</string>
+    <string name="onboarding_enable_done">✓ Keyboard enabled</string>
+    <string name="onboarding_default_title">Set as default</string>
+    <string name="onboarding_default_desc">Make Shurufa your default keyboard so it is used every time you type.</string>
+    <string name="onboarding_default_button">Switch default keyboard</string>
+    <string name="onboarding_default_waiting">Waiting for switch…</string>
+    <string name="onboarding_default_done">✓ Set as default keyboard</string>
+    <string name="onboarding_finish_title">All set</string>
+    <string name="onboarding_finish_desc">Shurufa is ready. Open any text field to start typing Chinese.</string>
+    <string name="onboarding_finish_button">Start typing</string>
+
+    <!-- Keyboard function row -->
+    <string name="ime_chip_history">Clipboard history</string>
+    <string name="ime_chip_images">Image history</string>
+    <string name="ime_chip_ai_write">AI Writer</string>
+
+    <!-- History panel -->
+    <string name="history_title_text">Clipboard history · tap to insert · tap ▾▦ to go back</string>
+    <string name="history_title_images">Stickers · tap image to preview · tap ▾▦ to go back</string>
+    <string name="history_search_hint">Search history…</string>
+    <string name="history_menu_pin">Pin</string>
+    <string name="history_menu_unpin">Unpin</string>
+    <string name="history_menu_delete">Delete</string>
+    <string name="history_stats_typing">Today %1$d chars · Total %2$d chars</string>
+
+    <!-- Candidate long-press menu -->
+    <string name="candidate_menu_copy">Copy</string>
+    <string name="candidate_menu_forget">Forget word</string>
+
+    <!-- AI Writer panel -->
+    <string name="ai_panel_title">🪄 AI Writer</string>
+    <string name="ai_panel_close">Close</string>
+    <string name="ai_panel_input_hint">What should AI write? e.g. “80-char wedding toast for a friend”</string>
+    <string name="ai_panel_paste">Paste into field</string>
+    <string name="ai_panel_retry">Retry</string>
+    <string name="ai_panel_thinking">Thinking…</string>
+    <string name="ai_panel_generating">Writing… (%1$d chars)</string>
+    <string name="ai_panel_done">%1$d chars written; tap “Paste into field” to insert</string>
+    <string name="ai_panel_error_prefix">Request failed: %1$s</string>
+    <string name="ai_panel_no_key">AGNES_API_KEY not configured; set it on the PC side and retry</string>
+    <string name="ai_panel_prompt_empty">Enter a prompt first</string>
+    <string name="ai_panel_no_key_short">AGNES_API_KEY not configured</string>
+</resources>

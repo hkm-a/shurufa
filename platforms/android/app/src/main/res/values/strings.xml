@@ -7,4 +7,73 @@
     <string name="sync_channel_description">在输入法未打开时同步电脑与手机剪贴板</string>
     <string name="sync_notification_title">Shurufa 剪贴板同步</string>
     <string name="sync_notification_text">正在后台同步文字、图片和文件</string>
+
+    <!-- MainActivity 首页 -->
+    <string name="main_brand_title">Shurufa</string>
+    <string name="main_ime_status_enabled">输入法已启用 — 在任意输入框切换为 Shurufa 拼音</string>
+    <string name="main_ime_status_disabled">输入法未启用 — 去系统设置中打开</string>
+    <string name="main_ime_enable_button">去启用</string>
+    <string name="main_card_sync_title">跨设备同步</string>
+    <string name="main_card_sync_desc">与电脑配对，同步剪贴板 / 图片 / 文件</string>
+    <string name="main_card_ai_title">AI 帮写</string>
+    <string name="main_card_skin_title">皮肤</string>
+    <string name="main_ai_status_configured">✓ 已配置 API Key，键盘工具条可直接使用</string>
+    <string name="main_ai_status_missing">未配置 API Key — 在 gradle.properties 写 AGNES_API_KEY 重新打包</string>
+    <string name="main_skin_light">浅色</string>
+    <string name="main_skin_dark">深色</string>
+    <string name="main_footer_version">Shurufa v%1$s · 雾凇拼音方案</string>
+    <string name="main_footer_replay_onboarding">重新查看引导</string>
+
+    <!-- 首次启用引导 -->
+    <string name="onboarding_welcome_title">欢迎使用 Shurufa</string>
+    <string name="onboarding_welcome_subtitle">开源 · 本地优先 · 跨设备剪贴板同步的拼音输入法</string>
+    <string name="onboarding_welcome_bullet_1">开源：代码完全公开，可自由审计与构建</string>
+    <string name="onboarding_welcome_bullet_2">本地优先：词库与输入数据留在设备上</string>
+    <string name="onboarding_welcome_bullet_3">跨设备剪贴板同步：与电脑无缝接力</string>
+    <string name="onboarding_welcome_start">开始</string>
+    <string name="onboarding_enable_title">启用输入法</string>
+    <string name="onboarding_enable_desc">在系统设置中启用 Shurufa 拼音，之后才能在输入框中切换使用。</string>
+    <string name="onboarding_enable_button">前往系统设置启用</string>
+    <string name="onboarding_enable_waiting">等待启用中…</string>
+    <string name="onboarding_enable_done">✓ 输入法已启用</string>
+    <string name="onboarding_default_title">设为默认</string>
+    <string name="onboarding_default_desc">把 Shurufa 设为默认输入法，每次输入都会直接使用它。</string>
+    <string name="onboarding_default_button">切换默认输入法</string>
+    <string name="onboarding_default_waiting">等待切换中…</string>
+    <string name="onboarding_default_done">✓ 已设为默认输入法</string>
+    <string name="onboarding_finish_title">一切就绪</string>
+    <string name="onboarding_finish_desc">Shurufa 已可用。打开任意输入框即可开始输入中文。</string>
+    <string name="onboarding_finish_button">开始使用</string>
+
+    <!-- 键盘功能行 -->
+    <string name="ime_chip_history">剪贴板历史</string>
+    <string name="ime_chip_images">图片历史</string>
+    <string name="ime_chip_ai_write">AI 帮写</string>
+
+    <!-- 历史面板 -->
+    <string name="history_title_text">剪贴板历史 · 点击上屏 · 再点 ▾▦ 返回</string>
+    <string name="history_title_images">斗图 · 点图片预览 · 再点 ▾▦ 返回</string>
+    <string name="history_search_hint">搜索历史…</string>
+    <string name="history_menu_pin">置顶</string>
+    <string name="history_menu_unpin">取消置顶</string>
+    <string name="history_menu_delete">删除</string>
+    <string name="history_stats_typing">今日 %1$d 字 · 累计 %2$d 字</string>
+
+    <!-- 候选词长按菜单 -->
+    <string name="candidate_menu_copy">复制</string>
+    <string name="candidate_menu_forget">删除该词</string>
+
+    <!-- AI 帮写面板 -->
+    <string name="ai_panel_title">🪄 AI 帮写</string>
+    <string name="ai_panel_close">关闭</string>
+    <string name="ai_panel_input_hint">想让 AI 写什么？例如「朋友婚礼上台祝福 80 字」</string>
+    <string name="ai_panel_paste">粘贴到输入框</string>
+    <string name="ai_panel_retry">重试</string>
+    <string name="ai_panel_thinking">思考中…</string>
+    <string name="ai_panel_generating">生成中…（%1$d 字）</string>
+    <string name="ai_panel_done">已生成 %1$d 字；点击「粘贴到输入框」插入</string>
+    <string name="ai_panel_error_prefix">请求失败：%1$s</string>
+    <string name="ai_panel_no_key">未配置 AGNES_API_KEY；请在 PC 端配置后重试</string>
+    <string name="ai_panel_prompt_empty">请先输入提示词</string>
+    <string name="ai_panel_no_key_short">未配置 AGNES_API_KEY</string>
 </resources>
