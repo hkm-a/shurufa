@@ -20,9 +20,9 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, ClientToScreen, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
-    FillRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_END_ELLIPSIS, DT_LEFT,
-    DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, FW_BOLD, FW_NORMAL, HBRUSH, HDC, HFONT, HGDIOBJ,
-    PAINTSTRUCT, TRANSPARENT,
+    FillRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS,
+    DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, FW_BOLD, FW_NORMAL, HBRUSH, HDC, HFONT,
+    HGDIOBJ, PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
@@ -36,28 +36,43 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW, MoveWindow, PostMessageW,
     RegisterClassW, SetForegroundWindow, ShowWindow, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO,
     IDC_ARROW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_APP, WM_CHAR, WM_KEYDOWN,
-    WM_KILLFOCUS, WM_PAINT, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_PAINT, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::panel::skin::{self, ShadowShell, Skin};
 
 pub const HOTKEY_ID: i32 = 2;
-/// 划词润色热键：从当前前台抓取选区（Ctrl+C）→ 送 Agnes Rewrite 模板 →
-/// 回写覆盖选区。与面板分开走，不进 Editing/Pending 状态机。
+/// 划词润色热键：Ctrl+Shift+R 抓取前台选区进面板润色，回车覆盖选区。
 pub const POLISH_HOTKEY_ID: i32 = 3;
 /// Worker 线程把网络结果转回 UI 线程的私有消息。
 const WM_AI_DONE: u32 = WM_APP + 71;
-/// 流式增量包：worker 每累积一段 SSE delta 发一条，UI 线程拼接渲染。
-const WM_AI_DELTA: u32 = WM_APP + 72;
+/// 流式增量包：LPARAM 携带 Box<(String /*已累积全文*/, bool /*is_final*/)>。
+const WM_AI_CHUNK: u32 = WM_APP + 72;
 
-/// 内置系统提示：控制输出端为"可直接粘贴的中文文本片段"。
-pub(crate) const SYSTEM_PROMPT: &str = "你是用户输入法里的‘AI 帮写’助手。直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。";
+/// 内置系统提示（默认"正式"）：控制输出端为"可直接粘贴的中文文本片段"。
+pub(crate) const SYSTEM_PROMPT: &str = SYSTEM_PROMPT_FORMAL;
+/// 提示词模板：按 TEMPLATES 下标索引；尾部约束统一保持"可直接粘贴中文段落"。
+const SYSTEM_PROMPT_FORMAL: &str = "你是用户输入法里的‘AI 帮写’助手。用正式、简洁的中文书面语写作，直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。";
+const SYSTEM_PROMPT_CHAT: &str = "你是用户输入法里的‘AI 帮写’助手。用轻松自然的口吻聊天，直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。";
+const SYSTEM_PROMPT_MAIL: &str = "你是用户输入法里的‘AI 帮写’助手。生成结构完整、礼貌得体的中文邮件正文，直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。";
+const SYSTEM_PROMPT_EMOJI: &str = "你是用户输入法里的‘AI 帮写’助手。输出活泼的中文并适量穿插 emoji，直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。";
+/// 模板 chips: (标签, 系统提示)。选择只影响下一次请求。
+const TEMPLATES: &[(&str, &str)] = &[
+    ("正式", SYSTEM_PROMPT_FORMAL),
+    ("闲聊", SYSTEM_PROMPT_CHAT),
+    ("邮件", SYSTEM_PROMPT_MAIL),
+    ("Emoji化", SYSTEM_PROMPT_EMOJI),
+];
 const REQUEST_TIMEOUT_SECS: u64 = 45;
 /// 预览区一次至少写入剪贴板的最大字符数；超过仅截断显示，不截断写入。
 const PREVIEW_MAX_CHARS: usize = 220;
+/// 每次向 UI 线程推流的最小新增字节数（约 13 个汉字）；最终包不受此限。
+const CHUNK_MIN_BYTES: usize = 40;
 
 // 96 DPI 基准
 const BASE_WIDTH: i32 = 540;
+const BASE_TEMPLATE_ROW: i32 = 24;
 const BASE_PROMPT_ROW: i32 = 30;
 const BASE_HINT_HEIGHT: i32 = 20;
 const BASE_PREVIEW_MIN: i32 = 80;
@@ -103,6 +118,10 @@ struct PanelState {
     target: HWND,
     dpi: u32,
     status: Status,
+    /// true = 划词润色（选区进面板、回车覆盖选区）；false = AI 帮写
+    mode_polish: bool,
+    /// 当前模板下标（TEMPLATES）；切换只影响下一次请求
+    template: usize,
 }
 
 impl Default for Status {
@@ -139,8 +158,8 @@ thread_local! {
 
 /// 注册全局热键；首选 Ctrl+Shift+W（与"输入法"的 Writer 思路呼应），失败
 /// 尝试 Alt+W。线程级注册，由 `listener.rs` 消息循环分发。
-/// 同时尝试注册 Ctrl+Shift+E（R"ewrite"/p"olish"）；被占用时静默降级，
-/// AI 帮写主入口不受影响。
+/// 划词润色注册 Ctrl+Shift+R；被占用时静默降级，AI 帮写主入口不受影响。
+/// 面板不常驻，进程退出即失效，不做反注册。
 pub fn register_hotkey() -> &'static str {
     unsafe {
         let which = if RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x57).is_ok() {
@@ -151,8 +170,8 @@ pub fn register_hotkey() -> &'static str {
             "（AI 热键注册失败）"
         };
         crate::log_line(&format!("AI 帮写热键注册结果：{which}"));
-        let polish = if RegisterHotKey(None, POLISH_HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x45).is_ok() {
-            "Ctrl+Shift+E"
+        let polish = if RegisterHotKey(None, POLISH_HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x52).is_ok() {
+            "Ctrl+Shift+R"
         } else {
             "（划词润色热键被占用）"
         };
@@ -161,78 +180,92 @@ pub fn register_hotkey() -> &'static str {
     }
 }
 
-/// 划词润色入口：通过剪贴板抓取→请求→写回。失败仅记日志，不打断输入。
+/// 划词润色入口（Ctrl+Shift+R）：抓选区 → 面板预填进 Editing；无有效选区时
+/// 面板走 Failed 样式提示"未选中有效文本"。请求与粘贴都复用面板状态机。
 pub fn polish_selection() {
     crate::log_line("划词润色：收到热键");
-    let Some(selected) = grab_selected_text() else {
-        crate::log_line("划词润色：前台没有选中文本，安静退出");
-        return;
-    };
-    if selected.is_empty() || selected.chars().count() > 2_000 {
-        crate::log_line(&format!(
-            "划词润色：选区长度不合理（{} 字符）",
-            selected.chars().count()
-        ));
-        return;
-    }
-    let Some(api_key) = std::env::var_os("AGNES_API_KEY").and_then(|v| v.into_string().ok()) else {
-        crate::log_line("划词润色：缺少 AGNES_API_KEY");
-        return;
-    };
-    let api_key = api_key.trim().to_owned();
-    // HWND 含裸指针不可跨线程 Send，转转成整数在 worker 里还原。
-    let target_raw = unsafe { GetForegroundWindow() }.0 as isize;
-    std::thread::spawn(move || {
-        let target = HWND(target_raw as *mut core::ffi::c_void);
-        let prompt = format!(
-            "请把下面这段话润色得更通顺/礼貌/专业，保持原意，不要解释，直接输出改写后的文本：\n\n{selected}"
-        );
-        match call_agnes(&api_key, &prompt, SYSTEM_PROMPT_REWRITE) {
-            Ok(draft) => {
-                let d_trim = draft.trim();
-                if d_trim.is_empty() || d_trim == selected.trim() {
-                    crate::log_line("划词润色：返回为空或与原文一致，跳过");
-                    return;
-                }
-                if crate::paste::set_clipboard_text(d_trim).is_err() {
-                    crate::log_line("划词润色：写剪贴板失败");
-                    return;
-                }
-                unsafe {
-                    if !target.is_invalid() {
-                        let _ = SetForegroundWindow(target);
-                        std::thread::sleep(Duration::from_millis(80));
-                        send_ctrl_v();
-                    }
-                }
-                crate::log_line(&format!(
-                    "划词润色完成：{} → {} 字符",
-                    selected.chars().count(),
-                    d_trim.chars().count()
-                ));
-            }
-            Err(e) => crate::log_line(&format!("划词润色请求失败：{e}")),
-        }
-    });
+    let target = unsafe { GetForegroundWindow() };
+    let grabbed = grab_selected_text();
+    show_polish(target, grabbed);
 }
 
-const SYSTEM_PROMPT_REWRITE: &str =
-    "你是输入法里的‘划词改写’助手。直接输出改写后的文本，不要任何解释、引号或前后缀；输出语言与输入语言保持一致（中文进中文出）。";
+/// 面板态划词入口：selected 为 None/空/超长 → Failed("未选中有效文本")，
+/// 否则预填选区文本并直接落 Editing，标题按"划词润色"渲染。
+fn show_polish(target: HWND, selected: Option<String>) {
+    let Some(hwnd) = ensure_window() else {
+        crate::log_line("AI 面板窗口创建失败");
+        return;
+    };
+    let (_, _, shadow) = palette();
+    let skin = Skin::current();
+    skin::apply_appearance(hwnd, &skin);
+    let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
+    let width = scale(BASE_WIDTH, dpi);
+    let min_height = scale(
+        BASE_PADDING * 2 + BASE_TEMPLATE_ROW + BASE_PROMPT_ROW + BASE_HINT_HEIGHT + BASE_PREVIEW_MIN,
+        dpi,
+    );
 
-/// 抓前台选中的纯文本：保存剪贴板 → Ctrl+C → 读回文本 → 恢复原剪贴板。
-/// 注：恢复原剪贴板这一步失败不会影响功能，所以静默掉。
+    let too_long = selected
+        .as_ref()
+        .map(|s| s.chars().count() > 2_000)
+        .unwrap_or(false);
+    let valid = selected.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) && !too_long;
+    let status = if valid {
+        crate::log_line(&format!(
+            "划词润色面板弹出，选区 {} 字符",
+            selected.as_ref().map(|s| s.chars().count()).unwrap_or(0)
+        ));
+        Status::Editing
+    } else {
+        crate::log_line("划词润色：未选中有效文本");
+        Status::Failed {
+            reason: "未选中有效文本".into(),
+        }
+    };
+    EDITING.with_borrow_mut(|e| {
+        e.query = if valid { selected.unwrap_or_default() } else { String::new() };
+    });
+    PANEL.with_borrow_mut(|slot| {
+        *slot = Some(PanelState {
+            hwnd,
+            target,
+            dpi,
+            status,
+            mode_polish: true,
+            template: 0,
+        });
+    });
+
+    let anchor = caret_or_cursor_pos(target);
+    let (mut x, mut y) = (anchor.x, anchor.y + scale(6, dpi));
+    unsafe {
+        x = x.min(GetSystemMetrics(SM_CXSCREEN) - width - 8).max(0);
+        y = y.min(GetSystemMetrics(SM_CYSCREEN) - min_height - 8).max(0);
+        let _ = MoveWindow(hwnd, x, y, width, min_height, true);
+        let _ = ShowWindow(hwnd, SW_SHOWNA);
+        SHADOW.with_borrow_mut(|shell| shell.sync(hwnd, x, y, width, min_height, &shadow));
+        let _ = SetForegroundWindow(hwnd);
+        let _ = SetFocus(Some(hwnd));
+        let _ = InvalidateRect(Some(hwnd), None, true);
+    }
+}
+
+/// 划词润色面板仍使用同一套 Agnes chat 通道；选区经由 user 消息原文进入，
+/// 系统提示仍走所选模板（默认"正式"）。这里不再有单独的 rewrite 提示。
+
+/// 抓前台选中的纯文本：保存剪贴板 → Ctrl+C → 等 150ms 读回文本 → 立刻恢复
+/// 原剪贴板文本（恢复原内容失败时历史库里还能找到，静默掉）。
 fn grab_selected_text() -> Option<String> {
-    
-    // 保存现有剪贴板文本（图片/文件场景下不管，反正是临时顶替）
-    let store = crate::open_store();
-    let prev_text = store.list(1, 0).ok().and_then(|v| v.into_iter().next()).map(|e| e.text);
+    // 保存现有剪贴板文本（图片/文件场景下不恢复，反正是临时顶替）
+    let prev_text = read_clipboard_text();
 
     unsafe {
         send_ctrl_c();
     }
-    std::thread::sleep(Duration::from_millis(120));
+    std::thread::sleep(Duration::from_millis(150));
     let grabbed = read_clipboard_text();
-    // 恢复：尝试把原首条文本回去；失败无所谓，历史里还能找到
+    // 恢复：只恢复文本；与抓回内容相同时说明本来就没新复制，跳过
     if let Some(text) = prev_text {
         if !text.is_empty() && Some(&text) != grabbed.as_ref() {
             let _ = crate::paste::set_clipboard_text(&text);
@@ -304,7 +337,10 @@ pub fn show() {
     skin::apply_appearance(hwnd, &skin);
     let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
     let width = scale(BASE_WIDTH, dpi);
-    let min_height = scale(BASE_PADDING * 2 + BASE_PROMPT_ROW + BASE_HINT_HEIGHT + BASE_PREVIEW_MIN, dpi);
+    let min_height = scale(
+        BASE_PADDING * 2 + BASE_TEMPLATE_ROW + BASE_PROMPT_ROW + BASE_HINT_HEIGHT + BASE_PREVIEW_MIN,
+        dpi,
+    );
 
     EDITING.with_borrow_mut(|e| e.query.clear());
     let status = if std::env::var_os("AGNES_API_KEY").is_some() {
@@ -320,6 +356,8 @@ pub fn show() {
             target,
             dpi,
             status,
+            mode_polish: false,
+            template: 0,
         });
     });
 
@@ -349,7 +387,7 @@ fn hide() {
     }
 }
 
-/// 提交当前 prompt：发到 Agnes，UI 主线程立刻进入 Pending。
+/// 提交当前 prompt：发到 Agnes（SSE 流式），UI 主线程立刻进入 Pending。
 fn start_request(query: String) {
     let Some(api_key) = std::env::var_os("AGNES_API_KEY").and_then(|v| v.into_string().ok()) else {
         PANEL.with_borrow_mut(|slot| {
@@ -362,9 +400,12 @@ fn start_request(query: String) {
         });
         return;
     };
-    let Some(hwnd) = PANEL.with_borrow(|slot| slot.as_ref().map(|s| s.hwnd)) else {
+    let Some((hwnd, template)) =
+        PANEL.with_borrow(|slot| slot.as_ref().map(|s| (s.hwnd, s.template)))
+    else {
         return;
     };
+    let system_prompt = TEMPLATES.get(template).map(|t| t.1).unwrap_or(SYSTEM_PROMPT);
     PANEL.with_borrow_mut(|slot| {
         if let Some(state) = slot.as_mut() {
             state.status = Status::Pending {
@@ -377,23 +418,34 @@ fn start_request(query: String) {
         }
     });
     let api_key = api_key.trim().to_owned();
+    crate::log_line(&format!(
+        "AI 流式请求开始：模板={}，提示词 {} 字符",
+        TEMPLATES.get(template).map(|t| t.0).unwrap_or("正式"),
+        query.chars().count()
+    ));
     // HWND 不是 Send；跨线程时转成 isize，到对端再包回 HWND。
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
         let hwnd = HWND(hwnd_raw as *mut _);
-        // 流式增量：整段先累积进 Box<String> 由 WM_AI_DELTA 带回 UI 线程。
-        let on_delta = |delta: &str| {
-            let boxed: Box<String> = Box::new(delta.to_owned());
+        // 流式增量：worker 端累全文，按 ~40 字节步长把 Box<(全文, is_final)>
+        // 通过 WM_AI_CHUNK 发回 UI 线程；UI 线程不重拼，直接替换渲染。
+        let mut last_pushed = 0usize;
+        let on_chunk = |acc: &str, is_final: bool| {
+            if !is_final && acc.len() - last_pushed < CHUNK_MIN_BYTES {
+                return;
+            }
+            last_pushed = acc.len();
+            let boxed: Box<(String, bool)> = Box::new((acc.to_owned(), is_final));
             unsafe {
                 let _ = PostMessageW(
                     Some(hwnd),
-                    WM_AI_DELTA,
+                    WM_AI_CHUNK,
                     WPARAM(0),
                     LPARAM(Box::into_raw(boxed) as isize),
                 );
             }
         };
-        let result = call_agnes_stream(&api_key, &query, SYSTEM_PROMPT, on_delta);
+        let result = call_agnes_stream(&api_key, &query, system_prompt, on_chunk);
         let boxed: Box<(String, Result<String, String>)> = Box::new((query, result));
         unsafe {
             let _ = PostMessageW(
@@ -429,22 +481,25 @@ pub(crate) fn call_agnes(
     extract_chat_content(&text)
 }
 
-/// 流式调用 Agnes（SSE）。每段 delta 通过 `on_delta` 回调发给调用方；返回
-/// 完整拼接后的草稿。流式增加打字机体感：在长生成时不再黑屏等待 45s。
+/// 流式调用 Agnes（SSE）。已累积全文通过 `on_chunk(accumulated, is_final)`
+/// 回吐给调用方（步长由调用方控制）；返回完整拼接后的草稿。
+/// 整体 45s 上限：`start.elapsed()` 超时即中止；若已有部分内容则把内容带上，
+/// 由 UI 决定降级成"（流中断，已截断）"预览而不是整块 Failed。
 fn call_agnes_stream<F>(
     api_key: &str,
     user_prompt: &str,
     system_prompt: &str,
-    mut on_delta: F,
+    mut on_chunk: F,
 ) -> Result<String, String>
 where
-    F: FnMut(&str),
+    F: FnMut(&str, bool),
 {
     use std::io::BufRead;
     let body = build_chat_body(user_prompt, system_prompt, true);
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .build();
+    let start = Instant::now();
     let resp = agent
         .post("https://apihub.agnes-ai.com/v1/chat/completions")
         .set("Authorization", &format!("Bearer {api_key}"))
@@ -452,32 +507,59 @@ where
         .set("Accept", "text/event-stream")
         .send_bytes(&body)
         .map_err(|e| map_ureq_err(e))?;
-    let reader = std::io::BufReader::new(resp.into_reader());
+    let mut reader = std::io::BufReader::new(resp.into_reader());
     let mut acc = String::new();
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => return Err(format!("SSE 读取失败: {e}")),
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Some(payload) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let payload = payload.trim();
-        if payload == "[DONE]" {
+    let mut first_chunk_at: Option<Duration> = None;
+    let mut finish = "done";
+    let mut raw = Vec::<u8>::new();
+    loop {
+        if start.elapsed() > Duration::from_secs(REQUEST_TIMEOUT_SECS) {
+            finish = "timeout";
             break;
         }
-        // 每行是一个 JSON：choices[0].delta.content 是增量
-        if let Some(delta) = extract_stream_delta(payload) {
-            acc.push_str(&delta);
-            on_delta(&delta);
+        raw.clear();
+        match reader.read_until(b'\n', &mut raw) {
+            Ok(0) => break, // EOF：服务端正常收尾
+            Ok(_) => {}
+            Err(e) => {
+                finish = "io-error";
+                crate::log_line(&format!("AI 流读取失败：{e}"));
+                break;
+            }
+        }
+        // 一次 read_until 不一定停在 UTF-8 边界；不完整字符留给下一行一起判。
+        let line = String::from_utf8_lossy(&raw);
+        match parse_sse_line(line.trim_end(), &mut acc) {
+            SseEvent::Skip => {}
+            SseEvent::Done => {
+                finish = "done";
+                break;
+            }
+            SseEvent::Delta => {
+                if first_chunk_at.is_none() {
+                    first_chunk_at = Some(start.elapsed());
+                }
+                on_chunk(&acc, false);
+            }
         }
     }
+    let elapsed = start.elapsed();
+    crate::log_line(&format!(
+        "AI 流式结束：原因={finish}，首包 {}ms，总耗时 {}ms，草稿 {} 字符",
+        first_chunk_at.map(|d| d.as_millis() as u64).unwrap_or(0),
+        elapsed.as_millis(),
+        acc.chars().count()
+    ));
     if acc.trim().is_empty() {
-        return Err("Agnes 流式返回为空".into());
+        return Err(match finish {
+            "timeout" => "请求超时（45s 无响应）".into(),
+            _ => "Agnes 流式返回为空".into(),
+        });
     }
+    if finish == "timeout" {
+        acc.push_str("（流中断，已截断）");
+    }
+    on_chunk(&acc, true);
     Ok(acc)
 }
 
@@ -550,6 +632,40 @@ fn extract_chat_content(text: &str) -> Result<String, String> {
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "Agnes 返回为空".to_owned())
+}
+
+/// SSE 行解析结果；纯函数，便于脱离网络做单元测试。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SseEvent {
+    /// 空行 / 非 data 行 / [DONE] 之外的段落分隔：跳过
+    Skip,
+    /// 本行 JSON 携带 choices[0].delta.content，已追加进 acc
+    Delta,
+    /// data: [DONE]，流结束
+    Done,
+}
+
+/// 解析一行 SSE。入参应是去掉换行后的整行文本；若上一次的 read_until
+/// 落在多字节 UTF-8 中间，`String::from_utf8_lossy` 会补 U+FFFD，JSON
+/// 解析会失败 → 归入 Skip 静默跳过，等下一行把字符读全再入 acc。
+pub(crate) fn parse_sse_line(line: &str, acc: &mut String) -> SseEvent {
+    let line = line.trim_end();
+    if line.is_empty() {
+        return SseEvent::Skip;
+    }
+    let Some(payload) = line.strip_prefix("data:") else {
+        return SseEvent::Skip;
+    };
+    let payload = payload.trim_start();
+    if payload == "[DONE]" {
+        return SseEvent::Done;
+    }
+    // 每行是一个 JSON：choices[0].delta.content 是增量；解析失败静默跳过
+    let Some(delta) = extract_stream_delta(payload) else {
+        return SseEvent::Skip;
+    };
+    acc.push_str(&delta);
+    SseEvent::Delta
 }
 
 /// 解析 SSE `data: {...}` 行，返回本行携带的增量文本（若有）。
@@ -653,6 +769,34 @@ fn scale(base: i32, dpi: u32) -> i32 {
     (base * dpi as i32 + 48) / 96
 }
 
+/// 模板 chips 的几何：返回第 idx 个 chip 的矩形（客户区坐标）。
+/// 与 paint() 中渲染的坐标保持一致；改布局时只需同步修改这一处。
+fn template_chip_rect(idx: usize, dpi: u32) -> RECT {
+    let padding = scale(BASE_PADDING, dpi);
+    let row_h = scale(BASE_TEMPLATE_ROW, dpi);
+    let gap = scale(6, dpi);
+    let chip_w = scale(64, dpi);
+    let x = padding + (chip_w + gap) * idx as i32;
+    RECT {
+        left: x,
+        top: padding,
+        right: x + chip_w,
+        bottom: padding + row_h,
+    }
+}
+
+/// 判断客户区坐标命中了哪个模板 chip。
+fn hit_template_chip(pt: POINT) -> Option<usize> {
+    let dpi = PANEL.with_borrow(|slot| slot.as_ref().map(|s| s.dpi))?;
+    for (idx, _) in TEMPLATES.iter().enumerate() {
+        let r = template_chip_rect(idx, dpi);
+        if pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom {
+            return Some(idx);
+        }
+    }
+    None
+}
+
 fn ensure_window() -> Option<HWND> {
     if let Some(hwnd) = PANEL.with_borrow(|s| s.as_ref().map(|s| s.hwnd)) {
         return Some(hwnd);
@@ -690,7 +834,7 @@ fn ensure_window() -> Option<HWND> {
             0,
             0,
             BASE_WIDTH,
-            BASE_PROMPT_ROW,
+            BASE_PADDING * 2 + BASE_TEMPLATE_ROW + BASE_PROMPT_ROW + BASE_PREVIEW_MIN,
             None,
             None,
             Some(hinstance.into()),
@@ -742,6 +886,27 @@ unsafe extern "system" fn wnd_proc(
             hide();
             LRESULT(0)
         }
+        WM_LBUTTONDOWN => {
+            // 模板 chips 命中检测：LPARAM 低位是 (x,y) 客户区坐标（有符号）。
+            let pt = POINT {
+                x: (lparam.0 & 0xffff) as i16 as i32,
+                y: ((lparam.0 >> 16) & 0xffff) as i16 as i32,
+            };
+            if let Some(idx) = hit_template_chip(pt) {
+                PANEL.with_borrow_mut(|slot| {
+                    if let Some(state) = slot.as_mut() {
+                        if state.template != idx {
+                            state.template = idx;
+                            crate::log_line(&format!("AI 模板切换：{}", TEMPLATES[idx].0));
+                            unsafe {
+                                let _ = InvalidateRect(Some(state.hwnd), None, true);
+                            }
+                        }
+                    }
+                });
+            }
+            LRESULT(0)
+        }
         WM_SETTINGCHANGE => {
             if skin::is_immersive_color_change(lparam) {
                 let skin = Skin::refresh_on_setting_change();
@@ -752,16 +917,16 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
-        x if x == WM_AI_DELTA => {
-            // 流式增量：worker 把每段 delta 包成 Box<String> 发回来，逐段并入
-            // Pending.partial 重绘，形成打字机效果。
-            let ptr = lparam.0 as *mut String;
+        x if x == WM_AI_CHUNK => {
+            // 流式增量：worker 把已累积全文打成 Box<(String, is_final)> 发回来，
+            // UI 线程直接替换 Pending.partial；Repaint 只在收到 chunk 时触发。
+            let ptr = lparam.0 as *mut (String, bool);
             if !ptr.is_null() {
-                let delta = unsafe { *Box::from_raw(ptr) };
+                let (accumulated, _is_final) = unsafe { *Box::from_raw(ptr) };
                 PANEL.with_borrow_mut(|slot| {
                     if let Some(state) = slot.as_mut() {
                         if let Status::Pending { partial, .. } = &mut state.status {
-                            partial.push_str(&delta);
+                            *partial = accumulated;
                             unsafe {
                                 let _ = InvalidateRect(Some(state.hwnd), None, true);
                             }
@@ -946,6 +1111,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         };
         let dpi = state.dpi;
         let padding = scale(BASE_PADDING, dpi);
+        let template_h = scale(BASE_TEMPLATE_ROW, dpi);
         let prompt_h = scale(BASE_PROMPT_ROW, dpi);
         let hint_h = scale(BASE_HINT_HEIGHT, dpi);
         let preview_h = scale(BASE_PREVIEW_MIN, dpi);
@@ -963,12 +1129,60 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let bold = make_font(sf(BASE_FONT), FW_BOLD.0 as i32);
         let small = make_font(sf(BASE_SMALL_FONT), FW_NORMAL.0 as i32);
 
-        // 顶部：提示词输入行（浅色层）
+        // 顶部第 0 行：标题（由模式决定："AI 帮写" / "划词润色"）
+        SelectObject(hdc, HGDIOBJ(bold.0));
+        SetTextColor(hdc, COLORREF(colors.accent));
+        draw_line(
+            hdc,
+            if state.mode_polish { "划词润色" } else { "AI 帮写" },
+            padding,
+            padding,
+            width - padding * 2,
+            scale(14, dpi),
+        );
+
+        // 顶部第 1 行：4 个模板 chips（active 用皮肤高亮色，inactive 走 dim）
+        let chips_top = padding + scale(18, dpi);
+        let chip_gap = scale(6, dpi);
+        let chip_w = scale(64, dpi);
+        let chip_h = template_h;
+        let active_brush = CreateSolidBrush(COLORREF(colors.prompt_hl));
+        let inactive_brush = CreateSolidBrush(COLORREF(colors.prompt_bg));
+        SelectObject(hdc, HGDIOBJ(small.0));
+        for (idx, (label, _)) in TEMPLATES.iter().enumerate() {
+            let r = RECT {
+                left: padding + (chip_w + chip_gap) * idx as i32,
+                top: chips_top,
+                right: padding + (chip_w + chip_gap) * idx as i32 + chip_w,
+                bottom: chips_top + chip_h,
+            };
+            let is_active = idx == state.template;
+            let brush = if is_active { active_brush } else { inactive_brush };
+            FillRect(hdc, &r, brush);
+            SetTextColor(
+                hdc,
+                COLORREF(if is_active { colors.bg } else { colors.dim }),
+            );
+            // 文字水平居中：DT_CENTER 只允许单行，这里 chip 是固定高度单行。
+            let mut utf16: Vec<u16> = label.encode_utf16().collect();
+            let mut r2 = r;
+            DrawTextW(
+                hdc,
+                &mut utf16,
+                &mut r2,
+                DT_CENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
+        }
+        let _ = DeleteObject(HGDIOBJ(active_brush.0));
+        let _ = DeleteObject(HGDIOBJ(inactive_brush.0));
+
+        // 模板行底 + padding 后是 prompt 行
+        let prompt_top = chips_top + chip_h + scale(4, dpi);
         let prompt_rect = RECT {
             left: padding,
-            top: padding,
+            top: prompt_top,
             right: width - padding,
-            bottom: padding + prompt_h,
+            bottom: prompt_top + prompt_h,
         };
         let prompt_brush = CreateSolidBrush(COLORREF(colors.prompt_bg));
         FillRect(hdc, &prompt_rect, prompt_brush);
@@ -988,7 +1202,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                     hdc,
                     &display,
                     padding + scale(6, dpi),
-                    padding + scale(4, dpi),
+                    prompt_top + scale(4, dpi),
                     width - padding * 2 - scale(12, dpi),
                     prompt_h - scale(8, dpi),
                 );
@@ -1001,7 +1215,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                     hdc,
                     &format!("思考中…（{elapsed}s） {query}"),
                     padding + scale(6, dpi),
-                    padding + scale(4, dpi),
+                    prompt_top + scale(4, dpi),
                     width - padding * 2 - scale(12, dpi),
                     prompt_h - scale(8, dpi),
                 );
@@ -1012,7 +1226,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                     hdc,
                     &format!("❯ {prompt}"),
                     padding + scale(6, dpi),
-                    padding + scale(4, dpi),
+                    prompt_top + scale(4, dpi),
                     width - padding * 2 - scale(12, dpi),
                     prompt_h - scale(8, dpi),
                 );
@@ -1028,7 +1242,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                         format!("❯ {query}")
                     },
                     padding + scale(6, dpi),
-                    padding + scale(4, dpi),
+                    prompt_top + scale(4, dpi),
                     width - padding * 2 - scale(12, dpi),
                     prompt_h - scale(8, dpi),
                 );
@@ -1036,7 +1250,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         }
 
         // 中部：状态区（预览 / 错误 / 提示）
-        let mid_top = padding * 2 + prompt_h;
+        let mid_top = prompt_rect.bottom + padding;
         let mid_bottom = mid_top + preview_h;
         match &state.status {
             Status::Editing => {
@@ -1171,12 +1385,93 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
 
 #[cfg(test)]
 mod tests {
-    //! AI 面板纯逻辑层（make_font/paint 不进入测试）：只校验现场没有
-    //! 被泄漏到文本字段中。
+    //! AI 面板纯逻辑层（make_font/paint 不进入测试）。
+    use super::{parse_sse_line, SseEvent};
+
     #[test]
     fn 环境变量名符合约定() {
         // 用户文档与代码统一使用同一个名字；这个名字写进 Misconfigured 提示。
         let declared = "AGNES_API_KEY";
         assert_eq!(declared.len(), 13);
+    }
+
+    #[test]
+    fn sse_delta_累积文本() {
+        let mut acc = String::new();
+        let ev = parse_sse_line(
+            r#"data: {"choices":[{"delta":{"content":"你好"}}]}"#,
+            &mut acc,
+        );
+        assert_eq!(ev, SseEvent::Delta);
+        assert_eq!(acc, "你好");
+        let ev = parse_sse_line(
+            r#"data: {"choices":[{"delta":{"content":"，世界"}}]}"#,
+            &mut acc,
+        );
+        assert_eq!(ev, SseEvent::Delta);
+        assert_eq!(acc, "你好，世界");
+    }
+
+    #[test]
+    fn sse_done_行收尾() {
+        let mut acc = "已有".to_owned();
+        let ev = parse_sse_line("data: [DONE]", &mut acc);
+        assert_eq!(ev, SseEvent::Done);
+        assert_eq!(acc, "已有");
+    }
+
+    #[test]
+    fn sse_空行与非data行_静默跳过() {
+        let mut acc = String::new();
+        assert_eq!(parse_sse_line("", &mut acc), SseEvent::Skip);
+        assert_eq!(parse_sse_line(": comment", &mut acc), SseEvent::Skip);
+        assert_eq!(parse_sse_line("event: message", &mut acc), SseEvent::Skip);
+        assert!(acc.is_empty());
+    }
+
+    #[test]
+    fn sse_坏json_静默跳过() {
+        let mut acc = String::new();
+        // 不合法 JSON：不能让整个流挂掉，跳过这段
+        assert_eq!(
+            parse_sse_line("data: {not-json", &mut acc),
+            SseEvent::Skip
+        );
+        // 合法 JSON 但 choices 为空
+        assert_eq!(
+            parse_sse_line(r#"data: {"choices":[]}"#, &mut acc),
+            SseEvent::Skip
+        );
+        assert!(acc.is_empty());
+    }
+
+    #[test]
+    fn sse_缺delta_静默跳过() {
+        let mut acc = String::new();
+        // role-only 心跳帧（无 content）：跳过
+        assert_eq!(
+            parse_sse_line(
+                r#"data: {"choices":[{"delta":{"role":"assistant"}}]}"#,
+                &mut acc
+            ),
+            SseEvent::Skip
+        );
+        assert!(acc.is_empty());
+    }
+
+    #[test]
+    fn sse_utf8_跨行分割时经由lossy降级到lossy字符() {
+        // 真实读循环走 read_until(b'\n') + from_utf8_lossy：半字节行被补 �，
+        // parse_sse_line 应把它视为 Skip（JSON 不合法）而不是 panic。
+        let mut acc = String::new();
+        // “你”字的完整三字节是 e4 bd a0；这里手动只取前两字节模拟截断
+        let prefix = br#"data: {"choices":[{"delta":{"content":""#;
+        let mut raw: Vec<u8> = prefix.to_vec();
+        raw.extend_from_slice(&[0xe4, 0xbd]); // 截掉最后一字节
+        let line = String::from_utf8_lossy(&raw).into_owned();
+        let ev = parse_sse_line(line.trim_end(), &mut acc);
+        // 含 U+FFFD 的替换字符 → JSON parse 失败 → Skip，且 acc 未被污染
+        assert_eq!(ev, SseEvent::Skip);
+        assert!(acc.is_empty());
     }
 }
