@@ -12,8 +12,10 @@ path = "src/main.rs"
 [dependencies]
 ime-bridge = { path = "../../core/ime-bridge" }
 ime-ipc = { path = "../../core/ime-ipc" }
+shurufa-options = { path = "../../core/options" }
 windows-core = "0.62"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_System_Console",
     "Win32_System_Threading",
 ] }
