@@ -12,7 +12,7 @@ use std::process::Command;
 
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore};
 use serde::{Deserialize, Serialize};
-use shurufa_options::{validate_input_scheme, GeneralSettings, ImeOptions, LogLevel};
+use shurufa_options::{validate_input_scheme, GeneralSettings, ImeOptions, LogLevel, SpeechSettings};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -499,6 +499,61 @@ fn save_general_settings(s: GeneralSettingsDto) -> Result<(), String> {
     .map_err(|error| format!("保存通用设置失败：{error}"))
 }
 
+// ---------------------------------------------------------------------------
+// 通用页 · 语音转写（dev-stub）：独立读写 options.json 的 speech 段，与
+// general 段解耦——save_general_settings 不覆盖它。
+// ---------------------------------------------------------------------------
+
+/// 语音转写读/写模型（通用页"语音转写 (dev-stub)"卡片的 4 个控件）。
+///
+/// `auto_commit_threshold_secs` 是 SpeechSettings 的领域字段（无新片段自动
+/// 收尾秒数），由 STT 引擎消费；本轮 UI 不暴露该控件，DTO 只带回 4 个用户
+/// 可见字段，polish_engine_threshold 保留磁盘现值，避免 UI 把引擎参数清零。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct SpeechDto {
+    enabled: bool,
+    hotkey_enabled: bool,
+    written_style_polish: bool,
+    max_session_secs: u32,
+}
+
+impl From<SpeechSettings> for SpeechDto {
+    fn from(s: SpeechSettings) -> Self {
+        Self {
+            enabled: s.enabled,
+            hotkey_enabled: s.hotkey_enabled,
+            written_style_polish: s.written_style_polish,
+            max_session_secs: s.max_session_secs,
+        }
+    }
+}
+
+#[tauri::command]
+fn get_speech_settings() -> Result<SpeechDto, String> {
+    Ok(shurufa_options::load().speech.into())
+}
+
+#[tauri::command]
+fn save_speech_settings(s: SpeechDto) -> Result<(), String> {
+    // UI 边界校验：30..=600，与前端 input 的 min/max 一致
+    if !(30..=600).contains(&s.max_session_secs) {
+        return Err(format!("最长会话秒数须在 30..=600：{}", s.max_session_secs));
+    }
+    shurufa_options::modify(|current| ImeOptions {
+        speech: SpeechSettings {
+            enabled: s.enabled,
+            hotkey_enabled: s.hotkey_enabled,
+            written_style_polish: s.written_style_polish,
+            max_session_secs: s.max_session_secs,
+            // 引擎参数不被 UI 卡片覆盖：保留磁盘现值
+            ..current.speech.clone()
+        },
+        ..current.clone()
+    })
+    .map(|_| ())
+    .map_err(|error| format!("保存语音转写设置失败：{error}"))
+}
+
 /// 自启开关：复用 shurufa-host 的 `install-autostart` / `uninstall-autostart`
 /// 子命令（HKCU Run `shurufa-host` 键的唯一事实源在 host main.rs）。
 /// 设置中心不直接写注册表，避免与 host 逻辑漂移。
@@ -922,6 +977,8 @@ fn main() {
         save_ime_options,
         get_general_settings,
         save_general_settings,
+        get_speech_settings,
+        save_speech_settings,
         set_autostart,
         typing_stats,
         dictionary_info,

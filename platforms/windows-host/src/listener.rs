@@ -112,6 +112,9 @@ pub fn run(store: ClipboardStore) -> Result<()> {
         let osk_hotkey = crate::onscreen_kbd::register_hotkey();
         println!("虚拟键盘热键：{osk_hotkey}");
         crate::log_line(&format!("虚拟键盘热键：{osk_hotkey}"));
+        let speech_hotkey = crate::speech::register_hotkey();
+        println!("语音转写热键：{speech_hotkey}");
+        crate::log_line(&format!("语音转写热键：{speech_hotkey}"));
 
             let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -136,6 +139,10 @@ pub fn run(store: ClipboardStore) -> Result<()> {
                 }
                 if id == crate::onscreen_kbd::HOTKEY_ID {
                     crate::onscreen_kbd::toggle();
+                    continue;
+                }
+                if id == crate::speech::HOTKEY_ID {
+                    crate::speech::toggle();
                     continue;
                 }
             }

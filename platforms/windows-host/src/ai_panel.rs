@@ -716,6 +716,19 @@ fn commit_draft() {
 }
 
 unsafe fn send_ctrl_v() {
+    send_ctrl_v_impl()
+}
+
+/// 由 speech 模块调用（同一 crate 内部）。
+pub(crate) unsafe fn send_ctrl_v_external() {
+    send_ctrl_v_impl()
+}
+
+fn send_ctrl_v_impl() {
+    unsafe { send_ctrl_v_impl_inner() }
+}
+
+unsafe fn send_ctrl_v_impl_inner() {
     fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
         INPUT {
             r#type: INPUT_KEYBOARD,

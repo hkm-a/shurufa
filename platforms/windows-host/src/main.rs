@@ -11,6 +11,7 @@ mod listener;
 mod onscreen_kbd;
 mod panel;
 mod paste;
+mod speech;
 mod supervis;
 mod sync;
 #[cfg(debug_assertions)]

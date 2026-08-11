@@ -128,6 +128,9 @@ let skinPresets = [];
 let skinPresetBanner = null;
 // 通用页（通用 6 字段）；null=未加载/读取失败（表单全部禁用）
 let generalSettings = null;
+// 语音转写卡片（wave 4 新挂在通用页里；speechSettings 与 general 完全独立
+// 存储 / 独立 Tauri 命令），null=未加载/读取失败
+let speechSettings = null;
 // 输入方案页（wave 4 新增）：null=未加载；list=后端 list_input_schemes 返回的 4 项
 let schemeList = null;
 let schemeCurrent = "pinyin";
@@ -370,6 +373,37 @@ function generalPage() {
           <label class="setting-toggle"><div><h3>Ctrl+Shift+W AI 帮写</h3><p>打开 AI 帮写面板</p></div></label>
           <label class="switch"><input type="checkbox" data-general-field="enable_ai_hotkey" ${g.enable_ai_hotkey ? "checked" : ""} /><span></span></label>
         </div>
+      </article>
+
+      <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon coral"><i data-lucide="mic-2"></i></div><div><h3>语音转写 <span class="pill pill-dev">dev-stub</span></h3><p>Ctrl+Shift+S · 当前为 stub（固定文字"你好，世界。"）；真实引擎 wave 6 接入</p></div></div>
+        ${!speechSettings ? `<div class="setting-row"><div class="row-icon dim"><i data-lucide="mic-2"></i></div><div><h3>语音设置读取中…</h3><p>请稍候或检查后台服务</p></div></div>` : `
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="power"></i></div>
+          <label class="setting-toggle"><div><h3>启用语音转写</h3><p>options.json speech.enabled — 关则热键不注册</p></div></label>
+          <label class="switch"><input type="checkbox" data-speech-field="enabled" ${speechSettings.enabled ? "checked" : ""} /><span></span></label>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="keyboard"></i></div>
+          <label class="setting-toggle"><div><h3>Ctrl+Shift+S 唤起</h3><p>options.json speech.hotkey_enabled</p></div></label>
+          <label class="switch"><input type="checkbox" data-speech-field="hotkey_enabled" ${speechSettings.hotkey_enabled ? "checked" : ""} /><span></span></label>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="wand-2"></i></div>
+          <label class="setting-toggle"><div><h3>书面语化（agnes-2.5-flash）</h3><p>把口语转写润色为书面语；失败回退到原文</p></div></label>
+          <label class="switch"><input type="checkbox" data-speech-field="written_style_polish" ${speechSettings.written_style_polish ? "checked" : ""} /><span></span></label>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="timer"></i></div>
+          <div>
+            <h3>单次会话最长 <output id="speech-max-label">${speechSettings.max_session_secs}</output> 秒</h3>
+            <input type="range" min="30" max="600" step="30" value="${speechSettings.max_session_secs}" data-speech-field="max_session_secs" />
+            <p class="field-note">到点即自动收尾并提交当前累计文本</p>
+          </div>
+        </div>`}
       </article>
     </section>`;
 }
@@ -1040,6 +1074,39 @@ function render() {
         });
     };
   });
+  // 语音转写：change 即存（同 general 模型，独立 Tauri 命令）
+  app.querySelectorAll("[data-speech-field]").forEach((input) => {
+    const key = input.dataset.speechField;
+    if (!key) return;
+    if (input.type === "range") {
+      input.addEventListener("input", () => {
+        const label = document.querySelector("#speech-max-label");
+        if (label) label.textContent = input.value;
+      });
+    }
+    input.onchange = () => {
+      if (!speechSettings || input.disabled) return;
+      let value;
+      if (input.type === "checkbox") {
+        value = input.checked;
+      } else if (input.type === "range") {
+        value = Number(input.value);
+        if (!Number.isFinite(value)) return;
+      } else {
+        return;
+      }
+      const next = { ...speechSettings, [key]: value };
+      invoke("save_speech_settings", { s: next })
+        .then(() => {
+          speechSettings = next;
+          showToast("已保存");
+        })
+        .catch((error) => {
+          if (input.type === "checkbox") input.checked = !input.checked;
+          showToast(String(error), true);
+        });
+    };
+  });
   // 方案页：radio 点击 → 立即写入 options.json → 绿 banner（失败红色 + 回滚选中态）
   app.querySelectorAll("input[data-scheme-id]").forEach((input) => {
     input.onchange = () => {
@@ -1098,6 +1165,10 @@ async function refreshGeneralSettings() {
   generalSettings = await invoke("get_general_settings");
 }
 
+async function refreshSpeechSettings() {
+  speechSettings = await invoke("get_speech_settings");
+}
+
 async function refreshDictionaryInfo() {
   try {
     dictionaryInfo = await invoke("dictionary_info");
@@ -1140,8 +1211,10 @@ async function navigateTo(page) {
   } else if (page === "general") {
     try {
       await refreshGeneralSettings();
+      await refreshSpeechSettings();
     } catch (error) {
       generalSettings = null;
+      speechSettings = null;
       showToast(String(error), true);
     }
   } else if (page === "scheme") {
