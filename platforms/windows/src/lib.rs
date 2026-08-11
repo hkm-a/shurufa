@@ -7,6 +7,7 @@
 
 mod candidate_window;
 mod candidate_window_d2d;
+mod candidate_window_dcomp;
 mod composition;
 mod factory;
 mod ipc_client;

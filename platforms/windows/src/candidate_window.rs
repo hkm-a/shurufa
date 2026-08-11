@@ -38,6 +38,59 @@ use ime_ipc::Context;
 
 use crate::skin::{self, ShadowShell, Skin};
 
+// ---------------------------------------------------------------------------
+// 渲染后端瀑布链：DComp → D2D → GDI
+// ---------------------------------------------------------------------------
+
+/// 候选窗渲染后端枚举。选路由 `backend_kind()` 懒解析：
+/// 1. probe DComp（D3D11 + IDXGIFactory2 + DCompositionCreateDevice 全通）→ DComp
+/// 2. D2D try_init 成功 → D2D
+/// 3. 否则 → Gdi（纯软件绘制，恒可用，绝无 panic）
+///
+/// 与模块内 `Backend::{Pending,Ready,Failed}`
+/// 状态机互补：那个管"是否处于 ready"，这个管"走哪条路径"。
+/// 每帧 WM_PAINT 先取 kind；当帧渲染失败（返回 false）时当场降级到下一级重画，
+/// **不在状态机里永久打 Failed 标记**——TDR/驱动重置由 D2D/DComp 各自的
+/// notify_resize + 惰性重建吸收，不至于把整会话钉死在低档位。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendKind {
+    /// DComp flip-model swapchain + premultiplied 圆角纹理（wave 4 新增）
+    DComp,
+    /// 既有 D2D 1.1 + DirectWrite（wave 1 落地）
+    D2D,
+    /// 兜底 GDI（legacy；布局/测量零漂移）
+    Gdi,
+}
+
+thread_local! {
+    /// 每个宿主 UI 线程解析一次；不在 wnd_proc 里反复 D3D11CreateDevice。
+    static BACKEND_KIND: std::cell::Cell<Option<BackendKind>> = const { std::cell::Cell::new(None) };
+}
+
+/// 选路（懒解析 + thread-local 缓存）。首次调用即按 `probe_dcomp_available` → `candidate_window_d2d::is_enabled` 定档。
+pub(crate) fn backend_kind() -> BackendKind {
+    BACKEND_KIND.with(|c| {
+        if let Some(k) = c.get() {
+            return k;
+        }
+        let k = if crate::candidate_window_dcomp::probe_dcomp_available() {
+            BackendKind::DComp
+        } else if crate::candidate_window_d2d::is_enabled() {
+            BackendKind::D2D
+        } else {
+            BackendKind::Gdi
+        };
+        c.set(Some(k));
+        k
+    })
+}
+
+/// 供测试/调试覆盖选路结果（正常生产路径不调）。
+#[cfg(test)]
+fn set_backend_kind_for_test(k: BackendKind) {
+    BACKEND_KIND.with(|c| c.set(Some(k)));
+}
+
 const CLASS_NAME: PCWSTR = w!("ShurufaCandidateWindow");
 
 // 96 DPI 下的基准尺寸，运行期按窗口实际 DPI 缩放
@@ -260,8 +313,9 @@ impl CandidateUi {
             .parent()
             .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
         let _ = skin::load_with(|| extra);
-        // 预热 D2D 工厂（< 5ms）；失败则本进程整段会话走 GDI 路径
+        // 预热 GPU 工厂（< 5ms）；失败则整段会话降级，不 panic
         crate::candidate_window_d2d::try_init();
+        crate::candidate_window_dcomp::try_init();
         CandidateUi {
             hwnd: None,
             shadow: ShadowShell::new(),
@@ -467,8 +521,9 @@ impl CandidateUi {
                 let _ = DestroyWindow(hwnd);
             }
         }
-        // 释放 D2D target/brushes（HWND 已死，引用随之失效）
+        // 释放 GPU target/brushes（HWND 已死，引用随之失效）
         crate::candidate_window_d2d::shutdown();
+        crate::candidate_window_dcomp::shutdown();
     }
 }
 
@@ -480,38 +535,58 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         value if value == WM_PAINT => {
-            // 调度：D2D 就绪则走 GPU 帧；失败/未就绪当帧落 GDI。
-            // 两条路径共用同一份 thread-local PaintData 布局槽位，视觉 1:1。
-            let try_d2d = make_paint_view()
-                .map(|view| crate::candidate_window_d2d::paint(
-                    hwnd,
-                    &client_rect(hwnd),
-                    &view,
-                ))
-                .unwrap_or(false);
-            if !try_d2d {
-                // GDI 路径（首轮 / Failed / TDR 未完成 / 任何内部错误）
+            // 调度：瀑布链 DComp → D2D → GDI。当帧失败 (false) 立刻落下一级
+            // 重画，画面不丢；三条路径共用同一份 thread-local PaintData 布局槽位，
+            // 视觉 1:1。档位缓存在 thread-local BACKEND_KIND，不在窗口过程里
+            // 反复探测硬件。
+            let view = make_paint_view();
+            let drawn = match backend_kind() {
+                BackendKind::DComp => view
+                    .as_ref()
+                    .map(|v| crate::candidate_window_dcomp::paint(hwnd, &client_rect(hwnd), v))
+                    .unwrap_or(false),
+                BackendKind::D2D => view
+                    .as_ref()
+                    .map(|v| crate::candidate_window_d2d::paint(hwnd, &client_rect(hwnd), v))
+                    .unwrap_or(false),
+                BackendKind::Gdi => {
+                    // GDI 路径：首轮 / Failed / TDR 未完成 / 任何内部错误
+                    let mut ps = PAINTSTRUCT::default();
+                    let hdc = BeginPaint(hwnd, &mut ps);
+                    paint(hdc, &ps.rcPaint);
+                    let _ = EndPaint(hwnd, &ps);
+                    true
+                }
+            };
+            if drawn && backend_kind() != BackendKind::Gdi {
+                // GPU 路径已完成 BeginDraw/EndDraw；仍须 ValidateRect 清 dirty 区
+                let _ = ValidateRect(Some(hwnd), None);
+            } else if !drawn {
+                // 当帧 GPU 故障：立刻落 GDI 重画一遍（与既有回退语义一致）
                 let mut ps = PAINTSTRUCT::default();
                 let hdc = BeginPaint(hwnd, &mut ps);
                 paint(hdc, &ps.rcPaint);
                 let _ = EndPaint(hwnd, &ps);
-            } else {
-                // D2D 已完成 BeginDraw/EndDraw；仍须 ValidateRect 清 dirty 区
                 let _ = ValidateRect(Some(hwnd), None);
             }
             LRESULT(0)
         }
         value if value == WM_SIZE => {
-            // 本帧起 target 尺寸失配：标记失效，下一帧按 GetClientRect 重建
+            // 本帧起 swapchain/target 尺寸失配：标记失效，下一帧按
+            // GetClientRect 重建（GDI 无所谓，自动按 BeginPaint 走）
             crate::candidate_window_d2d::notify_resize();
+            crate::candidate_window_dcomp::notify_resize();
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         value if value == WM_DPICHANGED => {
-            crate::candidate_window_d2d::notify_resize(); // DPI 失配在 paint 内 SetDpi
+            // DPI 失配：target 与字形都要重建/重测
+            crate::candidate_window_d2d::notify_resize();
+            crate::candidate_window_dcomp::notify_resize();
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         value if value == WM_DESTROY => {
             crate::candidate_window_d2d::shutdown();
+            crate::candidate_window_dcomp::shutdown();
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         value if value == WM_LBUTTONDOWN => {
@@ -530,6 +605,7 @@ unsafe extern "system" fn wnd_proc(
                 unsafe {
                     skin::apply_appearance(hwnd, &skin);
                     crate::candidate_window_d2d::notify_skin_changed();
+                    crate::candidate_window_dcomp::notify_skin_changed();
                     let _ = InvalidateRect(Some(hwnd), None, true);
                 }
             }
@@ -757,4 +833,17 @@ unsafe fn draw_line(hdc: HDC, text: &str, left: i32, top: i32, right: i32, heigh
         &mut rect,
         DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_VCENTER,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BackendKind;
+
+    /// 选路器可被显式改写并被 backend_kind() 速读出来。
+    /// 用例固定 Gdi（最安全档），只验证 override 通道在。
+    #[test]
+    fn backend_kind_override_round_trip() {
+        super::set_backend_kind_for_test(BackendKind::Gdi);
+        assert_eq!(super::backend_kind(), BackendKind::Gdi);
+    }
 }
