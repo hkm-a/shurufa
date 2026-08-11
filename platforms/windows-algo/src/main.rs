@@ -30,6 +30,30 @@ fn log(msg: &str) {
 // 纯判定函数 input_scheme_differs 的测试见 platforms/windows/src/service.rs。
 // ---------------------------------------------------------------------------
 
+mod mru;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+static MRU_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// 供 service 调用：按会话的 raw composition 作 key 做 MRU boost。
+/// `pinyin` 由调用方提供；当前会话层由 ime-ipc 上游（TSF 宿主）记录，
+/// 本服务仅按上下文里"已选"回调『记录』。MRU 查询在候选返回后做。
+fn mru_store() -> &'static std::sync::Mutex<mru::MruStore> {
+    static INSTANCE: std::sync::OnceLock<std::sync::Mutex<mru::MruStore>> = std::sync::OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::Mutex::new(mru::MruStore::load()))
+}
+
+/// 处理一个候选 list 并返回按 MRU 提升后的新列表（不改 librime 原序的剩余部分）。
+fn mru_boost_candidates(pinyin: &str, candidates: Vec<String>) -> Vec<String> {
+    mru_store().lock().unwrap_or_else(|p| p.into_inner()).boost(pinyin, candidates)
+}
+
+/// 处理一次提交：把选中的词记入 MRU。
+fn mru_record_commit(pinyin: &str, committed: &str) {
+    mru_store().lock().unwrap_or_else(|p| p.into_inner()).record(pinyin, committed);
+    let _ = mru_store().lock().unwrap_or_else(|p| p.into_inner()).save();
+}
+
 /// 比对 options.json 前后两份快照的 input_scheme 是否不同。同一份判定逻辑
 /// 同时被 TSF (service.rs) 与 algo (此处) 消费；本函数本身留在 algo 是因为
 /// algo 是 wave 5 真实 redeploy 的宿主，TSF 只是日志转发。
