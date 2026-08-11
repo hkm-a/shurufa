@@ -27,6 +27,81 @@ pub struct ImeOptions {
     /// CapsLock 切到英文直输（默认 true；按 Sogou/微习惯）
     #[serde(default = "t")]
     pub capslock_to_english: bool,
+    /// 通用页设置（自启/日志级别/历史上限/快捷键开关）；老版本缺字段取默认
+    #[serde(default)]
+    pub general: GeneralSettings,
+}
+
+/// 设置中心"通用"页字段一览。 serde 双端兼容：老 JSON 无 `general` 键时
+/// 整体回退 [`GeneralSettings::default`]。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GeneralSettings {
+    /// 登录自启（HKCU Run 键，名字 shurufa-host）
+    #[serde(default)]
+    pub autostart: bool,
+    /// 日志级别：Info / Debug / Trace
+    #[serde(default)]
+    pub log_level: LogLevel,
+    /// 皮肤目录覆盖（保留字段：当前由 SSOT 决定，UI 只读展示）
+    #[serde(default)]
+    pub skin_dir_override: Option<String>,
+    /// 历史最大条数（50..=2000，保存时钳位）
+    #[serde(default = "default_history_max")]
+    pub history_max_entries: u32,
+    /// Ctrl+Shift+R 划词润色热键开关（listener.rs 接线预留，见 wave 4）
+    #[serde(default = "t")]
+    pub enable_polish_hotkey: bool,
+    /// Ctrl+Shift+W AI 帮写热键开关（listener.rs 接线预留，见 wave 4）
+    #[serde(default = "t")]
+    pub enable_ai_hotkey: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum LogLevel {
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
+fn default_history_max() -> u32 {
+    500
+}
+
+/// 历史最大条数允许区间
+pub const HISTORY_MAX_MIN: u32 = 50;
+pub const HISTORY_MAX_LIMIT: u32 = 2000;
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        Self {
+            autostart: false,
+            log_level: LogLevel::Info,
+            skin_dir_override: None,
+            history_max_entries: default_history_max(),
+            enable_polish_hotkey: true,
+            enable_ai_hotkey: true,
+        }
+    }
+}
+
+impl GeneralSettings {
+    /// 钳位到合法区间；供保存路径统一调用，杜绝 UI/手写 JSON 越界。
+    pub fn clamped(mut self) -> Self {
+        self.history_max_entries = self
+            .history_max_entries
+            .clamp(HISTORY_MAX_MIN, HISTORY_MAX_LIMIT);
+        self
+    }
+}
+
+/// wave 4 预留：listener.rs 读取热键开关的统一入口。
+/// 当前 listener.rs 尚未接线，调用方先在 wave 4 接入 options 热重载
+/// （windows/src/service.rs 已有 2 秒 mtime 轮询的 refresh_options）
+/// 即可热生效；本函数放这里避免 listener 再次拼路径。
+pub fn hotkey_gates() -> (bool, bool) {
+    let g = load().general;
+    (g.enable_polish_hotkey, g.enable_ai_hotkey)
 }
 
 fn t() -> bool {
@@ -40,6 +115,7 @@ impl Default for ImeOptions {
             shift_space_full_shape: true,
             ctrl_period_ascii_punct: true,
             capslock_to_english: true,
+            general: GeneralSettings::default(),
         }
     }
 }
@@ -457,6 +533,232 @@ pub mod stats {
 /// stats 文件路径（供 stats 模块内部使用）。
 fn stats_dir_path() -> PathBuf {
     app_dir().join("stats.json")
+}
+
+// ---------------------------------------------------------------------------
+// 剪贴板收藏（clip-favorites.json）
+// ---------------------------------------------------------------------------
+
+/// 收藏类别：文本 / 图片 / 文件。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ClipFavoriteKind {
+    Text,
+    Image,
+    File,
+}
+
+/// 单条收藏。`content_text` 只在 Text 时有值；`path` 在 Image/File 时有值。
+/// `id` 是进程内单调递增计数（由 [`favorites::add_favorite`] 分配），不做主键
+/// 之外的任何语义。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClipFavorite {
+    pub id: u64,
+    pub kind: ClipFavoriteKind,
+    #[serde(default)]
+    pub content_text: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    pub pinned_at_ms: i64,
+    #[serde(default)]
+    pub source_peer: Option<String>,
+}
+
+/// 收藏文件整体（clip-favorites.json）。老版本缺 `next_id` / `entries` 时
+/// 一律回退默认，保持向后兼容。
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClipFavorites {
+    /// 单调递增 id 计数器：下一个分配的 id；只增不减，删除条目后不复用。
+    #[serde(default)]
+    pub next_id: u64,
+    #[serde(default)]
+    pub entries: Vec<ClipFavorite>,
+}
+
+pub mod favorites {
+    use super::{ClipFavorite, ClipFavorites};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+
+    fn path() -> PathBuf {
+        crate::app_dir().join("clip-favorites.json")
+    }
+
+    fn load_from(p: &Path) -> ClipFavorites {
+        std::fs::read(p)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_to(p: &Path, favs: &ClipFavorites) -> std::io::Result<()> {
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(favs)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        // 原子替换：先写 .tmp 再 rename，避免崩溃留下半截文件
+        let tmp = p.with_extension("json.tmp");
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, p)?;
+        Ok(())
+    }
+
+    /// 进程内串行化：面板与设置中心可能在同一进程（受测宿主）里并发改，
+    /// 先把同进程并发掐掉；跨进程仍靠文件原子替换兜底。
+    static LOCAL: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        LOCAL
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn load_favorites() -> ClipFavorites {
+        clip_load_from(&path())
+    }
+
+    pub fn save_favorites(favs: &ClipFavorites) -> std::io::Result<()> {
+        clip_save_to(&path(), favs)
+    }
+
+    /// 追加一条收藏：id 由本函数分配（取 `next_id` 后自增）。
+    /// `pinned_at_ms` / `source_peer` 由调用方按业务需要填充。
+    pub fn add_favorite(mut fav: ClipFavorite) -> std::io::Result<ClipFavorite> {
+        let _guard = lock();
+        let p = path();
+        let mut favs = load_from(&p);
+        fav.id = favs.next_id;
+        favs.next_id = favs.next_id.saturating_add(1);
+        favs.entries.push(fav.clone());
+        save_to(&p, &favs)?;
+        Ok(fav)
+    }
+
+    pub fn remove_favorite(id: u64) -> std::io::Result<bool> {
+        let _guard = lock();
+        let p = path();
+        let mut favs = load_from(&p);
+        let before = favs.entries.len();
+        favs.entries.retain(|f| f.id != id);
+        if favs.entries.len() == before {
+            return Ok(false);
+        }
+        save_to(&p, &favs)?;
+        Ok(true)
+    }
+
+    /// 置顶开关语义：命中条目把 `pinned_at_ms` 取负即取消收藏（保留记录
+    /// 供 UI 灰显），再翻回正数即恢复；绝对值始终是首次收藏的时间戳。
+    /// 返回切换后的新状态（true = 已收藏）。未找到 id 返回 None。
+    pub fn toggle_pin_favorite(id: u64) -> std::io::Result<Option<bool>> {
+        let _guard = lock();
+        let p = path();
+        let mut favs = load_from(&p);
+        let Some(entry) = favs.entries.iter_mut().find(|f| f.id == id) else {
+            return Ok(None);
+        };
+        // 0 兜底为 1，保证符号位一定能翻转
+        let base = if entry.pinned_at_ms == 0 {
+            1
+        } else {
+            entry.pinned_at_ms.abs()
+        };
+        entry.pinned_at_ms = if entry.pinned_at_ms > 0 { -base } else { base };
+        let now_pinned = entry.pinned_at_ms > 0;
+        save_to(&p, &favs)?;
+        Ok(Some(now_pinned))
+    }
+
+    /// 历史面板 / 设置中心共用的读取帮助：把磁盘文件暴露在外的最小面。
+    pub fn clip_load_from(p: &Path) -> ClipFavorites {
+        load_from(p)
+    }
+
+    pub fn clip_save_to(p: &Path, favs: &ClipFavorites) -> std::io::Result<()> {
+        save_to(p, favs)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::{ClipFavorite, ClipFavoriteKind};
+        use std::path::PathBuf;
+
+        fn temp_dir(name: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "shurufa-options-test-fav-{}-{}",
+                name,
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        fn sample(id: u64, text: &str) -> ClipFavorite {
+            ClipFavorite {
+                id,
+                kind: ClipFavoriteKind::Text,
+                content_text: Some(text.to_owned()),
+                path: None,
+                pinned_at_ms: 1_700_000_000_000,
+                source_peer: None,
+            }
+        }
+
+        #[test]
+        fn 收藏可往返序列化() {
+            let dir = temp_dir("roundtrip");
+            let p = dir.join("clip-favorites.json");
+            let favs = ClipFavorites {
+                next_id: 2,
+                entries: vec![sample(0, "hello"), sample(1, "世界")],
+            };
+            clip_save_to(&p, &favs).unwrap();
+            let back = clip_load_from(&p);
+            assert_eq!(back, favs);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn 单调id在追加时自增且不复用() {
+            // 直接用内存态驱动 add 的分配逻辑，避开写盘，便于隔离验证。
+            let mut favs = ClipFavorites::default();
+            for expected in 0..3_u64 {
+                let mut fav = sample(u64::MAX, "x");
+                fav.id = favs.next_id;
+                assert_eq!(fav.id, expected);
+                favs.next_id = favs.next_id.saturating_add(1);
+                favs.entries.push(fav);
+            }
+            // 删除中段后 next_id 不回退
+            favs.entries.retain(|f| f.id != 1);
+            assert_eq!(favs.next_id, 3);
+        }
+
+        #[test]
+        fn 置顶开关持久化且可逆() {
+            let dir = temp_dir("pin-toggle");
+            let p = dir.join("clip-favorites.json");
+            let favs = ClipFavorites {
+                next_id: 1,
+                entries: vec![sample(0, "a")],
+            };
+            clip_save_to(&p, &favs).unwrap();
+
+            // 翻转一次：pinned_at_ms 应变负；再翻应回正
+            let mut state = clip_load_from(&p);
+            let e = &mut state.entries[0];
+            let original = e.pinned_at_ms;
+            e.pinned_at_ms = -original;
+            clip_save_to(&p, &state).unwrap();
+            let re = clip_load_from(&p);
+            assert!(re.entries[0].pinned_at_ms < 0);
+            assert_eq!(re.entries[0].pinned_at_ms, -original);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 }
 
 // 说明：stats 模块的 path_in 与顶层的 path_in 各自返回完整文件路径；

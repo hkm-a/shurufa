@@ -67,6 +67,7 @@ const controlCenterIcons = {
 
 const pages = [
   { id: "workspace", label: "工作台", icon: "layout-dashboard" },
+  { id: "general", label: "通用", icon: "settings-2" },
   { id: "input", label: "输入", icon: "keyboard" },
   { id: "stats", label: "统计", icon: "chart-column" },
   { id: "history", label: "历史", icon: "clipboard-list" },
@@ -124,6 +125,8 @@ let skinState = { loaded: false, content: "", source: "none", user_path: "", dir
 // 预设皮肤列表（schemas/skins-index.json）；banner 为一次性成功/失败提示
 let skinPresets = [];
 let skinPresetBanner = null;
+// 通用页（通用 6 字段）；null=未加载/读取失败（表单全部禁用）
+let generalSettings = null;
 
 const app = document.querySelector("#app");
 
@@ -290,6 +293,83 @@ function settingsPage() {
 }
 
 // ---------------------------------------------------------------------------
+// 通用页：自启 / 日志级别 / 历史条数 / 划词润色 + AI 帮写热键开关
+// 皮肤目录走 SSOT（候选窗皮肤文件），此字段保留给后续版本——只读展示。
+// ---------------------------------------------------------------------------
+
+function generalPage() {
+  if (!generalSettings) {
+    return `
+      <section class="page settings-page">
+        <header class="page-header"><div><p class="eyebrow">GENERAL</p><h1>通用</h1></div></header>
+        <article class="setting-panel"><div class="setting-row"><div class="row-icon dim"><i data-lucide="settings-2"></i></div><div><h3>通用设置</h3><p>读取中或暂不可用…</p></div></div></article>
+      </section>`;
+  }
+  const g = generalSettings;
+  const logOptions = ["info", "debug", "trace"]
+    .map((lv) => `<option value="${lv}" ${g.log_level === lv ? "selected" : ""}>${lv === "info" ? "信息" : lv === "debug" ? "调试" : "跟踪"}</option>`)
+    .join("");
+  return `
+    <section class="page settings-page">
+      <header class="page-header"><div><p class="eyebrow">GENERAL</p><h1>通用</h1></div></header>
+
+      <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="play"></i></div><div><h3>启动</h3><p>登录时自动启动后台服务</p></div></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="circle-dot"></i></div>
+          <label class="setting-toggle"><div><h3>登录自启</h3><p>勾选后写入 HKCU Run 键（shurufa-host supervise）</p></div></label>
+          <label class="switch"><input type="checkbox" data-general-field="autostart" ${g.autostart ? "checked" : ""} /><span></span></label>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="info"></i></div>
+          <div><h3>日志级别</h3><p>跟踪级别最详细，日志文件增长更快</p></div>
+          <div class="row-side"><select data-general-field="log_level">${logOptions}</select></div>
+        </div>
+      </article>
+
+      <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon coral"><i data-lucide="palette"></i></div><div><h3>皮肤</h3><p>皮肤目录由 SSOT 决定，此字段保留给后续版本</p></div></div>
+        <div class="setting-row">
+          <div class="row-icon dim"><i data-lucide="folder-open"></i></div>
+          <div>
+            <h3>皮肤目录覆盖</h3>
+            <input type="text" data-general-field="skin_dir_override" value="${escapeHtml(g.skin_dir_override ?? "")}" placeholder="（未设置）" disabled />
+            <p class="field-note">当前版本由 SSOT 文件（%APPDATA%\\shurufa\\shurufa-skin.json）决定</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon teal"><i data-lucide="history"></i></div><div><h3>历史</h3><p>剪贴板历史上限（条）</p></div></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="clipboard-list"></i></div>
+          <div>
+            <h3>最大条数 <output id="general-history-max-label">${g.history_max_entries}</output></h3>
+            <input type="range" min="50" max="2000" step="10" value="${g.history_max_entries}" data-general-field="history_max_entries" />
+            <p class="field-note">范围 50 - 2000，超出将被钳到边界</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="keyboard"></i></div><div><h3>快捷键</h3><p>面板唤起热键（取消勾选即不再注册，wave 4 起生效）</p></div></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="sparkles"></i></div>
+          <label class="setting-toggle"><div><h3>Ctrl+Shift+R 划词润色</h3><p>选中文本后调 AI 润色</p></div></label>
+          <label class="switch"><input type="checkbox" data-general-field="enable_polish_hotkey" ${g.enable_polish_hotkey ? "checked" : ""} /><span></span></label>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="sparkles"></i></div>
+          <label class="setting-toggle"><div><h3>Ctrl+Shift+W AI 帮写</h3><p>打开 AI 帮写面板</p></div></label>
+          <label class="switch"><input type="checkbox" data-general-field="enable_ai_hotkey" ${g.enable_ai_hotkey ? "checked" : ""} /><span></span></label>
+        </div>
+      </article>
+    </section>`;
+}
+
+// ---------------------------------------------------------------------------
 // 统计页：3 张合计卡 + 7 天柱状图 + 30 天折线图（纯手写 SVG，不引任何图表库）。
 // 数据来自后端 typing_stats 命令：last7/last30 均为 (YYYY-MM-DD, 字数) 升序定长序列。
 // ---------------------------------------------------------------------------
@@ -414,6 +494,7 @@ function statsPage() {
 
 function pageTemplate() {
   switch (activePage) {
+    case "general": return generalPage();
     case "input": return inputPage();
     case "stats": return statsPage();
     case "history": return historyPage();
@@ -841,6 +922,58 @@ function render() {
         });
     };
   });
+  // 通用页：change 即存。range 先在 label 上实时回显，存储仍是 change 时一次提交。
+  app.querySelectorAll("[data-general-field]").forEach((input) => {
+    const key = input.dataset.generalField;
+    if (!key) return;
+    // range 实时更新旁边的 output 文本（不打扰正在拖动的手）
+    if (input.type === "range") {
+      input.addEventListener("input", () => {
+        const label = document.querySelector("#general-history-max-label");
+        if (label) label.textContent = input.value;
+      });
+    }
+    input.onchange = () => {
+      if (!generalSettings || input.disabled) return;
+      let value;
+      if (input.type === "checkbox") {
+        value = input.checked;
+      } else if (input.type === "range") {
+        value = Number(input.value);
+        if (!Number.isFinite(value)) return;
+      } else if (input.tagName === "SELECT") {
+        value = String(input.value);
+      } else if (input.type === "text") {
+        value = input.value === "" ? null : String(input.value);
+      } else {
+        return;
+      }
+      const next = { ...generalSettings, [key]: value };
+      // autostart 需要先改注册表，再回写 options.json；后端 set_autostart 一次做完。
+      if (key === "autostart") {
+        invoke("set_autostart", { enabled: next.autostart })
+          .then(() => {
+            generalSettings = next;
+            showToast("已保存");
+          })
+          .catch((error) => {
+            input.checked = !input.checked;
+            showToast(String(error), true);
+          });
+        return;
+      }
+      invoke("save_general_settings", { s: next })
+        .then(() => {
+          generalSettings = next;
+          showToast("已保存");
+        })
+        .catch((error) => {
+          // 失败时回滚 UI
+          if (input.type === "checkbox") input.checked = !input.checked;
+          showToast(String(error), true);
+        });
+    };
+  });
   // 皮肤编辑器：只更新脏标记（不重渲染，否则丢焦点 / 重写光标）。
   const skinEditor = app.querySelector("#skin-editor");
   if (skinEditor) {
@@ -866,6 +999,10 @@ async function refreshHistory() {
 
 async function refreshImeOptions() {
   imeOptions = await invoke("ime_options");
+}
+
+async function refreshGeneralSettings() {
+  generalSettings = await invoke("get_general_settings");
 }
 
 async function refreshDictionaryInfo() {
@@ -905,6 +1042,13 @@ async function navigateTo(page) {
       await refreshImeOptions();
     } catch (error) {
       imeOptions = null;
+      showToast(String(error), true);
+    }
+  } else if (page === "general") {
+    try {
+      await refreshGeneralSettings();
+    } catch (error) {
+      generalSettings = null;
       showToast(String(error), true);
     }
   } else if (page === "skin") {

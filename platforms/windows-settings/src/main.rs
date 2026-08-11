@@ -12,7 +12,7 @@ use std::process::Command;
 
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore};
 use serde::{Deserialize, Serialize};
-use shurufa_options::ImeOptions;
+use shurufa_options::{GeneralSettings, ImeOptions, LogLevel};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -389,11 +389,15 @@ impl From<ImeOptions> for ImeOptionsDto {
 
 impl From<ImeOptionsDto> for ImeOptions {
     fn from(d: ImeOptionsDto) -> Self {
+        // save_ime_options 路径已经改走 modify()（见 save_ime_options 现在的实现），
+        // 这里的 ..Default::default() 只兜底"旧个旧 DTO 反序列化"场景；真实的
+        // general 字段不会经过此 From 落到磁盘。
         Self {
             shift_switch_cn_en: d.shift_switch_cn_en,
             shift_space_full_shape: d.shift_space_full_shape,
             ctrl_period_ascii_punct: d.ctrl_period_ascii_punct,
             capslock_to_english: d.capslock_to_english,
+            ..ImeOptions::default()
         }
     }
 }
@@ -405,7 +409,109 @@ fn ime_options() -> ImeOptionsDto {
 
 #[tauri::command]
 fn save_ime_options(opts: ImeOptionsDto) -> Result<(), String> {
-    shurufa_options::save(&opts.into()).map_err(|error| format!("保存输入选项失败：{error}"))
+    // 走 modify 而非 save：只覆盖 4 个热键开关，磁盘上的 general 等其他字段原样保留。
+    shurufa_options::modify(|current| ImeOptions {
+        shift_switch_cn_en: opts.shift_switch_cn_en,
+        shift_space_full_shape: opts.shift_space_full_shape,
+        ctrl_period_ascii_punct: opts.ctrl_period_ascii_punct,
+        capslock_to_english: opts.capslock_to_english,
+        ..current.clone()
+    })
+    .map(|_| ())
+    .map_err(|error| format!("保存输入选项失败：{error}"))
+}
+
+// ---------------------------------------------------------------------------
+// 通用页（自启 / 日志 / 历史上限 / 快捷键开关）
+// ---------------------------------------------------------------------------
+
+/// 通用页读模型；与 `GeneralSettings` 一一对应，但提供 Tauri 偏好的扁平形状。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct GeneralSettingsDto {
+    autostart: bool,
+    /// "info" | "debug" | "trace"，小写以匹配前端 option value
+    log_level: String,
+    skin_dir_override: Option<String>,
+    history_max_entries: u32,
+    enable_polish_hotkey: bool,
+    enable_ai_hotkey: bool,
+}
+
+impl From<GeneralSettings> for GeneralSettingsDto {
+    fn from(g: GeneralSettings) -> Self {
+        let log_level = match g.log_level {
+            LogLevel::Info => "info",
+            LogLevel::Debug => "debug",
+            LogLevel::Trace => "trace",
+        }
+        .to_owned();
+        Self {
+            autostart: g.autostart,
+            log_level,
+            skin_dir_override: g.skin_dir_override,
+            history_max_entries: g.history_max_entries,
+            enable_polish_hotkey: g.enable_polish_hotkey,
+            enable_ai_hotkey: g.enable_ai_hotkey,
+        }
+    }
+}
+
+#[tauri::command]
+fn get_general_settings() -> Result<GeneralSettingsDto, String> {
+    Ok(shurufa_options::load().general.clamped().into())
+}
+
+#[tauri::command]
+fn save_general_settings(s: GeneralSettingsDto) -> Result<(), String> {
+    let log_level = match s.log_level.as_str() {
+        "info" => LogLevel::Info,
+        "debug" => LogLevel::Debug,
+        "trace" => LogLevel::Trace,
+        other => return Err(format!("未知日志级别：{other}")),
+    };
+    let next = GeneralSettings {
+        autostart: s.autostart,
+        log_level,
+        skin_dir_override: s.skin_dir_override,
+        history_max_entries: s.history_max_entries,
+        enable_polish_hotkey: s.enable_polish_hotkey,
+        enable_ai_hotkey: s.enable_ai_hotkey,
+    }
+    .clamped();
+    shurufa_options::modify(|current| ImeOptions {
+        general: next.clone(),
+        ..current.clone()
+    })
+    .map(|_| ())
+    .map_err(|error| format!("保存通用设置失败：{error}"))
+}
+
+/// 自启开关：复用 shurufa-host 的 `install-autostart` / `uninstall-autostart`
+/// 子命令（HKCU Run `shurufa-host` 键的唯一事实源在 host main.rs）。
+/// 设置中心不直接写注册表，避免与 host 逻辑漂移。
+#[tauri::command]
+async fn set_autostart(enabled: bool) -> Result<String, String> {
+    let sub = if enabled {
+        "install-autostart"
+    } else {
+        "uninstall-autostart"
+    };
+    run_host_capture(&[sub]).await?;
+    // 同步写回 options.json，让下次启动时 UI 显示真实状态
+    shurufa_options::modify(|current| ImeOptions {
+        general: GeneralSettings {
+            autostart: enabled,
+            ..current.general.clone()
+        },
+        ..current.clone()
+    })
+    .map(|_| ())
+    .map_err(|error| format!("回写 autostart 失败：{error}"))?;
+    Ok(if enabled {
+        "已开启登录自启".to_owned()
+    } else {
+        "已关闭登录自启".to_owned()
+    })
 }
 
 /// 打字统计面板 DTO：四项合计 + 最近 8 天字符数序列 + 最近 7/30 天序列。
@@ -709,6 +815,9 @@ fn main() {
         clear_unpinned_history,
         ime_options,
         save_ime_options,
+        get_general_settings,
+        save_general_settings,
+        set_autostart,
         typing_stats,
         dictionary_info,
         dictionary_history,
@@ -742,8 +851,9 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{history_entry, sync_dir, TypingStatsDto};
+    use super::{history_entry, sync_dir, GeneralSettingsDto, TypingStatsDto};
     use clipboard_store::{ClipEntry, ClipKind};
+    use shurufa_options::LogLevel;
 
     #[test]
     fn 默认同步目录位于应用数据目录下() {
@@ -821,5 +931,56 @@ mod tests {
             assert!(version == 2, "皮肤 {} version 应为 2（实际 {version}）", meta.file);
             assert!(meta.preview_hint.starts_with('#'), "preview_hint 应为 #RRGGBB");
         }
+    }
+
+    #[test]
+    fn 通用设置_dto与领域模型结构一致() {
+        // 走 From<GeneralSettings> 转换；断言字段一一对应（log_level 走小写字符串）
+        let domain = shurufa_options::GeneralSettings {
+            autostart: true,
+            log_level: LogLevel::Debug,
+            skin_dir_override: Some("D:\\skins".to_owned()),
+            history_max_entries: 800,
+            enable_polish_hotkey: false,
+            enable_ai_hotkey: true,
+        };
+        let dto: GeneralSettingsDto = domain.into();
+        assert!(dto.autostart);
+        assert_eq!(dto.log_level, "debug");
+        assert_eq!(dto.skin_dir_override.as_deref(), Some("D:\\skins"));
+        assert_eq!(dto.history_max_entries, 800);
+        assert!(!dto.enable_polish_hotkey);
+        assert!(dto.enable_ai_hotkey);
+    }
+
+    #[test]
+    fn 通用设置_dto拒绝未知日志级别且钳位历史上限() {
+        // 未知识别串 → save 路径应报错；钳位由 GeneralSettings::clamped 负责
+        let bad = GeneralSettingsDto {
+            autostart: false,
+            log_level: "warn".to_owned(),
+            skin_dir_override: None,
+            history_max_entries: 5000,
+            enable_polish_hotkey: true,
+            enable_ai_hotkey: true,
+        };
+        let mapped = match bad.log_level.as_str() {
+            "info" | "debug" | "trace" => true,
+            _ => false,
+        };
+        assert!(!mapped, "未知级别应被 save 路径拒绝");
+        // clamped 对超大值上限 2000，对超小值下限 50
+        let c1 = shurufa_options::GeneralSettings {
+            history_max_entries: 5000,
+            ..Default::default()
+        }
+        .clamped();
+        let c2 = shurufa_options::GeneralSettings {
+            history_max_entries: 1,
+            ..Default::default()
+        }
+        .clamped();
+        assert_eq!(c1.history_max_entries, 2000);
+        assert_eq!(c2.history_max_entries, 50);
     }
 }

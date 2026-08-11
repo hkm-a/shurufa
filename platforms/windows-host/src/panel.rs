@@ -26,16 +26,17 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    GetKeyState, RegisterHotKey, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
     KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DOWN,
     VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
-    GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW, MoveWindow, RegisterClassW,
-    SetForegroundWindow, ShowWindow, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO, IDC_ARROW, SM_CXSCREEN,
-    SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_CHAR, WM_KEYDOWN, WM_KILLFOCUS, WM_PAINT,
-    WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, GetCursorPos,
+    GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW,
+    MoveWindow, RegisterClassW, SetForegroundWindow, ShowWindow, TrackPopupMenu, CS_HREDRAW,
+    CS_VREDRAW, GUITHREADINFO, IDC_ARROW, MF_GRAYED, MF_STRING, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE,
+    SW_SHOWNA, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_TOPALIGN, WM_CHAR, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_PAINT, WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 // 与 TSF 端共享同一份 skin 解析/DWM 助手源码（该文件不引用任何 crate 专属符号）。
@@ -89,6 +90,8 @@ struct PanelState {
     /// 呼出面板时的前台窗口，粘贴目标
     target: HWND,
     dpi: u32,
+    /// Ctrl+F 切换：true = 仅显示收藏，false = 全部
+    favorites_only: bool,
 }
 
 thread_local! {
@@ -154,6 +157,7 @@ pub fn show(entries: Vec<ClipEntry>) {
             selected: 0,
             target,
             dpi,
+            favorites_only: false,
         });
     });
 
@@ -416,6 +420,10 @@ unsafe extern "system" fn wnd_proc(
             on_char(hwnd, wparam.0 as u32);
             LRESULT(0)
         }
+        WM_RBUTTONUP => {
+            on_right_click(hwnd, lparam);
+            LRESULT(0)
+        }
         WM_KILLFOCUS => {
             hide();
             LRESULT(0)
@@ -436,6 +444,36 @@ unsafe extern "system" fn wnd_proc(
 }
 
 fn on_key(hwnd: HWND, vk: VIRTUAL_KEY) {
+    // Ctrl+F：切换"⭐ 收藏"过滤；与 spec 一致，不引入其他键盘快捷键。
+    if vk == VIRTUAL_KEY(0x46) && is_ctrl_down() {
+        let next_mode = PANEL.with_borrow_mut(|slot| {
+            let Some(state) = slot.as_mut() else {
+                return None;
+            };
+            state.favorites_only = !state.favorites_only;
+            // 切换时重置选择并重拉列表（收藏视图从收藏项回源剪贴板历史）
+            let all = entries_for_query(&state.query);
+            state.entries = if state.favorites_only {
+                filter_by_favorites(all)
+            } else {
+                all
+            };
+            if !state.entries.is_empty() && state.selected >= state.entries.len() {
+                state.selected = 0;
+            }
+            Some(state.favorites_only)
+        });
+        if let Some(mode) = next_mode {
+            crate::log_line(&format!(
+                "历史面板过滤切换：{}",
+                if mode { "⭐ 收藏" } else { "全部" }
+            ));
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, true);
+            }
+        }
+        return;
+    }
     let handled = PANEL.with_borrow_mut(|slot| {
         let Some(state) = slot.as_mut() else {
             return None;
@@ -454,7 +492,12 @@ fn on_key(hwnd: HWND, vk: VIRTUAL_KEY) {
             }
             VK_BACK if !state.query.is_empty() => {
                 state.query.pop();
-                state.entries = entries_for_query(&state.query);
+                let all = entries_for_query(&state.query);
+                state.entries = if state.favorites_only {
+                    filter_by_favorites(all)
+                } else {
+                    all
+                };
                 state.selected = 0;
                 Some(Action::Repaint)
             }
@@ -476,6 +519,95 @@ fn on_key(hwnd: HWND, vk: VIRTUAL_KEY) {
     }
 }
 
+/// 键盘 Ctrl 当前是否按下；用 GetKeyState 高位判定（Win32 惯例）。
+fn is_ctrl_down() -> bool {
+    unsafe { (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0 }
+}
+
+/// 右键：在 point 处弹上下文菜单。菜单 id 用于 TrackPopupMenu 返回值分支。
+/// 菜单项与 spec 一致：
+///   - 收藏 ★ / 取消收藏 ☆（当前条目的 pinned_at_ms 符号翻转）
+///   - 以文件形式转发（仅图片/文件条目可用）
+///   - ⭐ 收藏过滤 = 收藏夹视图（等价于 Ctrl+F）
+/// 注意：菜单 id ${id..} 仅为本面板内部使用，不与系统菜单冲突。
+const CTX_TOGGLE_FAVORITE: u16 = 1;
+const CTX_FORWARD_AS_FILE: u16 = 2;
+
+fn on_right_click(hwnd: HWND, lparam: LPARAM) {
+    // lparam 是屏幕坐标（右键消息约定），低位 x / 高位 y（可为负，禁截位）
+    let x = (lparam.0 as i32 & 0xFFFF) as i16 as i32;
+    let y = ((lparam.0 >> 16) as i16) as i32;
+    let (selected_kind, is_favorited_now) = PANEL.with_borrow(|slot| {
+        slot.as_ref()
+            .and_then(|s| {
+                let entry = s.entries.get(s.selected)?;
+                let favs = shurufa_options::favorites::load_favorites();
+                let fav = is_favorited(&favs, entry);
+                Some((entry.kind, fav))
+            })
+            .unwrap_or((ClipKind::Text, false))
+    });
+    unsafe {
+        let menu = match CreatePopupMenu() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let fav_label = if is_favorited_now {
+            w!("取消收藏 ☆")
+        } else {
+            w!("收藏 ★")
+        };
+        let _ = AppendMenuW(menu, MF_STRING, CTX_TOGGLE_FAVORITE as usize, fav_label);
+        // 仅图片/文件可转发；文本条目灰显
+        let forward_flags = if matches!(selected_kind, ClipKind::Image | ClipKind::Files) {
+            MF_STRING
+        } else {
+            MF_STRING | MF_GRAYED
+        };
+        let _ = AppendMenuW(
+            menu,
+            forward_flags,
+            CTX_FORWARD_AS_FILE as usize,
+            w!("以文件形式转发"),
+        );
+        let _ = SetForegroundWindow(hwnd);
+        let picked = TrackPopupMenu(
+            menu,
+            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD,
+            x,
+            y,
+            Some(0),
+            hwnd,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+        match picked.0 as u16 {
+            CTX_TOGGLE_FAVORITE => {
+                let _ = toggle_favorite_on_selected();
+                // 收藏过滤打开时，取消收藏应立刻让条目消失：重拉列表并重绘
+                PANEL.with_borrow_mut(|slot| {
+                    if let Some(state) = slot.as_mut() {
+                        let all = entries_for_query(&state.query);
+                        state.entries = if state.favorites_only {
+                            filter_by_favorites(all)
+                        } else {
+                            all
+                        };
+                        if !state.entries.is_empty() && state.selected >= state.entries.len() {
+                            state.selected = state.entries.len() - 1;
+                        }
+                    }
+                });
+                let _ = InvalidateRect(Some(hwnd), None, true);
+            }
+            CTX_FORWARD_AS_FILE => {
+                forward_selected_as_file();
+            }
+            _ => {}
+        }
+    }
+}
+
 fn on_char(hwnd: HWND, code: u32) {
     let Some(character) = char::from_u32(code) else {
         return;
@@ -487,7 +619,12 @@ fn on_char(hwnd: HWND, code: u32) {
         if !append_filter_character(&mut state.query, character) {
             return false;
         }
-        state.entries = entries_for_query(&state.query);
+        let all = entries_for_query(&state.query);
+        state.entries = if state.favorites_only {
+            filter_by_favorites(all)
+        } else {
+            all
+        };
         state.selected = 0;
         true
     });
@@ -513,6 +650,139 @@ fn entries_for_query(query: &str) -> Vec<ClipEntry> {
     } else {
         store.search(query, MAX_ROWS as u32).unwrap_or_default()
     }
+}
+
+/// 收藏过滤：把候选条目按收藏 id 集（pinned_at_ms > 0 视为已收藏）过滤。
+/// 合并 clip-favorites.json 中的 source_peer 供绘制层标注"来自对端"。
+fn filter_by_favorites(entries: Vec<ClipEntry>) -> Vec<ClipEntry> {
+    let favs = shurufa_options::favorites::load_favorites();
+    if favs.entries.is_empty() {
+        return Vec::new();
+    }
+    entries
+        .into_iter()
+        .filter(|entry| is_favorited(&favs, entry))
+        .collect()
+}
+
+fn is_favorited(favs: &shurufa_options::ClipFavorites, entry: &ClipEntry) -> bool {
+    favs.entries.iter().any(|fav| {
+        fav.pinned_at_ms > 0 && favorite_matches_entry(fav, entry)
+    })
+}
+
+/// 匹配规则：以 kind + 内容指纹近似。文本用 content_text 完全相等；图片/文件
+/// 用 path 与 entry.text 的首行/完整内容比较。历史 id 不写入收藏，避免
+/// 用户清理历史后收藏孤儿化；代价是同内容的重复条目会同时被视为收藏。
+fn favorite_matches_entry(fav: &shurufa_options::ClipFavorite, entry: &ClipEntry) -> bool {
+    use shurufa_options::ClipFavoriteKind as FK;
+    match (fav.kind, entry.kind) {
+        (FK::Text, ClipKind::Text) => fav
+            .content_text
+            .as_deref()
+            .map(|t| t == entry.text)
+            .unwrap_or(false),
+        (FK::Image, ClipKind::Image) => fav
+            .path
+            .as_deref()
+            .map(|p| p == entry.text)
+            .unwrap_or(false),
+        (FK::File, ClipKind::Files) => fav
+            .path
+            .as_deref()
+            .map(|p| p == entry.text)
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// 对当前选中项做"收藏 / 取消收藏"切换；返回新的收藏状态（None 表示面板不可用）。
+fn toggle_favorite_on_selected() -> Option<bool> {
+    let entry = PANEL.with_borrow(|slot| {
+        slot.as_ref()
+            .and_then(|s| s.entries.get(s.selected).cloned())
+    })?;
+    use shurufa_options::{ClipFavorite, ClipFavoriteKind};
+    let mut favs = shurufa_options::favorites::load_favorites();
+    // 已收藏 → 切换为取消收藏（符号翻转语义，见 options::favorites::toggle_pin_favorite）
+    if let Some(existing) = favs
+        .entries
+        .iter()
+        .find(|f| f.pinned_at_ms > 0 && favorite_matches_entry(f, &entry))
+        .map(|f| f.id)
+    {
+        match shurufa_options::favorites::toggle_pin_favorite(existing) {
+            Ok(new_state) => {
+                crate::log_line(&format!("取消收藏 id={existing}"));
+                return new_state;
+            }
+            Err(e) => {
+                crate::log_line(&format!("取消收藏失败：{e}"));
+                return None;
+            }
+        }
+    }
+    // 未收藏 → 追加新条目
+    let (kind, content_text, path) = match entry.kind {
+        ClipKind::Text => (
+            ClipFavoriteKind::Text,
+            Some(entry.text.clone()),
+            None,
+        ),
+        ClipKind::Image => (ClipFavoriteKind::Image, None, Some(entry.text.clone())),
+        ClipKind::Files => (ClipFavoriteKind::File, None, Some(entry.text.clone())),
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let fav = ClipFavorite {
+        id: 0, // 实际 id 由 add_favorite 分配（next_id 单调）
+        kind,
+        content_text,
+        path,
+        pinned_at_ms: now_ms,
+        source_peer: Some(entry.source_app.clone()).filter(|s| !s.is_empty()),
+    };
+    match shurufa_options::favorites::add_favorite(fav) {
+        Ok(saved) => {
+            crate::log_line(&format!("已收藏 id={} kind={:?}", saved.id, saved.kind));
+            favs.entries.push(saved);
+            Some(true)
+        }
+        Err(e) => {
+            crate::log_line(&format!("收藏失败：{e}"));
+            None
+        }
+    }
+}
+
+/// Image/File 条目：以文件形式转发给所有已配对设备。
+/// 路径取自 entry.text（文件列表的首行就是磁盘路径）。
+/// 委托给 `crate::sync::send_file_to_all`——本函数仅做调用点封装（sync.rs 未动）。
+fn forward_selected_as_file() {
+    let Some((kind, text)) = PANEL.with_borrow(|slot| {
+        slot.as_ref()
+            .and_then(|s| s.entries.get(s.selected).map(|e| (e.kind, e.text.clone())))
+    }) else {
+        return;
+    };
+    if matches!(kind, ClipKind::Text) {
+        crate::log_line("转发仅对图片/文件条目生效（文本请直接粘贴）");
+        return;
+    }
+    let first_line = text.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        crate::log_line("转发失败：条目未携带文件路径");
+        return;
+    }
+    let path = std::path::Path::new(first_line);
+    if !path.exists() {
+        crate::log_line(&format!("转发失败：文件不存在 {first_line}"));
+        return;
+    }
+    crate::log_line(&format!("以文件形式转发：{first_line}"));
+    crate::sync::send_file_to_all(path);
 }
 
 enum Action {
@@ -569,19 +839,25 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
 
         if state.entries.is_empty() {
             SetTextColor(hdc, COLORREF(colors.dim));
+            let empty_hint = if state.favorites_only {
+                "（⭐ 收藏为空 · Ctrl+F 返回全部）"
+            } else if state.query.is_empty() {
+                "（历史为空）"
+            } else {
+                "（无匹配条目）"
+            };
             draw_line(
                 hdc,
-                if state.query.is_empty() {
-                    "（历史为空）"
-                } else {
-                    "（无匹配条目）"
-                },
+                empty_hint,
                 padding,
                 padding,
                 width - padding * 2,
                 row_h,
             );
         }
+
+        // 收藏匹配集合在绘制循环外取一次，避免每行文件 IO
+        let favs = shurufa_options::favorites::load_favorites();
 
         for (i, entry) in state.entries.iter().enumerate().take(MAX_ROWS) {
             let top = padding + i as i32 * row_h;
@@ -609,10 +885,11 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 row_h,
             );
 
-            // 类型标记 + 置顶星标
+            // 类型标记 + 置顶星标；已收藏额外追加 ☆ 角标
             SelectObject(hdc, HGDIOBJ(small.0));
             SetTextColor(hdc, COLORREF(colors.dim));
-            let tag = match (entry.kind, entry.pinned) {
+            let is_fav = is_favorited(&favs, entry);
+            let base_tag = match (entry.kind, entry.pinned) {
                 (ClipKind::Image, p) => {
                     if p {
                         "图★"
@@ -630,9 +907,14 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 (ClipKind::Text, true) => "★",
                 (ClipKind::Text, false) => "",
             };
+            let tag: String = if is_fav {
+                format!("{base_tag}☆")
+            } else {
+                base_tag.to_owned()
+            };
             draw_line(
                 hdc,
-                tag,
+                &tag,
                 padding + scale(20, dpi),
                 top,
                 scale(30, dpi),
@@ -660,12 +942,21 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let footer_top = padding + state.entries.len().max(1) as i32 * row_h;
         SelectObject(hdc, HGDIOBJ(small.0));
         SetTextColor(hdc, COLORREF(colors.dim));
-        let footer = if state.query.is_empty() {
-            "直接键入筛选 · 回车/数字 粘贴 · Esc 关闭".to_owned()
+        let footer = if state.favorites_only {
+            if state.query.is_empty() {
+                "⭐ 收藏 · Ctrl+F 回全部 · 右键 收藏/转发 · Esc 关闭".to_owned()
+            } else {
+                format!(
+                    "⭐ 收藏 · 筛选：{} · Ctrl+F 回全部 · Esc 关闭",
+                    crate::single_line_preview(&state.query, 14)
+                )
+            }
+        } else if state.query.is_empty() {
+            "直接键入筛选 · 回车/数字 粘贴 · Ctrl+F ⭐收藏 · 右键 菜单 · Esc 关闭".to_owned()
         } else {
             format!(
-                "筛选：{} · 退格修改 · 回车/数字 粘贴 · Esc 关闭",
-                crate::single_line_preview(&state.query, 18)
+                "筛选：{} · 退格修改 · 回车/数字 粘贴 · Ctrl+F ⭐收藏 · Esc 关闭",
+                crate::single_line_preview(&state.query, 14)
             )
         };
         draw_line(
