@@ -56,7 +56,7 @@ use windows::Win32::Graphics::DirectComposition::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_REGULAR,
-    DWRITE_MEASURING_MODE_GDI_NATURAL,
+    DWRITE_MEASURING_MODE_GDI_NATURAL, DWRITE_TEXT_METRICS,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
@@ -162,6 +162,8 @@ struct Brushes {
     highlight: ID2D1SolidColorBrush,
     text: ID2D1SolidColorBrush,
     preedit: ID2D1SolidColorBrush,
+    /// 音节分段交替色（blend(preedit, text, 28%)）；与 D2D 后端同公式。
+    preedit_alt: ID2D1SolidColorBrush,
     label: ID2D1SolidColorBrush,
     sb_track: ID2D1SolidColorBrush,
 }
@@ -446,16 +448,21 @@ unsafe fn ensure_brushes(frame: &mut FrameState, skin: Skin) -> bool {
         .ok();
     let text = t.CreateSolidColorBrush(&mk(skin.candidate.text), None).ok();
     let preedit = t.CreateSolidColorBrush(&mk(skin.candidate.preedit), None).ok();
+    // 音节分段交替色（=candidate_window::syllable_segment_colors[1]），派生色不动 skin。
+    let preedit_alt_c =
+        crate::candidate_window::blend_colorref(skin.candidate.preedit, skin.candidate.text, 280);
+    let preedit_alt = t.CreateSolidColorBrush(&mk(preedit_alt_c), None).ok();
     let label = t.CreateSolidColorBrush(&mk(skin.candidate.label), None).ok();
     let sb_track_c = crate::skin::scrollbar_colors(&skin).0;
     let sb_track = t.CreateSolidColorBrush(&mk(sb_track_c), None).ok();
-    match (background, highlight, text, preedit, label, sb_track) {
-        (Some(background), Some(highlight), Some(text), Some(preedit), Some(label), Some(sb_track)) => {
+    match (background, highlight, text, preedit, preedit_alt, label, sb_track) {
+        (Some(background), Some(highlight), Some(text), Some(preedit), Some(preedit_alt), Some(label), Some(sb_track)) => {
             frame.brushes = Some(Brushes {
                 background,
                 highlight,
                 text,
                 preedit,
+                preedit_alt,
                 label,
                 sb_track,
             });
@@ -513,7 +520,7 @@ fn render_and_present(core: &GpuCore, frame: &mut FrameState, rc: &RECT, v: &Pai
             b: 0.0,
             a: 0.0,
         }));
-        draw_body(dc, rc, v, &br, &fmt_c, &fmt_s);
+        draw_body(dc, rc, v, &br, &fmt_c, &fmt_s, &core.dwrite);
         match dc.EndDraw(None, None) {
             Ok(()) => true,
             Err(e) => {
@@ -561,6 +568,7 @@ unsafe fn draw_body(
     br: &Brushes,
     fmt_c: &IDWriteTextFormat,
     fmt_s: &IDWriteTextFormat,
+    dwrite: &IDWriteFactory,
 ) {
     let padding = v.padding as f32;
     let row_top = (v.padding + v.preedit_h) as f32;
@@ -591,30 +599,34 @@ unsafe fn draw_body(
     // ===== 预编辑行 =====
     let badge_w = crate::candidate_window::mode_badge_width(v) as f32;
     let preedit_right = (win_w - padding - badge_w).max(padding);
-    draw_text(
-        dc,
-        fmt_s,
-        &br.preedit,
-        &v.preedit,
-        D2D_RECT_F {
-            left: padding,
-            top: padding,
-            right: preedit_right,
-            bottom: padding + preedit_h,
-        },
-    );
-    draw_text(
-        dc,
-        fmt_s,
-        &br.label,
-        &v.mode_badge,
-        D2D_RECT_F {
+    if v.syllable_breaks.is_empty() {
+        draw_text(
+            dc,
+            fmt_s,
+            &br.preedit,
+            &v.preedit,
+            D2D_RECT_F {
+                left: padding,
+                top: padding,
+                right: preedit_right,
+                bottom: padding + preedit_h,
+            },
+        );
+    } else {
+        // 音节分段（同 GDI/D2D 语义）：分隔符槽位画 1px 竖线，两侧段交替色。
+        draw_preedit_segmented_dcomp(dwrite, dc, fmt_s, br, v, preedit_h, padding);
+    }
+    // 右上角模式角标：highlight 底色块 + 反色文字（与 D2D 后端 1:1 对齐）。
+    if let Some(text) = v.mode_badge {
+        let badge_rect = D2D_RECT_F {
             left: preedit_right,
             top: padding,
             right: win_w - padding,
             bottom: padding + preedit_h,
-        },
-    );
+        };
+        dc.FillRectangle(&badge_rect, &br.highlight);
+        draw_text(dc, fmt_s, &br.background, text, badge_rect);
+    }
 
     // ===== 候选行 =====
     let label_gap = v.label_gap as f32;
@@ -757,6 +769,119 @@ fn draw_text(
             &rect,
             brush,
             D2D1_DRAW_TEXT_OPTIONS_CLIP,
+            DWRITE_MEASURING_MODE_GDI_NATURAL,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 音节分段绘制（DComp 路径；与 candidate_window.rs GDI / candidate_window_d2d 同语义）
+// ---------------------------------------------------------------------------
+
+/// 用 IDWriteTextLayout 实测 UTF-16 切片宽度（GDI_NATURAL measuring mode，与
+/// DrawText 对齐）；失败/空段返回 0。
+unsafe fn measure_utf16_dcomp(
+    factory: &IDWriteFactory,
+    fmt: &IDWriteTextFormat,
+    wide: &[u16],
+    h: f32,
+) -> f32 {
+    if wide.is_empty() {
+        return 0.0;
+    }
+    let Ok(layout) = factory.CreateTextLayout(wide, fmt, f32::MAX, h) else {
+        return 0.0;
+    };
+    let mut m = DWRITE_TEXT_METRICS::default();
+    match layout.GetMetrics(&mut m) {
+        Ok(()) => m.width,
+        Err(_) => 0.0,
+    }
+}
+
+/// DComp 版 syllable 分段绘制：断点槽位画 1px 竖线，两侧段在
+/// (preedit, preedit_alt) 间交替；separator glyph 不入屏。
+/// 与 `crate::candidate_window::draw_preedit_segmented`（GDI）和
+/// `crate::candidate_window_d2d::draw_preedit_segmented`（D2D）交付同一份布局数据。
+unsafe fn draw_preedit_segmented_dcomp(
+    factory: &IDWriteFactory,
+    dc: &ID2D1DeviceContext,
+    fmt_s: &IDWriteTextFormat,
+    br: &Brushes,
+    v: &crate::candidate_window::PaintView,
+    preedit_h: f32,
+    padding: f32,
+) {
+    let wide: Vec<u16> = v.preedit.encode_utf16().collect();
+    let n = wide.len();
+    let line_top = padding + preedit_h * 0.25;
+    let line_bottom = padding + preedit_h * 0.75;
+
+    let mut x = padding;
+    let mut seg_start = 0usize;
+    for (idx, &bp) in v.syllable_breaks.iter().enumerate() {
+        let bp = (bp as usize).min(n);
+        if bp < seg_start || bp >= n {
+            continue;
+        }
+        if bp > seg_start {
+            let seg = &wide[seg_start..bp];
+            let w = measure_utf16_dcomp(factory, fmt_s, seg, preedit_h);
+            let brush = if idx % 2 == 0 { &br.preedit } else { &br.preedit_alt };
+            if !seg.is_empty() {
+                dc.DrawText(
+                    seg,
+                    fmt_s,
+                    &D2D_RECT_F {
+                        left: x,
+                        top: padding,
+                        right: x + w,
+                        bottom: padding + preedit_h,
+                    },
+                    brush,
+                    windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                    DWRITE_MEASURING_MODE_GDI_NATURAL,
+                );
+            }
+            x += w;
+        }
+        // 分隔符槽位：实测原字符宽度保持槽位与基线对齐；中央画 1px 竖线。
+        let sep_w = measure_utf16_dcomp(factory, fmt_s, &wide[bp..bp + 1], preedit_h);
+        if sep_w > 0.0 {
+            let cx = x + sep_w / 2.0;
+            dc.FillRectangle(
+                &D2D_RECT_F {
+                    left: cx,
+                    top: line_top,
+                    right: cx + 1.0,
+                    bottom: line_bottom,
+                },
+                &br.preedit,
+            );
+        }
+        x += sep_w;
+        seg_start = bp + 1;
+    }
+    // 尾段
+    if seg_start < n {
+        let seg = &wide[seg_start..];
+        let w = measure_utf16_dcomp(factory, fmt_s, seg, preedit_h);
+        let brush = if v.syllable_breaks.len() % 2 == 0 {
+            &br.preedit
+        } else {
+            &br.preedit_alt
+        };
+        dc.DrawText(
+            seg,
+            fmt_s,
+            &D2D_RECT_F {
+                left: x,
+                top: padding,
+                right: x + w,
+                bottom: padding + preedit_h,
+            },
+            brush,
+            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_CLIP,
             DWRITE_MEASURING_MODE_GDI_NATURAL,
         );
     }

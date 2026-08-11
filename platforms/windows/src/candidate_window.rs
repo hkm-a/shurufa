@@ -16,10 +16,10 @@ use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
-    GetTextExtentPoint32W, InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
-    ValidateRect, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HBRUSH, HDC, HFONT,
-    HGDIOBJ, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
+    FillRect, GetDC, GetTextExtentPoint32W, InvalidateRect, LineTo, MoveToEx, ReleaseDC,
+    SelectObject, SetBkMode, SetTextColor, ValidateRect, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
+    DT_VCENTER, FW_NORMAL, HBRUSH, HDC, HFONT, HGDIOBJ, HPEN, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
@@ -126,6 +126,9 @@ struct PaintData {
     skin: Skin,
     is_ascii: bool,
     is_full_shape: bool,
+    /// 长按 Shift 触发的大写视觉角标（不实际切换引擎 ascii_mode）。
+    /// 由 service.rs 经 set_caps_visual 写入；true 时 mode_badge 固定为 "⇪大写"。
+    caps_visual: bool,
     page: PageInfo,
 }
 
@@ -141,13 +144,18 @@ pub struct PaintView {
     pub row_h: i32,
     pub label_gap: i32,
     pub hl_pad: i32,
-    pub mode_badge: String,
+    /// 右上角模式徽标（None = 当前模式不需要角标）。
+    /// 取值："中" / "En" / "⇪大写"；由 mode_badge_text() 统一推导。
+    pub mode_badge: Option<&'static str>,
     /// 候选主字体 em-height（px）
     pub cand_font_h: i32,
     /// preedit/副标 小字体 em-height（px）
     pub sub_font_h: i32,
     /// 当前页分页快照（滚动条用）
     pub page: PageInfo,
+    /// 预编辑音节分隔符列位（UTF-16 码元索引；空 = 无断点、按原文整串绘制）。
+    /// 三条渲染路径共用同一份断点数据，一次扫描全帧消费。
+    pub syllable_breaks: Vec<u16>,
 }
 
 pub struct ItemView {
@@ -159,6 +167,22 @@ pub struct ItemView {
     pub text_w: i32,
     pub pure_text_w: i32,
     pub highlighted: bool,
+}
+
+/// 预编辑串内的音节分隔符（空格 / 单引号）位置，UTF-16 码元索引。
+///
+/// 三条渲染路径共用：GDI 在 paint() 内画，D2D/DComp 通过 PaintView.syllable_breaks 透传。
+/// 绘制策略 = 跳过分隔符本体，槽位用来画 1px 竖线（居中于原字符宽度），
+/// 相邻音节按交替轻微色差填充 —— 视觉 `A|B` 分段，但排版宽度零漂移
+/// （各段宽度按 GetTextExtentPoint32W 实测顺序推进）。
+pub fn syllable_breaks(preedit: &str) -> Vec<u16> {
+    let mut out = Vec::new();
+    for (i, u) in preedit.encode_utf16().enumerate() {
+        if u == b' ' as u16 || u == b'\'' as u16 {
+            out.push(i as u16);
+        }
+    }
+    out
 }
 
 /// 分页滚动条快照（来自引擎 Context；page 双字段由 ime-ipc 透传）。
@@ -219,14 +243,11 @@ pub fn make_paint_view() -> Option<PaintView> {
             row_h: scale(BASE_ROW_HEIGHT, dpi),
             label_gap: scale(BASE_LABEL_GAP, dpi),
             hl_pad: scale(BASE_HL_PAD, dpi),
-            mode_badge: format!(
-                "{}{}",
-                if data.is_ascii { "英" } else { "中" },
-                if data.is_full_shape { "·全" } else { "" },
-            ),
+            mode_badge: mode_badge_text(data),
             cand_font_h: font_height(BASE_FONT_HEIGHT, dpi, font_scale),
             sub_font_h: font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale),
             page: data.page,
+            syllable_breaks: syllable_breaks(&data.preedit),
         })
     })
 }
@@ -235,6 +256,49 @@ pub fn make_paint_view() -> Option<PaintView> {
 /// GDI 实际测宽结果 ∈ [3*cand_h, 3.5*cand_h]，用近似值差 1px 视觉无感）。
 pub fn mode_badge_width(view: &PaintView) -> i32 {
     view.cand_font_h * 3 + scale(BASE_MODE_BADGE_GAP, view.dpi)
+}
+
+/// 把 PaintData 快照归一为右上角徽标文案；None = 不该显示角标。
+/// 单独成函数让 GDI / D2D / DComp 三条渲染路径共用同一套规则书：
+/// - caps_visual 优先级最高（长按 Shift 触发），只显示 "⇪大写"。
+/// - 否则按引擎 ascii_mode 输出 "En" / "中"。
+/// `is_full_shape` 不参与角标：候选行已经反映全/半角字符形态，角标保持最简。
+fn mode_badge_text(data: &PaintData) -> Option<&'static str> {
+    if data.caps_visual {
+        Some("⇪大写")
+    } else if data.is_ascii {
+        Some("En")
+    } else {
+        Some("中")
+    }
+}
+
+/// 长按 Shift 的"大写视觉"状态写入口（service.rs 调用；同 UI 线程）。
+///
+/// true：角标固定为 "⇪大写"；不清 preedit/candidates，不触碰 IPC。
+/// false：角标回退到按 ascii_mode 推导的"中"/"En"。
+/// 幂等；返回是否发生变化，供调用方决定是否 InvalidateRect 重绘。
+pub fn set_caps_visual(active: bool) -> bool {
+    PAINT_DATA.with_borrow_mut(|data| {
+        if data.caps_visual == active {
+            false
+        } else {
+            data.caps_visual = active;
+            true
+        }
+    })
+}
+
+/// 当前是否处于"大写视觉"提示状态；仅供 service.rs / 单元测试读取真值。
+#[allow(dead_code)]
+pub fn caps_visual_active() -> bool {
+    PAINT_DATA.with_borrow(|data| data.caps_visual)
+}
+
+/// 当前 PAINT_DATA 中 preedit 的 syllable_breaks 快照；service.rs 的 Tab
+/// 音节导航用它判断是否需要把 Tab 重映射为 Left/Right。None = 还未 show 过。
+pub fn current_preedit_breaks() -> Vec<u16> {
+    PAINT_DATA.with_borrow(|data| syllable_breaks(&data.preedit))
 }
 
 // 绘制数据挂在线程本地：窗口与 TSF 回调同属宿主 UI 线程
@@ -246,6 +310,7 @@ thread_local! {
         skin: Skin::default(),
         is_ascii: false,
         is_full_shape: false,
+        caps_visual: false,
         page: PageInfo::default(),
     });
     static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) };
@@ -514,6 +579,16 @@ impl CandidateUi {
         }
     }
 
+    /// 触发一次重绘：模式角标 / 长按大写提示等不发新候选、仅刷新外观的场景用。
+    /// 窗口不存在（尚未 show 过）时静默 no-op —— 下帧 show 自然会带出最新状态。
+    pub fn invalidate(&self) {
+        if let Some(hwnd) = self.hwnd {
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, true);
+            }
+        }
+    }
+
     pub fn destroy(&mut self) {
         self.shadow.destroy();
         if let Some(hwnd) = self.hwnd.take() {
@@ -724,31 +799,62 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let preedit_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
         let old_font = SelectObject(hdc, HGDIOBJ(preedit_font.0));
         SetTextColor(hdc, COLORREF(colors.preedit));
-        // 模式徽标（中/英 + 全/半角），与搜狗主流视觉一致；仅占 preedit 行尾部少量宽度。
-        let mode_badge = format!(
-            "{}{}",
-            if data.is_ascii { "英" } else { "中" },
-            if data.is_full_shape { "·全" } else { "" },
-        );
-        let mode_badge_w = text_width(hdc, &mode_badge) + scale(BASE_MODE_BADGE_GAP, dpi);
+        // 右上角模式角标。规则与 make_paint_view 一致（mode_badge_text），
+        // caps_visual 优先；None 时不留角标宽，把空间全部交还 preedit。
+        let mode_badge = mode_badge_text(data).unwrap_or("");
+        let mode_badge_w = if mode_badge.is_empty() {
+            0
+        } else {
+            text_width(hdc, mode_badge) + scale(BASE_MODE_BADGE_GAP, dpi)
+        };
         let preedit_w = (rc.right - padding * 2 - mode_badge_w).max(scale(BASE_MIN_WIDTH, dpi));
-        draw_line(
-            hdc,
-            &data.preedit,
-            padding,
-            padding,
-            preedit_w,
-            preedit_h,
-        );
-        SetTextColor(hdc, COLORREF(colors.label));
-        draw_line(
-            hdc,
-            &mode_badge,
-            padding + preedit_w,
-            padding,
-            rc.right - padding,
-            preedit_h,
-        );
+        let breaks = syllable_breaks(&data.preedit);
+        if breaks.is_empty() {
+            draw_line(
+                hdc,
+                &data.preedit,
+                padding,
+                padding,
+                preedit_w,
+                preedit_h,
+            );
+        } else {
+            // 含音节分隔符：跳过分隔符本体、逐段交替色 + 1px 竖线占位。
+            let preedit_font_h = font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale);
+            draw_preedit_segmented(
+                hdc,
+                &data.preedit,
+                &breaks,
+                &colors,
+                padding,
+                preedit_h,
+                preedit_font_h,
+            );
+        }
+        // 角标本体：highlight 底色块 + 反色文字（skin.candidate.background 当反色，
+        // 因为 highlight_background 与 background 的强对比是皮肤语义自带的）。
+        if !mode_badge.is_empty() {
+            let badge_left = padding + preedit_w;
+            let badge_right = rc.right - padding;
+            let badge_rect = RECT {
+                left: badge_left,
+                top: padding,
+                right: badge_right,
+                bottom: padding + preedit_h,
+            };
+            let hl_bg = CreateSolidBrush(COLORREF(colors.highlight_background));
+            FillRect(hdc, &badge_rect, hl_bg);
+            let _ = DeleteObject(HGDIOBJ(hl_bg.0));
+            SetTextColor(hdc, COLORREF(colors.background));
+            draw_line(
+                hdc,
+                mode_badge,
+                badge_left,
+                padding,
+                badge_right,
+                preedit_h,
+            );
+        }
 
         // 候选行（第二行横排）
         let cand_font = make_font(font_height(BASE_FONT_HEIGHT, dpi, font_scale));
@@ -816,6 +922,126 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
     });
 }
 
+/// 混合 `fg` 朝 `bg` 方向 `permille` 千分比（COLORREF, 0x00BBGGRR）。
+/// `permille=0` → fg 本色；`1000` → bg 本色。
+/// 供音节分段派生色环：不改 skin.rs（任务约束），分隔竖线与段间交替色
+/// 全部由既有 candidate 颜色派生。
+pub fn blend_colorref(fg: u32, bg: u32, permille: u32) -> u32 {
+    let pm = permille.min(1000);
+    let ch = |shift: u32| {
+        let f = (fg >> shift) & 0xff;
+        let b = (bg >> shift) & 0xff;
+        (f * (1000 - pm) + b * pm + 500) / 1000
+    };
+    ch(0) | (ch(8) << 8) | (ch(16) << 16)
+}
+
+/// 派生分段交替色环（闭循环，无皮肤侵入）：
+/// - 偶数段 = preedit 本色；
+/// - 奇数段 = preedit 向 text 过渡 28%（可读，不扎眼）；
+/// - 分隔竖线 = preedit 本色，与偶数段合并为同色系。
+/// 返回 [seg_even, seg_odd, separator_line]。
+pub fn syllable_segment_colors(colors: &crate::skin::CandidateColors) -> [u32; 3] {
+    [
+        colors.preedit,
+        blend_colorref(colors.preedit, colors.text, 280),
+        colors.preedit,
+    ]
+}
+
+/// 按 `syllable_breaks` 把 preedit 切成多段逐段绘制：断点字符本体跳过不入屏，
+/// 槽位用来画 1px 竖线（水平居中于原字符宽度）；相邻段在交替色间轮换，
+/// 形成 `A|B` 分段视觉。排版宽度与原文完全一致（各段 GetTextExtentPoint32W
+/// 实测顺序推进），对布局槽位与窗口宽度零影响。
+///
+/// `hdc` 须已选入 preedit 字体；`padding`/`preedit_h`/`preedit_font_h` 由调用方
+/// 按 (dpi, font_scale) 展开后传入。
+unsafe fn draw_preedit_segmented(
+    hdc: HDC,
+    preedit: &str,
+    breaks: &[u16],
+    colors: &crate::skin::CandidateColors,
+    padding: i32,
+    preedit_h: i32,
+    preedit_font_h: i32,
+) {
+    let wide: Vec<u16> = preedit.encode_utf16().collect();
+    let n = wide.len();
+    let [even_c, odd_c, sep_c] = syllable_segment_colors(colors);
+    // 竖线高度 = 字形高度的 1/2 居中；上下各留 25% 空白让分隔与文字区分离。
+    let line_half = (preedit_font_h / 2).max(4);
+    let center_y = padding + preedit_h / 2;
+    let (ly0, ly1) = (center_y - line_half, center_y + line_half);
+
+    let mut x = padding;
+    let mut seg_start = 0usize;
+    for (idx, &bp) in breaks.iter().enumerate() {
+        let bp = (bp as usize).min(n);
+        if bp < seg_start || bp >= n {
+            continue;
+        }
+        // 段文本：颜色按奇偶轮换（首段从 even 起）。
+        if bp > seg_start {
+            let seg = &wide[seg_start..bp];
+            let w = utf16_width(hdc, seg);
+            let seg_c = if idx % 2 == 0 { even_c } else { odd_c };
+            SetTextColor(hdc, COLORREF(seg_c));
+            draw_line_utf16(hdc, seg, x, padding, x + w, preedit_h);
+            x += w;
+        }
+        // 分隔符槽位：实测原字符宽度保持基线对齐；槽位中央画 1px 竖线。
+        let sep_w = utf16_width(hdc, &wide[bp..bp + 1]);
+        if sep_w > 0 {
+            let pen: HPEN = CreatePen(PS_SOLID, 1, COLORREF(sep_c));
+            let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+            let cx = x + sep_w / 2;
+            let _ = MoveToEx(hdc, cx, ly0, None);
+            let _ = LineTo(hdc, cx, ly1);
+            SelectObject(hdc, old_pen);
+            let _ = DeleteObject(HGDIOBJ(pen.0));
+        }
+        x += sep_w;
+        seg_start = bp + 1;
+    }
+    // 尾段
+    if seg_start < n {
+        let seg = &wide[seg_start..];
+        let w = utf16_width(hdc, seg);
+        let seg_c = if breaks.len() % 2 == 0 { even_c } else { odd_c };
+        SetTextColor(hdc, COLORREF(seg_c));
+        draw_line_utf16(hdc, seg, x, padding, x + w, preedit_h);
+    }
+}
+
+/// GetTextExtentPoint32W 直接吃 UTF-16 切片（避免 String 重编码分配）。
+unsafe fn utf16_width(hdc: HDC, s: &[u16]) -> i32 {
+    if s.is_empty() {
+        return 0;
+    }
+    let mut size = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, s, &mut size);
+    size.cx
+}
+
+unsafe fn draw_line_utf16(hdc: HDC, wide: &[u16], left: i32, top: i32, right: i32, height: i32) {
+    if wide.is_empty() {
+        return;
+    }
+    let mut buf: Vec<u16> = wide.to_vec();
+    let mut rect = RECT {
+        left,
+        top,
+        right,
+        bottom: top + height,
+    };
+    DrawTextW(
+        hdc,
+        &mut buf,
+        &mut rect,
+        DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_VCENTER,
+    );
+}
+
 unsafe fn draw_line(hdc: HDC, text: &str, left: i32, top: i32, right: i32, height: i32) {
     if text.is_empty() {
         return;
@@ -837,7 +1063,10 @@ unsafe fn draw_line(hdc: HDC, text: &str, left: i32, top: i32, right: i32, heigh
 
 #[cfg(test)]
 mod tests {
-    use super::BackendKind;
+    use super::{
+        blend_colorref, mode_badge_text, syllable_breaks, syllable_segment_colors, BackendKind,
+        PaintData,
+    };
 
     /// 选路器可被显式改写并被 backend_kind() 速读出来。
     /// 用例固定 Gdi（最安全档），只验证 override 通道在。
@@ -845,5 +1074,86 @@ mod tests {
     fn backend_kind_override_round_trip() {
         super::set_backend_kind_for_test(BackendKind::Gdi);
         assert_eq!(super::backend_kind(), BackendKind::Gdi);
+    }
+
+    fn paint_data(caps: bool, ascii: bool) -> PaintData {
+        PaintData {
+            preedit: String::new(),
+            items: Vec::new(),
+            dpi: 96,
+            skin: super::Skin::default(),
+            is_ascii: ascii,
+            is_full_shape: false,
+            caps_visual: caps,
+            page: super::PageInfo::default(),
+        }
+    }
+
+    /// mode_badge 文案：caps_visual 优先于 ascii 模式；常规态按 ascii 给 "En"/"中"。
+    /// 这是候选窗右上角模式角标的唯一规则书，GDI/D2D/DComp 三路共享。
+    #[test]
+    fn mode_badge_text_prefers_caps_visual_over_ascii() {
+        assert_eq!(mode_badge_text(&paint_data(true, false)), Some("⇪大写"));
+        assert_eq!(mode_badge_text(&paint_data(true, true)), Some("⇪大写"));
+        assert_eq!(mode_badge_text(&paint_data(false, false)), Some("中"));
+        assert_eq!(mode_badge_text(&paint_data(false, true)), Some("En"));
+    }
+
+    /// 长按置位 → 短按清位的"两面旗"协议：set 幂等；caps_visual_active 是真值源。
+    #[test]
+    fn set_caps_visual_idempotent_and_query_active() {
+        // 起点：两次 false。清除不清也该 false 返回。
+        let _ = super::set_caps_visual(false);
+        assert!(!super::caps_visual_active());
+        // 置位首次返回变化 true；再次置同值 false。
+        assert!(super::set_caps_visual(true));
+        assert!(super::caps_visual_active());
+        assert!(!super::set_caps_visual(true));
+        assert!(super::caps_visual_active());
+        // 清位也满足幂等。
+        assert!(super::set_caps_visual(false));
+        assert!(!super::caps_visual_active());
+        assert!(!super::set_caps_visual(false));
+    }
+
+    /// 音节分隔符只识别空格与单引号；返回 UTF-16 码元索引。
+    /// 例：`"ni hao shi"` → 空格在 UTF-16 下标 2、7，得到 `[2, 7]`。
+    #[test]
+    fn syllable_breaks_finds_space_and_apostrophe() {
+        // 空 preedit 不该有断点
+        assert!(syllable_breaks("").is_empty());
+        // 整个串没有分隔符 → 空 vec
+        assert!(syllable_breaks("nihao").is_empty());
+        // 单个空格在 UTF-16 下标 2
+        assert_eq!(syllable_breaks("ni hao"), vec![2]);
+        // 单引号同样识别
+        assert_eq!(syllable_breaks("ni'hao"), vec![2]);
+        // 多个分隔符：空格 + 单引号 都能发现，索引按出现顺序
+        assert_eq!(syllable_breaks("wo de'shi jie"), vec![2, 5, 9]);
+        // 首字符即是分隔符 / 末字符即是分隔符
+        assert_eq!(syllable_breaks(" ni"), vec![0]);
+        assert_eq!(syllable_breaks("ni "), vec![2]);
+        // 连续两个分隔符各自都需记录（绘制阶段跳过 bp < seg_start 的，但数据不能丢）
+        assert_eq!(syllable_breaks("ni  hao"), vec![2, 3]);
+    }
+
+    /// syllable 分段色环：偶数段保持 preedit 本色，奇数段 = preedit → text 28% 过渡；
+    /// 分隔竖线与偶数段同色系（preedit）。goldens 用具体 channel 锁差异。
+    #[test]
+    fn syllable_segment_colors_derive_without_skin_change() {
+        let colors = crate::skin::CandidateColors::light();
+        let [even, odd, sep] = syllable_segment_colors(&colors);
+        // even 与 separator 严格等于 preedit 本色
+        assert_eq!(even, colors.preedit);
+        assert_eq!(sep, colors.preedit);
+        // odd 介于 preedit 与 text 之间（各 channel 都向 text 偏移 28%）
+        let pre_r = colors.preedit & 0xff;
+        let text_r = colors.text & 0xff;
+        let expected_r = (pre_r * 720 + text_r * 280 + 500) / 1000;
+        assert_eq!(odd & 0xff, expected_r);
+        // blend_colorref 边界：0% → fg，100% → bg，且 permille 上限 1000
+        assert_eq!(blend_colorref(0x112233, 0xaabbcc, 0), 0x112233);
+        assert_eq!(blend_colorref(0x112233, 0xaabbcc, 1000), 0xaabbcc);
+        assert_eq!(blend_colorref(0x112233, 0xaabbcc, 5000), 0xaabbcc);
     }
 }

@@ -32,6 +32,20 @@ pub(crate) fn input_scheme_differs(a: &ImeOptions, b: &ImeOptions) -> bool {
     a.input_scheme != b.input_scheme
 }
 
+/// 纯判定：Tab/Shift+Tab 在引擎组合活着且有音节分隔时转为 XK_Right/XK_Left。
+/// 与 keys.rs 的 vk_to_keysym 同返回型（Some=已决定）；返回 None 时走默认分支。
+/// keysym 入参为 vk_to_keysym 已算出的 Tab keysym（0xff09）。
+pub(crate) fn remap_tab_key(keysym: i32, shift: bool, has_breaks: bool) -> Option<i32> {
+    if !has_breaks {
+        return None;
+    }
+    // XK_TAB = 0xff09；左=0xff51、右=0xff53（与 keys.rs 常量一致）。
+    if keysym != 0xff09 {
+        return None;
+    }
+    Some(if shift { 0xff51 } else { 0xff53 })
+}
+
 pub struct Inner {
     thread_mgr: Option<ITfThreadMgr>,
     client_id: u32,
@@ -47,6 +61,49 @@ pub struct Inner {
     opts_checked_at: Instant,
     /// 当前已知的 options.json 修改时间（用于热重载判定）
     opts_mtime: Option<SystemTime>,
+    /// Shift 长按判定状态：按下时刻（GetTickCount64 毫秒）；None = Shift 未按住。
+    /// 与既有 OnKeyDown-eat-Shift 路径不同：本字段纯粹用于 release 时区分
+    /// 长/短按，不阻止既有 cn/en toggle 当松开时按短按落地。
+    shift_down_at_ms: Option<u64>,
+    /// "大写视觉提示"（视觉提示，不切引擎）：长按 release 后置 true；
+    /// 下一次短按 Shift release 清零。不影响 IPC 上的 ascii_mode。
+    caps_visual: bool,
+}
+
+/// Shift 按住时长阈值：超过即视长按（→ 大写视觉提示），否则按既有的
+/// 短按 → 中/英 toggle。来源：产品约定 400ms；测试用同函数以保持一致性。
+pub(crate) const SHIFT_LONG_PRESS_MS: u64 = 400;
+
+/// 纯函数：按住时长是否越过"长按"阈值。单位毫秒，跨越边界时 `>=`。
+/// 测试通过它独立覆盖边界而不必起 Windows 定时器。
+pub(crate) fn is_long_press(held_ms: u64) -> bool {
+    held_ms >= SHIFT_LONG_PRESS_MS
+}
+
+/// Shift release 决策结果（纯函数输出；执行由 Inner::handle_shift_release 完成）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShiftReleaseAction {
+    /// 按住时长 ≥ 阈值：启用大写视觉提示；不切 ascii_mode、不动组合。
+    LongPressVisualCaps,
+    /// 当前已处视觉提示态的短按：仅清除提示，不切中英。
+    ClearVisualCaps,
+    /// 常规短按：走既有的 ToggleAscii。
+    ShortKeepToggle,
+}
+
+/// 状态机（纯函数）：根据 (held_ms, caps_visual_now) 推下一步动作。
+/// 规则文档化：
+/// - held ≥ SHIFT_LONG_PRESS_MS ⇒ LongPressVisualCaps（无视当前 visual 状态）
+/// - held  < 阈值 且 caps_visual 已激活 ⇒ ClearVisualCaps
+/// - held  < 阈值 且未激活 ⇒ ShortKeepToggle
+pub(crate) fn decide_shift_release(held_ms: u64, caps_visual: bool) -> ShiftReleaseAction {
+    if is_long_press(held_ms) {
+        ShiftReleaseAction::LongPressVisualCaps
+    } else if caps_visual {
+        ShiftReleaseAction::ClearVisualCaps
+    } else {
+        ShiftReleaseAction::ShortKeepToggle
+    }
 }
 
 #[implement(ITfTextInputProcessorEx, ITfKeyEventSink, ITfCompositionSink)]
@@ -119,6 +176,8 @@ impl TextService {
                 opts: shurufa_options::load(),
                 opts_checked_at: Instant::now(),
                 opts_mtime: None,
+                shift_down_at_ms: None,
+                caps_visual: false,
             }),
         }
     }
@@ -179,19 +238,17 @@ impl Inner {
         let ctrl = modifiers & keys::MASK_CONTROL != 0;
         let alt = modifiers & keys::MASK_ALT != 0;
 
-        // Shift 单独按下：切换中英文（主流行为）。ToggleAscii 是唯一写路径，
-        // 避免 OnTestKeyDown 只试不写导致的状态漂移。
-        // 切换前必须把已有组合收尾，否则残留组合会把后续的英文/拼音都吃进去。
+        // Shift 单独按下：只记录按下时刻；任何切换动作都推迟到 release 时决定
+        // （长按 → visual_caps 角标，短按 → 中/英 toggle，均走 OnKeyUp）。
+        // 吃掉该键，否则系统会走默认中英文切换，导致双触发。
         if vk == KeyboardAndMouse::VK_SHIFT.0 as u32 {
             if !self.opts.shift_switch_cn_en {
                 return false;
             }
-            self.end_pending_composition(context);
-            if let Some(is_ascii) = self.client.toggle_ascii() {
-                crate::debug_log(&format!("Shift 切换中英文：ascii={is_ascii}"));
-                return true;
-            }
-            return false;
+            self.shift_down_at_ms = Some(unsafe {
+                windows::Win32::System::SystemInformation::GetTickCount64()
+            });
+            return true;
         }
         // CapsLock：开启选项时切到英文直输（只进不出，回中文用 Shift）。
         // 吃掉该键后系统不再翻转大写灯（OnTestKeyDown 已声明接管）。
@@ -230,7 +287,19 @@ impl Inner {
         if modifiers & (keys::MASK_CONTROL | keys::MASK_ALT) != 0 {
             return false;
         }
-        let Some(keysym) = keys::vk_to_keysym(vk, shift) else {
+        // Tab/Shift+Tab 音节光标导航：composition 活着且 preedit 有 syllable_breaks
+        // 时把 Tab 重映射为 XK_Left/XK_Right，让引擎光标按音节步进；否则透传 Tab。
+        // 0 新 IPC message：仅换 keysym，引擎侧走既有的 librime cursor 处理。
+        let tab_remap_candidates = if vk == KeyboardAndMouse::VK_TAB.0 as u32
+            && self.composition.is_some()
+        {
+            // 借用 PAINT_DATA 的 breaks 快照（由 UI show() 时刚写入）。
+            let preedit_breaks = crate::candidate_window::current_preedit_breaks();
+            remap_tab_key(0xff09, shift, !preedit_breaks.is_empty())
+        } else {
+            None
+        };
+        let Some(keysym) = tab_remap_candidates.or_else(|| keys::vk_to_keysym(vk, shift)) else {
             // 引擎连接失败：把当前按键作为原字符落入文档（中文兜底），
             // 避免“只能输入英文”。
             let _ = self.fallback_commit(context, vk, shift);
@@ -304,6 +373,60 @@ impl Inner {
         self.client.simulate("{Escape}");
         self.composition = None;
         self.ui.hide();
+    }
+
+    /// Shift release 分流：长按 → 视觉大写角标；短按 → 中/英 toggle 或解除角标。
+    /// 返回 true = 已吃掉（按键路径上不再交还系统）。
+    ///
+    /// 实现约定：
+    /// - 未在按下时记录时刻（None）说明 Shift 是被选项关着/直接跳过的，
+    ///   release 直通不动作。
+    /// - 长按路径**不**调 ToggleAscii、**不**改组合：仅设 caps_visual + 触发候选窗重绘。
+    /// - 短按路径在已有组合存在时先 end_pending_composition，再 toggle_ascii ——
+    ///   行为与"eaten-on-down 时代"等效，仅挪到 release 完成。
+    fn handle_shift_release(&mut self, sink: &ITfCompositionSink, context: &ITfContext) -> bool {
+        let Some(down_at) = self.shift_down_at_ms.take() else {
+            return false;
+        };
+        let held = unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
+            .saturating_sub(down_at);
+        match decide_shift_release(held, self.caps_visual) {
+            ShiftReleaseAction::LongPressVisualCaps => {
+                crate::debug_log(&format!(
+                    "Shift 长按 {}ms ≥ {}ms：设大写视觉提示",
+                    held, SHIFT_LONG_PRESS_MS
+                ));
+                self.caps_visual = true;
+                if crate::candidate_window::set_caps_visual(true) {
+                    self.ui.invalidate();
+                }
+                true
+            }
+            ShiftReleaseAction::ClearVisualCaps => {
+                crate::debug_log("Shift 短按：清除大写视觉提示");
+                self.caps_visual = false;
+                if crate::candidate_window::set_caps_visual(false) {
+                    self.ui.invalidate();
+                }
+                let _ = sink;
+                let _ = context;
+                true
+            }
+            ShiftReleaseAction::ShortKeepToggle => {
+                // 常规短按：中/英切换（收尾残留组合，再把请求交给引擎）。
+                self.end_pending_composition(context);
+                let _ = sink; // 保留参数：未来若短按也要触发文档侧组合重建则用得上。
+                if let Some(is_ascii) = self.client.toggle_ascii() {
+                    crate::debug_log(&format!(
+                        "Shift 短按切换中英文：held={}ms ascii={is_ascii}",
+                        held
+                    ));
+                    true
+                } else {
+                    false
+                }
+            }
+        }
     }
 
     /// 引擎服务不可用时，把当前按键作为原字符落入文档（中文兜底）。
@@ -459,6 +582,12 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         }
         // CapsLock 接管与否取决于选项缓存（不读文件，只有 handle_key 周期性重载）。
         let caps_managed = self.inner.borrow().opts.capslock_to_english;
+        // Shift：选项开启时主动接管（既有的"Shift 切中英"逻辑只在 handle_key 里跑，
+        // 若 OnTestKeyDown 拒绝，TSF 永远不会投递 OnKeyDown）。shift_switch_cn_en
+        // 关掉时 Shift 保持旧行为交还系统。
+        if wparam.0 as u32 == KeyboardAndMouse::VK_SHIFT.0 as u32 {
+            return Ok(self.inner.borrow().opts.shift_switch_cn_en.into());
+        }
         Ok(keys::is_ime_key(wparam.0 as u32, keys::current_modifiers(), caps_managed).into())
     }
 
@@ -481,14 +610,35 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     fn OnTestKeyUp(
         &self,
         _pic: Ref<'_, ITfContext>,
-        _wparam: WPARAM,
+        wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
-        Ok(false.into())
+        // Shift release：若我们上一个 keydown 记录了按下时刻，就接管这次 release
+        // 以在 OnKeyUp 里决定走长按视觉提示还是短按切换。其他键的 up 一律放行。
+        let is_shift = wparam.0 as u32 == KeyboardAndMouse::VK_SHIFT.0 as u32;
+        if !is_shift {
+            return Ok(false.into());
+        }
+        let we_own_this_press = self.inner.borrow().shift_down_at_ms.is_some();
+        Ok(we_own_this_press.into())
     }
 
-    fn OnKeyUp(&self, _pic: Ref<'_, ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        Ok(false.into())
+    fn OnKeyUp(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+        // 仅 Shift 的 release 有意义；其他 key up 保持旧行为（放行）。
+        if wparam.0 as u32 != KeyboardAndMouse::VK_SHIFT.0 as u32 {
+            return Ok(false.into());
+        }
+        if is_secure_desktop() {
+            return Ok(false.into());
+        }
+        let mut inner = self.inner.borrow_mut();
+        if inner.shift_down_at_ms.is_none() {
+            return Ok(false.into());
+        }
+        let context = pic.ok()?;
+        let sink: ITfCompositionSink = self.to_interface();
+        let eaten = inner.handle_shift_release(&sink, context);
+        Ok(eaten.into())
     }
 
     fn OnPreservedKey(&self, _pic: Ref<'_, ITfContext>, _rguid: *const GUID) -> Result<BOOL> {
@@ -510,7 +660,10 @@ impl ITfCompositionSink_Impl for TextService_Impl {
 
 #[cfg(test)]
 mod tests {
-    use super::input_scheme_differs;
+    use super::{
+        decide_shift_release, input_scheme_differs, is_long_press, remap_tab_key,
+        ShiftReleaseAction, SHIFT_LONG_PRESS_MS,
+    };
 
     /// watcher 唯一的条件判定：只在 input_scheme 真正变化时才打"方案变化"日志；
     /// 其他字段（热键开关 / general 子字段）翻转不应触发。wave 4 仅为日志，
@@ -533,6 +686,66 @@ mod tests {
             input_scheme_differs(&base, &changed),
             "input_scheme 由 pinyin 切到 wubi 必须被识别"
         );
+    }
+
+    /// Shift 长按判定：阈值是 SHIFT_LONG_PRESS_MS，采用 `>=` 闭区间。
+    /// - 严格小于阈值 → 短按
+    /// - 恰好阈值 → 长按（不能给用户"按了 400ms 却没生效"的错觉）
+    /// - 远大于阈值 → 长按
+    #[test]
+    fn shift_long_press_time_window_at_threshold() {
+        assert!(!is_long_press(0));
+        assert!(!is_long_press(SHIFT_LONG_PRESS_MS - 1));
+        assert!(is_long_press(SHIFT_LONG_PRESS_MS));
+        assert!(is_long_press(SHIFT_LONG_PRESS_MS + 1));
+        assert!(is_long_press(60_000));
+    }
+
+    /// caps_visual 状态机：decide_shift_release 三分支全覆盖。
+    /// - 长按 → 进入视觉提示（无论此前是否已激活，幂等）
+    /// - 短按 + 已激活 → 清除（不进 toggle_ascii 路径）
+    /// - 短按 + 未激活 → 走 toggle_ascii 旧路径
+    #[test]
+    fn caps_visual_state_machine_three_branches() {
+        assert_eq!(
+            decide_shift_release(SHIFT_LONG_PRESS_MS, false),
+            ShiftReleaseAction::LongPressVisualCaps,
+            "长按 + 未激活 → 进入视觉提示"
+        );
+        assert_eq!(
+            decide_shift_release(SHIFT_LONG_PRESS_MS, true),
+            ShiftReleaseAction::LongPressVisualCaps,
+            "长按 + 已激活 → 视觉提示幂等保持"
+        );
+        assert_eq!(
+            decide_shift_release(SHIFT_LONG_PRESS_MS - 1, true),
+            ShiftReleaseAction::ClearVisualCaps,
+            "短按 + 已激活 → 清除提示，不切中英"
+        );
+        assert_eq!(
+            decide_shift_release(SHIFT_LONG_PRESS_MS - 1, false),
+            ShiftReleaseAction::ShortKeepToggle,
+            "短按 + 未激活 → 常规 toggle 路径"
+        );
+    }
+
+    /// Tab routing：composition 有 breaks 且 keysym = Tab 时，无 Shift → XK_Right，
+    /// 有 Shift → XK_Left；keysym 不是 Tab 或没 breaks 一律 None（透传默认路径）。
+    /// 这是"分词视觉"与"光标跳音节"之间的纯逻辑接缝。
+    #[test]
+    fn tab_remap_only_when_breaks_present() {
+        const XK_TAB: i32 = 0xff09;
+        const XK_LEFT: i32 = 0xff51;
+        const XK_RIGHT: i32 = 0xff53;
+        // 无断点：不动 Tab
+        assert_eq!(remap_tab_key(XK_TAB, false, false), None);
+        assert_eq!(remap_tab_key(XK_TAB, true, false), None);
+        // 非 Tab keysym：不动（即使 has_breaks=true 也不该乱改其它键）
+        assert_eq!(remap_tab_key(0x41, false, true), None);
+        assert_eq!(remap_tab_key(0x20, true, true), None);
+        // 有断点：Tab → Right，Shift+Tab → Left（1 char/音节步进取自 Rime cursor）
+        assert_eq!(remap_tab_key(XK_TAB, false, true), Some(XK_RIGHT));
+        assert_eq!(remap_tab_key(XK_TAB, true, true), Some(XK_LEFT));
     }
 }
 

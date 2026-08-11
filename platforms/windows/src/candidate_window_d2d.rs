@@ -45,7 +45,7 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_REGULAR,
-    DWRITE_MEASURING_MODE_GDI_NATURAL,
+    DWRITE_MEASURING_MODE_GDI_NATURAL, DWRITE_TEXT_METRICS,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 
@@ -89,6 +89,8 @@ struct Brushes {
     highlight: ID2D1SolidColorBrush,
     text: ID2D1SolidColorBrush,
     preedit: ID2D1SolidColorBrush,
+    /// 音节分段交替色（blend(preedit, text, 28%)）；随皮肤重建。
+    preedit_alt: ID2D1SolidColorBrush,
     label: ID2D1SolidColorBrush,
     /// 滚动条轨道色（skin.candidate.background 略深一档），随皮肤重建
     sb_track: ID2D1SolidColorBrush,
@@ -245,30 +247,40 @@ impl D2dCore {
             // ===== 预编辑行 =====
             let badge_w = crate::candidate_window::mode_badge_width(v) as f32;
             let preedit_right = (rc.right as f32 - padding - badge_w).max(padding);
-            draw_text(
-                target,
-                fmt_s,
-                &br.preedit,
-                &v.preedit,
-                D2D_RECT_F {
-                    left: padding,
-                    top: padding,
-                    right: preedit_right,
-                    bottom: padding + preedit_h,
-                },
-            );
-            draw_text(
-                target,
-                fmt_s,
-                &br.label,
-                &v.mode_badge,
-                D2D_RECT_F {
+            if v.syllable_breaks.is_empty() {
+                draw_text(
+                    target,
+                    fmt_s,
+                    &br.preedit,
+                    &v.preedit,
+                    D2D_RECT_F {
+                        left: padding,
+                        top: padding,
+                        right: preedit_right,
+                        bottom: padding + preedit_h,
+                    },
+                );
+            } else {
+                // 与 GDI/DComp 一致的分段视觉：分隔符槽位画 1px 竖线，相邻段交替色。
+                draw_preedit_segmented(&self.dwrite, target, fmt_s, br, v, preedit_h, padding);
+            }
+            // 右上角模式角标：highlight 底色块 + 反色文字（v.mode_badge 为 None 时完全不画）。
+            if let Some(text) = v.mode_badge {
+                let badge_rect = D2D_RECT_F {
                     left: preedit_right,
                     top: padding,
                     right: rc.right as f32 - padding,
                     bottom: padding + preedit_h,
-                },
-            );
+                };
+                target.FillRectangle(&badge_rect, &br.highlight);
+                draw_text(
+                    target,
+                    fmt_s,
+                    &br.background,
+                    text,
+                    badge_rect,
+                );
+            }
 
             // ===== 候选行 =====
             let label_gap = v.label_gap as f32;
@@ -471,15 +483,20 @@ impl D2dCore {
                 .ok();
             let text = t.CreateSolidColorBrush(&mk(skin.candidate.text), None).ok();
             let preedit = t.CreateSolidColorBrush(&mk(skin.candidate.preedit), None).ok();
+            // 音节分段交替色（=candidate_window::syllable_segment_colors[1]），派生色不动 skin。
+            let preedit_alt_c =
+                crate::candidate_window::blend_colorref(skin.candidate.preedit, skin.candidate.text, 280);
+            let preedit_alt = t.CreateSolidColorBrush(&mk(preedit_alt_c), None).ok();
             let label = t.CreateSolidColorBrush(&mk(skin.candidate.label), None).ok();
             let sb_track_c = crate::skin::scrollbar_colors(&skin).0;
             let sb_track = t.CreateSolidColorBrush(&mk(sb_track_c), None).ok();
-            match (background, highlight, text, preedit, label, sb_track) {
+            match (background, highlight, text, preedit, preedit_alt, label, sb_track) {
                 (
                     Some(background),
                     Some(highlight),
                     Some(text),
                     Some(preedit),
+                    Some(preedit_alt),
                     Some(label),
                     Some(sb_track),
                 ) => {
@@ -488,6 +505,7 @@ impl D2dCore {
                         highlight,
                         text,
                         preedit,
+                        preedit_alt,
                         label,
                         sb_track,
                     });
@@ -542,6 +560,122 @@ unsafe fn draw_text(
         D2D1_DRAW_TEXT_OPTIONS_CLIP,
         DWRITE_MEASURING_MODE_GDI_NATURAL,
     );
+}
+
+// ---------------------------------------------------------------------------
+// 音节分段绘制（D2D 路径；与 candidate_window.rs 的 GDI draw_preedit_segmented 同语义）
+// ---------------------------------------------------------------------------
+
+/// 用 IDWriteTextLayout 实测 UTF-16 切片宽度；失败回退 0。
+/// GDI_NATURAL measuring mode 与 DrawText 一致，分段推进 x 的累计值 = 整串
+/// DrawText 的右侧边缘（零布局漂移）。
+unsafe fn measure_utf16(
+    factory: &IDWriteFactory,
+    fmt: &IDWriteTextFormat,
+    wide: &[u16],
+    h: f32,
+) -> f32 {
+    if wide.is_empty() {
+        return 0.0;
+    }
+    let Ok(layout) = factory.CreateTextLayout(wide, fmt, f32::MAX, h) else {
+        return 0.0;
+    };
+    let mut m = DWRITE_TEXT_METRICS::default();
+    match layout.GetMetrics(&mut m) {
+        Ok(()) => m.width,
+        Err(_) => 0.0,
+    }
+}
+
+/// D2D 版 syllable 分段绘制：断点槽位画 1px 竖线，两侧段在
+/// (preedit, preedit_alt) 间交替。separator glyph 不入屏（语义与 GDI 路径一致）。
+///
+/// `v.syllable_breaks` 已按 UTF-16 码元索引给出分隔符列位；本函数只消费不改计算。
+unsafe fn draw_preedit_segmented(
+    factory: &IDWriteFactory,
+    target: &ID2D1HwndRenderTarget,
+    fmt_s: &IDWriteTextFormat,
+    br: &Brushes,
+    v: &PaintView,
+    preedit_h: f32,
+    padding: f32,
+) {
+    let wide: Vec<u16> = v.preedit.encode_utf16().collect();
+    let n = wide.len();
+    // 竖线覆盖字形高度的中央 50%（与 GDI 路径 (preedit_font_h/2).max(4) 近似对齐）。
+    let line_top = padding + preedit_h * 0.25;
+    let line_bottom = padding + preedit_h * 0.75;
+
+    let mut x = padding;
+    let mut seg_start = 0usize;
+    for (idx, &bp) in v.syllable_breaks.iter().enumerate() {
+        let bp = (bp as usize).min(n);
+        if bp < seg_start || bp >= n {
+            continue;
+        }
+        // 段文本（颜色 mixed-even/odd 轮换）
+        if bp > seg_start {
+            let seg = &wide[seg_start..bp];
+            let w = measure_utf16(factory, fmt_s, seg, preedit_h);
+            let brush = if idx % 2 == 0 { &br.preedit } else { &br.preedit_alt };
+            if !seg.is_empty() {
+                target.DrawText(
+                    seg,
+                    fmt_s,
+                    &D2D_RECT_F {
+                        left: x,
+                        top: padding,
+                        right: x + w,
+                        bottom: padding + preedit_h,
+                    },
+                    brush,
+                    D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                    DWRITE_MEASURING_MODE_GDI_NATURAL,
+                );
+            }
+            x += w;
+        }
+        // 分隔符槽位：实测该字符宽度保持基线/槽位对齐；中央 1px 竖线。
+        let sep_w = measure_utf16(factory, fmt_s, &wide[bp..bp + 1], preedit_h);
+        if sep_w > 0.0 {
+            let cx = x + sep_w / 2.0;
+            target.FillRectangle(
+                &D2D_RECT_F {
+                    left: cx,
+                    top: line_top,
+                    right: cx + 1.0,
+                    bottom: line_bottom,
+                },
+                &br.preedit,
+            );
+        }
+        x += sep_w;
+        seg_start = bp + 1;
+    }
+    // 尾段
+    if seg_start < n {
+        let seg = &wide[seg_start..];
+        let w = measure_utf16(factory, fmt_s, seg, preedit_h);
+        let brush = if v.syllable_breaks.len() % 2 == 0 {
+            &br.preedit
+        } else {
+            &br.preedit_alt
+        };
+        target.DrawText(
+            seg,
+            fmt_s,
+            &D2D_RECT_F {
+                left: x,
+                top: padding,
+                right: x + w,
+                bottom: padding + preedit_h,
+            },
+            brush,
+            D2D1_DRAW_TEXT_OPTIONS_CLIP,
+            DWRITE_MEASURING_MODE_GDI_NATURAL,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
