@@ -44,4 +44,13 @@ object RimeBridge {
 
     /** 打字统计："totalChars FIELD todayChars FIELD totalKeys FIELD todayKeys"；无数据返回空串。 */
     external fun nativeStatsTotals(): String
+
+    /** 读取当前输入方案（"pinyin" | "double_pinyin" | "wubi" | "cangjie"）。 */
+    external fun nativeGetInputScheme(): String
+
+    /** 列出 4 个可选方案 id，逗号分隔。 */
+    external fun nativeListInputSchemes(): String
+
+    /** 选择输入方案；写入 options.json + SharedPreferences + 进程内缓存，成功返回 true。 */
+    external fun nativeSetInputScheme(ctx: android.content.Context, scheme: String): Boolean
 }

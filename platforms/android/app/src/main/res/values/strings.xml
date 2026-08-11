@@ -90,4 +90,16 @@
     <string name="file_offer_saved">已保存 %1$s 至 Downloads/shurufa</string>
     <string name="file_offer_failed">接收失败： %1$s</string>
     <string name="file_offer_unknown">未知设备</string>
+
+    <!-- 输入方案（wave 4 新增） -->
+    <string name="scheme_chip_label">方案</string>
+    <string name="scheme_dialog_title">切换输入方案</string>
+    <string name="scheme_dialog_close">关闭</string>
+    <string name="scheme_dialog_hint">预览方案需重启输入法后引擎才生效</string>
+    <string name="scheme_pinyin">拼音（雾凇 / 默认）</string>
+    <string name="scheme_double_pinyin">双拼（预览 · 需重启）</string>
+    <string name="scheme_wubi">五笔 86（预览 · 需重启）</string>
+    <string name="scheme_cangjie">仓颉五代（预览 · 需重启）</string>
+    <string name="scheme_selected_banner">已切换到 %1$s</string>
+    <string name="main_card_scheme_title">当前输入方案</string>
 </resources>

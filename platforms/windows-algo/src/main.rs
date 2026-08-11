@@ -13,11 +13,49 @@
 
 use std::path::PathBuf;
 use std::process::exit;
+use std::time::Duration;
 
 use ime_ipc::pipe::{PipeServer, PIPE_NAME};
 
 fn log(msg: &str) {
     eprintln!("[algo] {msg}");
+}
+
+// ---------------------------------------------------------------------------
+// wave 4 预留：输入方案热重载。
+//
+// 目标：options.json 里 `input_scheme` 字段变更后，wave 5 将触发 librime
+// 的 schema deploy（替换 shared_data_dir 指向方案目录，重建引擎 / 会话）。
+// wave 4 此处只完成"加载 options.json 并记日志"，不做任何引擎动作。
+// 纯判定函数 input_scheme_differs 的测试见 platforms/windows/src/service.rs。
+// ---------------------------------------------------------------------------
+
+/// 比对 options.json 前后两份快照的 input_scheme 是否不同。同一份判定逻辑
+/// 同时被 TSF (service.rs) 与 algo (此处) 消费；本函数本身留在 algo 是因为
+/// algo 是 wave 5 真实 redeploy 的宿主，TSF 只是日志转发。
+fn input_scheme_differs(a: &shurufa_options::ImeOptions, b: &shurufa_options::ImeOptions) -> bool {
+    a.input_scheme != b.input_scheme
+}
+
+fn watch_input_scheme(last_known: std::sync::Arc<std::sync::Mutex<shurufa_options::ImeOptions>>) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let current = shurufa_options::load();
+            let old = {
+                let mut guard = last_known.lock().unwrap_or_else(|p| p.into_inner());
+                let stale = guard.clone();
+                *guard = current.clone();
+                stale
+            };
+            if input_scheme_differs(&old, &current) {
+                log(&format!(
+                    "input_scheme 变化：{} → {}（wave 4 仅记录；wave 5 将触发热重载）",
+                    old.input_scheme, current.input_scheme
+                ));
+            }
+        }
+    });
 }
 
 /// 共享数据目录：优先取 `SHURUFA_SCHEMAS` 环境变量，否则沿 exe 上级找 schemas，
@@ -71,6 +109,10 @@ fn init_engine() -> ime_bridge::Engine {
 fn run_service() -> ! {
     let engine = init_engine();
     let engine: &'static ime_bridge::Engine = Box::leak(Box::new(engine));
+    // wave 4：启动 2 秒轮询 options.json 的 input_scheme 监听线程。
+    // 注意：wave 5 之前这里只是日志（不 redeploy schema）。
+    let shared_opts = std::sync::Arc::new(std::sync::Mutex::new(shurufa_options::load()));
+    watch_input_scheme(shared_opts);
     log(&format!("监听 {} …", PIPE_NAME));
     loop {
         let server = match PipeServer::create() {
@@ -192,3 +234,4 @@ fn attach_console_to_parent() {
 
 #[cfg(not(windows))]
 fn attach_console_to_parent() {}
+

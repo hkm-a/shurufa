@@ -72,6 +72,7 @@ const pages = [
   { id: "stats", label: "统计", icon: "chart-column" },
   { id: "history", label: "历史", icon: "clipboard-list" },
   { id: "dictionary", label: "词库", icon: "book-open-text" },
+  { id: "scheme", label: "方案", icon: "circle-dot" },
   { id: "skin", label: "皮肤", icon: "palette" },
   { id: "sync", label: "跨设备", icon: "monitor-smartphone" },
   { id: "settings", label: "偏好", icon: "sliders-horizontal" }
@@ -127,6 +128,10 @@ let skinPresets = [];
 let skinPresetBanner = null;
 // 通用页（通用 6 字段）；null=未加载/读取失败（表单全部禁用）
 let generalSettings = null;
+// 输入方案页（wave 4 新增）：null=未加载；list=后端 list_input_schemes 返回的 4 项
+let schemeList = null;
+let schemeCurrent = "pinyin";
+let schemeBanner = null;
 
 const app = document.querySelector("#app");
 
@@ -496,6 +501,7 @@ function pageTemplate() {
   switch (activePage) {
     case "general": return generalPage();
     case "input": return inputPage();
+    case "scheme": return schemePage();
     case "stats": return statsPage();
     case "history": return historyPage();
     case "dictionary": return dictionaryPage();
@@ -503,6 +509,66 @@ function pageTemplate() {
     case "sync": return syncPage();
     case "settings": return settingsPage();
     default: return workspacePage();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 方案页（wave 4 新增）：4 个输入方案单选，选中即写 options.json。
+// 绿色 banner 在 schemeBanner 内维护；预先回显当前方案（get_general_settings
+// 返回的 input_scheme 已包含）。preview 状态的方案给出"需重启输入法"提示。
+// ---------------------------------------------------------------------------
+
+function schemePage() {
+  if (!schemeList) {
+    return `
+      <section class="page settings-page">
+        <header class="page-header"><div><p class="eyebrow">INPUT SCHEME</p><h1>方案</h1></div></header>
+        <article class="setting-panel"><div class="setting-row"><div class="row-icon dim"><i data-lucide="circle-dot"></i></div><div><h3>输入方案</h3><p>读取中或暂不可用…</p></div></div></article>
+      </section>`;
+  }
+  const bannerHtml = schemeBanner
+    ? `<div class="skin-preset-banner ${schemeBanner.error ? "error" : "ok"}"><i data-lucide="${schemeBanner.error ? "info" : "sparkles"}"></i>${escapeHtml(schemeBanner.message)}</div>`
+    : "";
+  const rows = schemeList
+    .map((scheme) => {
+      const checked = schemeCurrent === scheme.id ? "checked" : "";
+      const tone = scheme.status === "stable" ? "teal" : "coral";
+      return `
+        <div class="setting-row">
+          <div class="row-icon ${tone}"><i data-lucide="circle-dot"></i></div>
+          <label class="setting-toggle" style="flex:1">
+            <div>
+              <h3>${escapeHtml(scheme.name_zh)} <span style="opacity:0.55;font-weight:400;font-size:12px;margin-left:6px">${escapeHtml(scheme.name_en)}</span></h3>
+              <p>${escapeHtml(scheme.subtitle)}</p>
+            </div>
+          </label>
+          <label class="switch">
+            <input type="radio" name="scheme" value="${escapeHtml(scheme.id)}" data-scheme-id="${escapeHtml(scheme.id)}" ${checked} />
+            <span></span>
+          </label>
+        </div>`;
+    })
+    .join(`<div class="divider"></div>`);
+  return `
+    <section class="page settings-page">
+      <header class="page-header"><div><p class="eyebrow">INPUT SCHEME</p><h1>方案</h1></div></header>
+      ${bannerHtml}
+      <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="keyboard"></i></div><div><h3>输入方案</h3><p>选中立即写入 options.json；预览态方案需重启输入法后引擎才生效</p></div></div>
+        ${rows}
+      </article>
+      <article class="hint-card"><i data-lucide="lightbulb"></i><p>wave 4 仅完成持久化与热重载日志；引擎 schema redeploy 在 wave 5 完成。切换 preview 方案后请退出并重启正在输入的应用。</p></article>
+    </section>`;
+}
+
+async function refreshSchemes() {
+  schemeList = await invoke("list_input_schemes");
+  // 一并取当前方案（与通用页共用同一 options.json 读路径）
+  try {
+    const g = await invoke("get_general_settings");
+    schemeCurrent = g.input_scheme || "pinyin";
+  } catch (_error) {
+    schemeCurrent = "pinyin";
   }
 }
 
@@ -974,6 +1040,33 @@ function render() {
         });
     };
   });
+  // 方案页：radio 点击 → 立即写入 options.json → 绿 banner（失败红色 + 回滚选中态）
+  app.querySelectorAll("input[data-scheme-id]").forEach((input) => {
+    input.onchange = () => {
+      const id = input.dataset.schemeId;
+      if (!id) return;
+      const previous = schemeCurrent;
+      invoke("set_input_scheme", { scheme: id })
+        .then(() => {
+          schemeCurrent = id;
+          const meta = (schemeList || []).find((s) => s.id === id);
+          const label = meta ? meta.name_zh : id;
+          schemeBanner = { message: `已切换到 ${label}`, error: false };
+          render();
+          window.setTimeout(() => {
+            if (schemeBanner && schemeBanner.message.startsWith("已切换到")) {
+              schemeBanner = null;
+              if (activePage === "scheme") render();
+            }
+          }, 4200);
+        })
+        .catch((error) => {
+          schemeBanner = { message: String(error), error: true };
+          schemeCurrent = previous;
+          render();
+        });
+    };
+  });
   // 皮肤编辑器：只更新脏标记（不重渲染，否则丢焦点 / 重写光标）。
   const skinEditor = app.querySelector("#skin-editor");
   if (skinEditor) {
@@ -1049,6 +1142,13 @@ async function navigateTo(page) {
       await refreshGeneralSettings();
     } catch (error) {
       generalSettings = null;
+      showToast(String(error), true);
+    }
+  } else if (page === "scheme") {
+    try {
+      await refreshSchemes();
+    } catch (error) {
+      schemeList = null;
       showToast(String(error), true);
     }
   } else if (page === "skin") {

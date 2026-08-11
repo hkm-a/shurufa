@@ -581,6 +581,14 @@ class ShurufaImeService : InputMethodService() {
                 LinearLayout.LayoutParams.MATCH_PARENT
             ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
         )
+        // 输入方案（wave 4）：点击弹出方案切换小面板（拼音 / 双拼 / 五笔 / 仓颉）
+        functionRow.addView(
+            functionChip("⌨️", getString(R.string.scheme_chip_label)) { toggleSchemePanel() },
+            LinearLayout.LayoutParams(
+                clipButtonSize,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
+        )
         root.addView(functionRow)
         // 功能行与键区之间的细分隔线，避免浅灰功能行和浅灰键区粘连。
         root.addView(View(this).apply {
@@ -692,6 +700,154 @@ class ShurufaImeService : InputMethodService() {
         } catch (_: Throwable) {
             false
         }
+
+    // ---------- 输入方案选择面板（wave 4 新增） ----------
+
+    private var schemePanel: LinearLayout? = null
+
+    private fun toggleSchemePanel() {
+        val existing = schemePanel
+        if (existing != null && existing.visibility == View.VISIBLE) {
+            existing.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+            return
+        }
+        // 懒构建：第一次点击才实例化，避免键盘主路径载重
+        if (existing == null) {
+            val built = buildSchemePanel()
+            schemePanel = built
+            inputRoot?.addView(
+                built,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+        // 关掉功能行上方其它面板（历史 / AI 帮写 / 图片预览），独占当前面板位
+        historyPanel?.visibility = View.GONE
+        aiPanel?.visibility = View.GONE
+        previewKeyboard?.visibility = View.GONE
+        keyArea.visibility = View.GONE
+        refreshSchemePanelState()
+        schemePanel?.visibility = View.VISIBLE
+    }
+
+    private fun currentSchemeId(): String = try {
+        // 优先走 JNI 读（内含 options.json + 进程缓存）；崩溃兜底 SharedPreferences
+        RimeBridge.nativeGetInputScheme().ifBlank { "pinyin" }
+    } catch (_: Throwable) {
+        getSharedPreferences("shurufa", Context.MODE_PRIVATE)
+            .getString("shurufa_input_scheme", "pinyin") ?: "pinyin"
+    }
+
+    private fun refreshSchemePanelState() {
+        val panel = schemePanel ?: return
+        val current = currentSchemeId()
+        val schemes = listOf(
+            "pinyin" to getString(R.string.scheme_pinyin),
+            "double_pinyin" to getString(R.string.scheme_double_pinyin),
+            "wubi" to getString(R.string.scheme_wubi),
+            "cangjie" to getString(R.string.scheme_cangjie),
+        )
+        for ((id, _) in schemes) {
+            panel.findViewWithTag<TextView>("scheme_row_$id")?.let { row ->
+                row.setTextColor(if (id == current) palette.accent else palette.panelText)
+            }
+        }
+    }
+
+    private fun onSchemeChosen(id: String, label: String) {
+        val ok = try {
+            RimeBridge.nativeSetInputScheme(this, id)
+        } catch (_: Throwable) {
+            false
+        }
+        if (ok) {
+            Toast.makeText(this, getString(R.string.scheme_selected_banner, label), Toast.LENGTH_SHORT).show()
+            schemePanel?.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+        } else {
+            // 持久化失败不隐藏面板，让用户立刻看见
+            Toast.makeText(this, "保存失败：$label", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun buildSchemePanel(): LinearLayout {
+        val bg = palette.panelBackground
+        val titleColor = palette.panelText
+        val hintColor = palette.panelMuted
+        val cardBg = palette.panelCard
+        val cardStroke = palette.panelStroke
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bg)
+            visibility = View.GONE
+            setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+        }
+        // 标题行
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(TextView(this).apply {
+            text = getString(R.string.scheme_dialog_title)
+            textSize = 16f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(titleColor)
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(TextView(this).apply {
+            text = "✕"
+            contentDescription = getString(R.string.scheme_dialog_close)
+            gravity = Gravity.CENTER
+            textSize = 18f
+            setTextColor(hintColor)
+            setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
+            setOnClickListener {
+                schemePanel?.visibility = View.GONE
+                keyArea.visibility = View.VISIBLE
+            }
+        }, LinearLayout.LayoutParams(dp(44f), dp(40f)))
+        root.addView(header)
+
+        // 4 个方案行
+        val schemes = listOf(
+            "pinyin" to getString(R.string.scheme_pinyin),
+            "double_pinyin" to getString(R.string.scheme_double_pinyin),
+            "wubi" to getString(R.string.scheme_wubi),
+            "cangjie" to getString(R.string.scheme_cangjie),
+        )
+        for ((id, label) in schemes) {
+            val row = TextView(this).apply {
+                tag = "scheme_row_$id"
+                text = label
+                textSize = 15f
+                gravity = Gravity.CENTER_VERTICAL
+                setTextColor(titleColor)
+                setPadding(dp(14f), 0, dp(14f), 0)
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dp(6f).toFloat()
+                    setColor(cardBg)
+                    setStroke(dp(1f), cardStroke)
+                }
+                setOnClickListener { onSchemeChosen(id, label) }
+            }
+            root.addView(row, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(44f),
+            ).apply { topMargin = dp(6f) })
+        }
+        // 提示尾注
+        root.addView(TextView(this).apply {
+            text = getString(R.string.scheme_dialog_hint)
+            textSize = 12f
+            setTextColor(hintColor)
+            setPadding(dp(4f), dp(10f), dp(4f), 0)
+        })
+        return root
+    }
 
     private fun buildAiPanel(): LinearLayout {
         val bg = palette.panelBackground

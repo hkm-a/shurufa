@@ -1,0 +1,67 @@
+# Rime schema (placeholder — wave 4 起被设置中心/安卓键盘的方案选择器引用)
+# encoding: utf-8
+
+# 仓颉输入方案占位（五代为目标）。码表实装留给 wave 5；
+# 本文件仅满足"可被 librime 部署读取的最小骨架"，暂不参与引擎默认链路。
+#
+# TODO wave 5: concrete cangjie5 code table
+#   - translator.dictionary 切换到 cangjie5 词典（或独立 shurufa_cangjie 词库）
+#   - speller/algebra 补仓颉 5 码规则（取码顺序、简码、`*` 通配）
+#   - recognizer/patterns 增加仓颉识别模式（中英混打、标点兜底）
+schema:
+  schema_id: shurufa_cangjie
+  name: 仓颉五代
+  version: "2026.08.11"
+  author:
+    - Shurufa
+  description: |
+    仓颉五代方案占位；wave 5 填充码表并接入引擎热重部署。
+  dependencies:
+    - rime_ice
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 西文 ]
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+    - table_translator
+
+translator:
+  # 暂以雾凇拼音词典占位，供 wave 5 评估是否切换专用仓颉词库
+  dictionary: rime_ice
+  enable_user_dict: true
+  initial_quality: 1.2
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+  delimiter: " '"
+  algebra: []
+    # TODO wave 5: 在此补 5 码取法 / `*` 通配 / 简码规则
+
+punctuator:
+  import_preset: symbols
+
+key_binder:
+  import_preset: default
+
+recognizer:
+  import_preset: default

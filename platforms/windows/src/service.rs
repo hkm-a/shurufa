@@ -26,6 +26,12 @@ use crate::composition::edit_session;
 use crate::ipc_client::ImeClient;
 use crate::keys;
 
+/// 纯判定：两份选项的 `input_scheme` 是否不同。
+/// 供 refresh_options 在每次重载后比对，并供单元测试直接断言。
+pub(crate) fn input_scheme_differs(a: &ImeOptions, b: &ImeOptions) -> bool {
+    a.input_scheme != b.input_scheme
+}
+
 pub struct Inner {
     thread_mgr: Option<ITfThreadMgr>,
     client_id: u32,
@@ -131,8 +137,16 @@ impl Inner {
             .ok();
         if mtime != self.opts_mtime {
             self.opts_mtime = mtime;
-            self.opts = shurufa_options::load();
+            let previous = std::mem::replace(&mut self.opts, shurufa_options::load());
             crate::debug_log(&format!("选项已重载：{:?}", self.opts));
+            // wave 4：方案切换仅记录日志，不做热交换。
+            // 真正的 librime schema redeploy 由 shurufa-algo 侧的 watcher 接管（wave 5）。
+            if input_scheme_differs(&previous, &self.opts) {
+                crate::debug_log(&format!(
+                    "input scheme change detected: {} → {}（当前版本需要重启输入法生效）",
+                    previous.input_scheme, self.opts.input_scheme
+                ));
+            }
         }
     }
 
@@ -493,3 +507,32 @@ impl ITfCompositionSink_Impl for TextService_Impl {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::input_scheme_differs;
+
+    /// watcher 唯一的条件判定：只在 input_scheme 真正变化时才打"方案变化"日志；
+    /// 其他字段（热键开关 / general 子字段）翻转不应触发。wave 4 仅为日志，
+    /// wave 5 才做 redeploy，因此这个判定就是"要不要打扰用户"的开关。
+    #[test]
+    fn 方案差异判定_只在_input_scheme_变化时返回true() {
+        let base = shurufa_options::ImeOptions::default();
+        let mut same_payload = base.clone();
+        same_payload.shift_switch_cn_en = !same_payload.shift_switch_cn_en;
+        same_payload.general.history_max_entries += 100;
+        assert!(
+            !input_scheme_differs(&base, &same_payload),
+            "其它字段变化不应触发方案变更日志"
+        );
+        let changed = shurufa_options::ImeOptions {
+            input_scheme: "wubi".to_owned(),
+            ..base.clone()
+        };
+        assert!(
+            input_scheme_differs(&base, &changed),
+            "input_scheme 由 pinyin 切到 wubi 必须被识别"
+        );
+    }
+}
+

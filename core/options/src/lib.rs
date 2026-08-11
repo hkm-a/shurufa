@@ -30,6 +30,15 @@ pub struct ImeOptions {
     /// 通用页设置（自启/日志级别/历史上限/快捷键开关）；老版本缺字段取默认
     #[serde(default)]
     pub general: GeneralSettings,
+    /// 语音转写设置（Ctrl+Shift+S）；老版本缺 `speech` 键时整体回退默认
+    #[serde(default)]
+    pub speech: SpeechSettings,
+    /// 输入方案 id：pinyin（默认）/ double_pinyin / wubi / cangjie。
+    /// wave 4 仅完成持久化与 UI；引擎热重部署（librime schema redeploy）
+    /// 留给 wave 5。老 JSON 无此字段时 serde 回退 pinyin，参见
+    /// `default_input_scheme` 与 [`validate_input_scheme`]。
+    #[serde(default = "default_input_scheme")]
+    pub input_scheme: String,
 }
 
 /// 设置中心"通用"页字段一览。 serde 双端兼容：老 JSON 无 `general` 键时
@@ -108,6 +117,59 @@ fn t() -> bool {
     true
 }
 
+/// `input_scheme` 的 serde 默认值；"pinyin" 与历史版本 JSON 兼容。
+fn default_input_scheme() -> String {
+    "pinyin".to_owned()
+}
+
+/// 纯函数校验：合法方案 id 集合（与 schemas/shurufa_*.schema.yaml 一一对应）。
+/// 供 settings UI / TSF watcher / JNI 三端共享同一事实源；wave 5 引入
+/// 新方案时只改这一个函数。
+pub fn validate_input_scheme(s: &str) -> bool {
+    matches!(s, "pinyin" | "double_pinyin" | "wubi" | "cangjie")
+}
+
+/// 语音转写设置（Ctrl+Shift+S → 剪贴板 + 书面语化）。serde 双端兼容：
+/// 老 JSON 无 `speech` 键时整体回退 [`SpeechSettings::default`]。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpeechSettings {
+    /// 功能总开关：false 时 listener 不注册 Ctrl+Shift+S
+    #[serde(default)]
+    pub enabled: bool,
+    /// Ctrl+Shift+S 热键开关（与 enabled 同时 true 才注册）
+    #[serde(default = "t")]
+    pub hotkey_enabled: bool,
+    /// 无新语音片段超过该秒数时自动收尾提交（本轮 stub 仅记录，由真实引擎消费）
+    #[serde(default = "default_auto_commit_threshold_secs")]
+    pub auto_commit_threshold_secs: u32,
+    /// 收尾后走书面语化润色（agnes-2.5-flash）；默认关闭，失败回退原文
+    #[serde(default)]
+    pub written_style_polish: bool,
+    /// 单次会话最长时长，超时自动停止并提交当前结果
+    #[serde(default = "default_max_session_secs")]
+    pub max_session_secs: u32,
+}
+
+fn default_auto_commit_threshold_secs() -> u32 {
+    5
+}
+
+fn default_max_session_secs() -> u32 {
+    120
+}
+
+impl Default for SpeechSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hotkey_enabled: true,
+            auto_commit_threshold_secs: default_auto_commit_threshold_secs(),
+            written_style_polish: false,
+            max_session_secs: default_max_session_secs(),
+        }
+    }
+}
+
 impl Default for ImeOptions {
     fn default() -> Self {
         Self {
@@ -116,6 +178,8 @@ impl Default for ImeOptions {
             ctrl_period_ascii_punct: true,
             capslock_to_english: true,
             general: GeneralSettings::default(),
+            speech: SpeechSettings::default(),
+            input_scheme: default_input_scheme(),
         }
     }
 }
@@ -789,6 +853,38 @@ mod tests {
     }
 
     #[test]
+    fn 输入方案字段_缺省回退且写读往返() {
+        // 老版本 JSON 无 input_scheme：serde default 为 "pinyin"
+        let parsed: ImeOptions = serde_json::from_str(r#"{"shift_switch_cn_en":true}"#).unwrap();
+        assert_eq!(parsed.input_scheme, "pinyin");
+        // Default 实例也带 pinyin
+        assert_eq!(ImeOptions::default().input_scheme, "pinyin");
+        // 写读往返：双拼方案能经 save_to/load_from 保留
+        let dir = temp_dir("options-scheme");
+        let path = path_in(&dir);
+        let opts = ImeOptions {
+            input_scheme: "double_pinyin".to_owned(),
+            ..ImeOptions::default()
+        };
+        save_to(&path, &opts).unwrap();
+        let back = load_from(&path);
+        assert_eq!(back.input_scheme, "double_pinyin");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn 输入方案校验器_只接受四个已知id() {
+        assert!(validate_input_scheme("pinyin"));
+        assert!(validate_input_scheme("double_pinyin"));
+        assert!(validate_input_scheme("wubi"));
+        assert!(validate_input_scheme("cangjie"));
+        assert!(!validate_input_scheme("abc"));
+        assert!(!validate_input_scheme(""));
+        assert!(!validate_input_scheme("Pinyin")); // 大小写敏感
+        assert!(!validate_input_scheme("double-pinyin")); // 连字符不是下划线
+    }
+
+    #[test]
     fn 老版本缺字段仍可解析且取默认值() {
         // 模拟老版本 JSON：只有一个字段，其余缺失
         let parsed: ImeOptions = serde_json::from_str(r#"{"shift_switch_cn_en":false}"#).unwrap();
@@ -829,8 +925,25 @@ mod tests {
     }
 
     #[test]
-    fn modify_并发串行化_两端增量不丢失() {
-        // 模拟设置中心与 TSF 并发"翻转两个不同开关"：不配锁时后写会覆盖先写；
+    fn 语音设置_老版本缺speech键走默认值() {
+        // 老版本 JSON 完全没有 speech 段： serde 整体回退 SpeechSettings::default
+        let parsed: ImeOptions =
+            serde_json::from_str(r#"{"shift_switch_cn_en":false}"#).unwrap();
+        assert_eq!(parsed.speech, SpeechSettings::default());
+        assert!(!parsed.speech.enabled, "语音默认关闭");
+        assert!(parsed.speech.hotkey_enabled);
+        assert_eq!(parsed.speech.auto_commit_threshold_secs, 5);
+        assert!(!parsed.speech.written_style_polish);
+        assert_eq!(parsed.speech.max_session_secs, 120);
+        // speech 段缺字段：按字段默认补齐
+        let parsed: ImeOptions = serde_json::from_str(r#"{"speech":{"enabled":true}}"#).unwrap();
+        assert!(parsed.speech.enabled);
+        assert!(parsed.speech.hotkey_enabled);
+        assert_eq!(parsed.speech.max_session_secs, 120);
+    }
+
+    #[test]
+    fn modify_并发串行化_两端增量不丢失() {        // 模拟设置中心与 TSF 并发"翻转两个不同开关"：不配锁时后写会覆盖先写；
         // 走 modify_at 同一把 lib 文件锁，两次增量都应当保留。
         let dir = temp_dir("options-modify");
         let path = path_in(&dir);

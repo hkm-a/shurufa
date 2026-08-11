@@ -32,8 +32,10 @@ class MainActivity : Activity() {
     private lateinit var imeStatusLine: TextView
     private lateinit var imeEnableButton: TextView
     private lateinit var aiStatusLine: TextView
+    private lateinit var schemeStatusLine: TextView
     private lateinit var cardSync: MaterialCardView
     private lateinit var cardAi: MaterialCardView
+    private lateinit var cardScheme: MaterialCardView
     private lateinit var cardSkin: MaterialCardView
 
     private fun dp(v: Float): Int =
@@ -58,6 +60,7 @@ class MainActivity : Activity() {
         super.onResume()
         refreshImeStatus()
         refreshAiStatus()
+        refreshSchemeStatus()
         refreshSkinPreview()
     }
 
@@ -115,6 +118,15 @@ class MainActivity : Activity() {
             onClick = null,
         )
         aiStatusLine = cardAi.findViewById(CARD_DESC_ID)
+        // wave 4：与 AI 卡并列的只读「当前输入方案」卡；
+        // 渲染态在 onResume → refreshSchemeStatus() 从 SharedPreferences 回填。
+        cardScheme = addCard(
+            root,
+            getString(R.string.main_card_scheme_title),
+            "",
+            onClick = null,
+        )
+        schemeStatusLine = cardScheme.findViewById(CARD_DESC_ID)
         cardSkin = addCard(
             root,
             getString(R.string.main_card_skin_title),
@@ -214,6 +226,31 @@ class MainActivity : Activity() {
             aiStatusLine.setTextColor(if (isNight()) 0xFF8A8F99.toInt() else 0xFF888888.toInt())
             getString(R.string.main_ai_status_missing)
         }
+    }
+
+    /** 只读显示当前方案；点击交互走键盘工具条上的"方案" chip。 */
+    private fun refreshSchemeStatus() {
+        val id = getSharedPreferences("shurufa", MODE_PRIVATE)
+            .getString("shurufa_input_scheme", null)
+            ?: runCatching { RimeBridge.nativeGetInputScheme() }.getOrNull()
+            ?: "pinyin"
+        val labelRes = when (id) {
+            "double_pinyin" -> R.string.scheme_double_pinyin
+            "wubi" -> R.string.scheme_wubi
+            "cangjie" -> R.string.scheme_cangjie
+            else -> R.string.scheme_pinyin
+        }
+        val label = getString(labelRes)
+        schemeStatusLine.text = label
+        val isDefault = id == "pinyin"
+        schemeStatusLine.setTextColor(
+            if (isDefault) {
+                if (isNight()) 0xFF8A8F99.toInt() else 0xFF888888.toInt()
+            } else {
+                // 非默认方案（preview 双拼/五笔/仓颉）时给品牌绿强调，便于一眼看出"当前不是默认"
+                BRAND_GREEN
+            }
+        )
     }
 
     /** 读取 filesDir 覆盖件 / 打包 skin.json，预览 light/dark 两个 candidate.background。 */

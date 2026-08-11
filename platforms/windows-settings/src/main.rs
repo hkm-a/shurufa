@@ -12,7 +12,7 @@ use std::process::Command;
 
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore};
 use serde::{Deserialize, Serialize};
-use shurufa_options::{GeneralSettings, ImeOptions, LogLevel};
+use shurufa_options::{validate_input_scheme, GeneralSettings, ImeOptions, LogLevel};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -435,6 +435,14 @@ struct GeneralSettingsDto {
     history_max_entries: u32,
     enable_polish_hotkey: bool,
     enable_ai_hotkey: bool,
+    /// wave 4 新增：当前方案 id（"pinyin" | "double_pinyin" | "wubi" | "cangjie"）。
+    /// 序列化时即从 options.json 读取；不参与保存 —— 方案有专属 set_input_scheme 命令。
+    #[serde(default = "default_scheme_for_dto")]
+    input_scheme: String,
+}
+
+fn default_scheme_for_dto() -> String {
+    "pinyin".to_owned()
 }
 
 impl From<GeneralSettings> for GeneralSettingsDto {
@@ -452,13 +460,18 @@ impl From<GeneralSettings> for GeneralSettingsDto {
             history_max_entries: g.history_max_entries,
             enable_polish_hotkey: g.enable_polish_hotkey,
             enable_ai_hotkey: g.enable_ai_hotkey,
+            // GeneralSettings 不含方案字段；读盘时由 get_general_settings 另行注入
+            input_scheme: default_scheme_for_dto(),
         }
     }
 }
 
 #[tauri::command]
 fn get_general_settings() -> Result<GeneralSettingsDto, String> {
-    Ok(shurufa_options::load().general.clamped().into())
+    let opts = shurufa_options::load();
+    let mut dto: GeneralSettingsDto = opts.general.clone().clamped().into();
+    dto.input_scheme = opts.input_scheme.clone();
+    Ok(dto)
 }
 
 #[tauri::command]
@@ -704,6 +717,98 @@ fn reset_skin() -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// 输入方案（wave 4）：候选列表 + 选择落盘；引擎热重载由 algo watcher 记日志，
+// 真正 redeploy 由 wave 5 完成。
+// ---------------------------------------------------------------------------
+
+/// 单个输入方案的 DTO（设置页「方案」tab 渲染卡片用）。
+/// `status` 用来区分 stable / preview（wave 4 仅 pinyin 是 stable）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct InputSchemeDto {
+    id: String,
+    name_zh: String,
+    name_en: String,
+    subtitle: String,
+    status: String,
+}
+
+/// 当前所有可选方案；wave 4 硬编码，wave 5 可考虑迁到 schemas/ 索引文件。
+#[tauri::command]
+fn list_input_schemes() -> Result<Vec<InputSchemeDto>, String> {
+    Ok(vec![
+        InputSchemeDto {
+            id: "pinyin".to_owned(),
+            name_zh: "拼音".to_owned(),
+            name_en: "Pinyin".to_owned(),
+            subtitle: "雾凇拼音 · 全拼输入（默认，stable）".to_owned(),
+            status: "stable".to_owned(),
+        },
+        InputSchemeDto {
+            id: "double_pinyin".to_owned(),
+            name_zh: "双拼".to_owned(),
+            name_en: "Double Pinyin".to_owned(),
+            subtitle: "双拼（预览 · 需重启输入法）".to_owned(),
+            status: "preview".to_owned(),
+        },
+        InputSchemeDto {
+            id: "wubi".to_owned(),
+            name_zh: "五笔".to_owned(),
+            name_en: "Wubi 86".to_owned(),
+            subtitle: "五笔 86（预览 · 需重启输入法）".to_owned(),
+            status: "preview".to_owned(),
+        },
+        InputSchemeDto {
+            id: "cangjie".to_owned(),
+            name_zh: "仓颉".to_owned(),
+            name_en: "Cangjie 5".to_owned(),
+            subtitle: "仓颉五代（预览 · 需重启输入法）".to_owned(),
+            status: "preview".to_owned(),
+        },
+    ])
+}
+
+/// 写入 options.json 的 input_scheme；并试图调 shurufa-host reload-scheme
+/// 迫使立刻热生效。wave 4 该子命令尚不存在，失败时降级为日志 —
+/// shurufa-algo 后台有 2 秒 mtime watcher 会走另一条路径捕获（记日志）。
+#[tauri::command]
+async fn set_input_scheme(scheme: String) -> Result<(), String> {
+    let scheme = scheme.trim().to_owned();
+    if !validate_input_scheme(&scheme) {
+        return Err(format!(
+            "未知输入方案 id：{scheme}（合法值：pinyin / double_pinyin / wubi / cangjie）"
+        ));
+    }
+    // 走 modify() 保证并发下不覆盖其他字段更新
+    shurufa_options::modify(|current| ImeOptions {
+        input_scheme: scheme.clone(),
+        ..current.clone()
+    })
+    .map(|_| ())
+    .map_err(|error| format!("保存输入方案失败：{error}"))?;
+
+    // 尝试 shurufa-host reload-scheme（wave 4 stub；不存在时走日志兜底）
+    let host = sibling_exe("shurufa-host.exe");
+    let result: Result<std::process::Child, String> = run_blocking(move || {
+        Command::new(&host)
+            .arg("reload-scheme")
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|error| format!("启动 host 失败：{error}"))
+    })
+    .await;
+    match result {
+        Ok(_child) => {
+            // 子命令存在即后台触发；无需等
+        }
+        Err(error) => {
+            // 找不到 exe / 启动失败：wave 4 stub；algo 侧 2s watcher 会捕获
+            eprintln!("[settings] reload-scheme stub: {error}，等 algo watcher 兜底");
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // 预设皮肤包（skins/ 目录 + schemas/skins-index.json 本地清单）
 // ---------------------------------------------------------------------------
 
@@ -827,7 +932,9 @@ fn main() {
         save_skin,
         reset_skin,
         list_skins,
-        apply_skin
+        apply_skin,
+        list_input_schemes,
+        set_input_scheme
     ]);
     #[cfg(feature = "ui-e2e")]
     let builder = builder.on_page_load(|webview, payload| {
@@ -936,6 +1043,8 @@ mod tests {
     #[test]
     fn 通用设置_dto与领域模型结构一致() {
         // 走 From<GeneralSettings> 转换；断言字段一一对应（log_level 走小写字符串）
+        // wave 4 新增：GeneralSettings 不含 input_scheme，From 用默认 "pinyin" 占位；
+        // get_general_settings 会读取 ImeOptions.input_scheme 再覆盖进 DTO。
         let domain = shurufa_options::GeneralSettings {
             autostart: true,
             log_level: LogLevel::Debug,
@@ -951,6 +1060,8 @@ mod tests {
         assert_eq!(dto.history_max_entries, 800);
         assert!(!dto.enable_polish_hotkey);
         assert!(dto.enable_ai_hotkey);
+        // From<GeneralSettings> 用默认占位；真实值由 get_general_settings 注入
+        assert_eq!(dto.input_scheme, "pinyin");
     }
 
     #[test]
@@ -963,6 +1074,7 @@ mod tests {
             history_max_entries: 5000,
             enable_polish_hotkey: true,
             enable_ai_hotkey: true,
+            input_scheme: "pinyin".to_owned(),
         };
         let mapped = match bad.log_level.as_str() {
             "info" | "debug" | "trace" => true,
@@ -982,5 +1094,30 @@ mod tests {
         .clamped();
         assert_eq!(c1.history_max_entries, 2000);
         assert_eq!(c2.history_max_entries, 50);
+        // 新字段在 save 路径被丢弃（本 DTO 不负责写回 input_scheme）
+        let _ = bad.input_scheme;
+    }
+
+    #[test]
+    fn 通用设置_dto序列化含方案字段且自描述() {
+        // 确保新方案字段进入序列化输出，前端能读到；同时确认方案校验器
+        // 与 DTO 对齐 —— 前端以 list_input_schemes 返回值为准。
+        let dto = GeneralSettingsDto {
+            autostart: false,
+            log_level: "info".to_owned(),
+            skin_dir_override: None,
+            history_max_entries: 500,
+            enable_polish_hotkey: true,
+            enable_ai_hotkey: true,
+            input_scheme: "wubi".to_owned(),
+        };
+        let value = serde_json::to_value(&dto).expect("DTO 序列化失败");
+        assert_eq!(value["input_scheme"], serde_json::json!("wubi"));
+        // 缺字段反序列化要回退 pinyin（serde default）
+        let minimal: GeneralSettingsDto = serde_json::from_str(
+            r##"{"autostart":false,"log_level":"info","skin_dir_override":null,"history_max_entries":500,"enable_polish_hotkey":true,"enable_ai_hotkey":true}"##,
+        )
+        .expect("DTO 反序列化失败");
+        assert_eq!(minimal.input_scheme, "pinyin");
     }
 }
