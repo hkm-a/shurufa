@@ -8,6 +8,7 @@
 mod ai_panel;
 mod dict_update;
 mod listener;
+mod onscreen_kbd;
 mod panel;
 mod paste;
 mod supervis;

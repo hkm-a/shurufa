@@ -109,6 +109,9 @@ pub fn run(store: ClipboardStore) -> Result<()> {
         let ai_hotkey = crate::ai_panel::register_hotkey();
         println!("AI 帮写热键：{ai_hotkey}");
         crate::log_line(&format!("AI 帮写热键：{ai_hotkey}"));
+        let osk_hotkey = crate::onscreen_kbd::register_hotkey();
+        println!("虚拟键盘热键：{osk_hotkey}");
+        crate::log_line(&format!("虚拟键盘热键：{osk_hotkey}"));
 
             let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -129,6 +132,10 @@ pub fn run(store: ClipboardStore) -> Result<()> {
                 }
                 if id == crate::ai_panel::POLISH_HOTKEY_ID {
                     crate::ai_panel::polish_selection();
+                    continue;
+                }
+                if id == crate::onscreen_kbd::HOTKEY_ID {
+                    crate::onscreen_kbd::toggle();
                     continue;
                 }
             }
