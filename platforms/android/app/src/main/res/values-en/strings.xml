@@ -81,4 +81,13 @@
     <string name="ai_panel_cancel">Cancel</string>
     <string name="ai_panel_stream_aborted">(cancelled)</string>
     <string name="ai_panel_error_stream">Stream failed: %1$s</string>
+
+    <!-- Incoming-file notification (v3 FileOffer) -->
+    <string name="file_offer_notif_title">Incoming file</string>
+    <string name="file_offer_notif_body">From %1$s: %2$s (%3$s)</string>
+    <string name="file_offer_accept">Accept</string>
+    <string name="file_offer_decline">Decline</string>
+    <string name="file_offer_saved">Saved %1$s to Downloads/shurufa</string>
+    <string name="file_offer_failed">Receive failed: %1$s</string>
+    <string name="file_offer_unknown">Unknown device</string>
 </resources>

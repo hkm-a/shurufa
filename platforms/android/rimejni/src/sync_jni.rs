@@ -12,17 +12,21 @@
 //! 所有 `#[no_mangle]` 入口经 [`crate::jni_catch`] 包裹，防止 panic
 //! 跨 FFI 传播导致进程 abort；锁污染时以 `.lock().ok()` 安全降级。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
-use jni::objects::{JByteArray, JClass, JString};
-use jni::sys::{jboolean, jint, jstring};
-use jni::JNIEnv;
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
+use jni::sys::{jboolean, jint, jlong, jstring};
+use jni::{JNIEnv, JavaVM};
 use tokio::runtime::Runtime;
 
-use sync_core::{ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService, MAX_CLIP_FILE_BYTES};
+use sync_core::{
+    ConfirmFn, FileConfirmFn, FileOfferPrompt, Incoming, PairPrompt, SyncConfig, SyncService,
+    MAX_CLIP_FILE_BYTES,
+};
 
 struct PairPending {
     code: String,
@@ -40,6 +44,18 @@ struct SyncState {
 }
 
 static STATE: OnceLock<SyncState> = OnceLock::new();
+
+/// 当前在等用户异步决策的 Offer 集合（transfer_id → 决策通道）；
+/// Kotlin 通知上的「接受 / 拒绝」通过 `nativeConfirmOffer` 把布尔送回，
+/// 阻塞在回调上的 Rust 线程被唤醒后即返回给 sync-core。
+static PENDING_DECISIONS: OnceLock<Mutex<HashMap<u64, std_mpsc::Sender<bool>>>> = OnceLock::new();
+
+fn pending_decisions() -> &'static Mutex<HashMap<u64, std_mpsc::Sender<bool>>> {
+    PENDING_DECISIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 决策超时：发送侧看门狗 30s 后会自动放弃，上行留出 5s 余量。
+const OFFER_DECISION_TIMEOUT: Duration = Duration::from_secs(25);
 
 fn jstr(env: &mut JNIEnv, s: &JString) -> String {
     env.get_string(s)
@@ -457,3 +473,162 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativePairRespond(
         (),
     )
 }
+
+/// 构造一个把 FileOffer 转交 Kotlin 的通知回调：
+/// 1) 调用 `IFileConfirmCallback.onOffer(name, sizeBytes, mime, peerFp)`；
+///    Kotlin 侧在此内只负责弹系统通知并立刻返回 true ——返回值约定
+///    true = "已弹通知，稍后经 nativeConfirmOffer 给结果"；
+///    false = "立即拒绝"。
+/// 2) 若 Kotlin 返回 true，则阻塞在本工作线程上收 `nativeConfirmOffer`
+///    的布尔结果，最长等 `OFFER_DECISION_TIMEOUT`，超时按拒绝处理。
+/// 回调运行在 sync-core 的 spawn_blocking worker 上，可安全阻塞。
+fn make_file_confirm(jvm: JavaVM, callback: GlobalRef) -> FileConfirmFn {
+    Arc::new(move |prompt: FileOfferPrompt| {
+        let (tx, rx) = std_mpsc::channel::<bool>();
+        // 入栈 pending，让 Kotlin 同步调 nativeLatestPendingOfferId 拿到 id，
+        // 也让 nativeConfirmOffer 能把布尔送回本条回调。
+        pending_decisions()
+            .lock()
+            .expect("pending 决策锁不可恢复")
+            .insert(prompt.transfer_id, tx);
+        // 调 Kotlin onOffer。失败（JNI 异常 / attach 失败 / 方法返回 false）
+        // 一律降级为立即拒绝。
+        let defer = (|| -> bool {
+            let mut env = match jvm.attach_current_thread() {
+                Ok(env) => env,
+                Err(_) => return false,
+            };
+            let name = match env.new_string(&prompt.name) {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            let mime = match env.new_string(&prompt.mime) {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            let peer = match env.new_string(&prompt.peer_fp) {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            let ret = env.call_method(
+                callback.as_obj(),
+                "onOffer",
+                "(Ljava/lang/String;JLjava/lang/String;Ljava/lang/String;)Z",
+                &[
+                    JValue::Object(&JObject::from(name)),
+                    JValue::Long(prompt.size as jlong),
+                    JValue::Object(&JObject::from(mime)),
+                    JValue::Object(&JObject::from(peer)),
+                ],
+            );
+            let _ = env.exception_check().map(|pending| {
+                if pending {
+                    let _ = env.exception_clear();
+                }
+            });
+            match ret {
+                Ok(v) => v.z().unwrap_or(false),
+                Err(_) => false,
+            }
+        })();
+        if !defer {
+            pending_decisions()
+                .lock()
+                .expect("pending 决策锁不可恢复")
+                .remove(&prompt.transfer_id);
+            return false;
+        }
+        let accepted = rx.recv_timeout(OFFER_DECISION_TIMEOUT).unwrap_or(false);
+        pending_decisions()
+            .lock()
+            .expect("pending 决策锁不可恢复")
+            .remove(&prompt.transfer_id);
+        accepted
+    })
+}
+
+/// 由 Kotlin 把 IFileConfirmCallback 的全局引用注册为 sync-core 的
+/// `FileConfirmFn`。重复调用会覆盖旧回调；传 null 则退回到自动决策
+/// （< FILE_AUTO_ACCEPT_MAX + MIME 白名单）。
+///
+/// 要求 SyncBridge 的静态初始化块已 `System.loadLibrary`；调用方需保证
+/// `nativeStart` 已先行初始化 `STATE`。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSetFileConfirmCallback(
+    env: JNIEnv,
+    _class: JClass,
+    callback: JObject,
+) -> jboolean {
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else { return 0 };
+            if callback.is_null() {
+                state.service.set_file_confirm_handler(None);
+                return 1;
+            }
+            let jvm = match env.get_java_vm() {
+                Ok(v) => v,
+                Err(_) => return 0,
+            };
+            let global = match env.new_global_ref(&callback) {
+                Ok(g) => g,
+                Err(_) => return 0,
+            };
+            state
+                .service
+                .set_file_confirm_handler(Some(make_file_confirm(jvm, global)));
+            1
+        },
+        0,
+    )
+}
+
+/// 返回当前最近一次待决策 transfer_id。
+/// Kotlin 的 `onOffer` 被 Rust 同步调用时尚未拿到 transfer_id——通过这里
+/// 反查；无待决策 Offer 时返回 0。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeLatestPendingOfferId(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    crate::jni_catch(
+        || {
+            let guard = match pending_decisions().lock() {
+                Ok(g) => g,
+                Err(_) => return 0,
+            };
+            guard.keys().copied().max().unwrap_or(0) as jlong
+        },
+        0,
+    )
+}
+
+/// 用户在系统通知上点击「接受 / 拒绝」后经此放行阻塞中的 file_confirm 回调；
+/// transfer_id 携带 `onOffer` 阶段通过 `nativeLatestPendingOfferId` 取到的同值。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeConfirmOffer(
+    _env: JNIEnv,
+    _class: JClass,
+    transfer_id: jlong,
+    accept: jboolean,
+) {
+    crate::jni_catch(
+        || {
+            if transfer_id <= 0 {
+                return;
+            }
+            let tx = {
+                let mut guard = match pending_decisions().lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                guard.remove(&(transfer_id as u64))
+            };
+            if let Some(tx) = tx {
+                let _ = tx.send(accept != 0);
+            }
+        },
+        (),
+    )
+}
+

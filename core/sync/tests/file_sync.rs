@@ -137,7 +137,7 @@ async fn 甲乙间一兆文件走通_v3_全链() {
     // 乙：任何 Offer 直接接受（模拟白名单自动接受）。
     let auto_accept: sync_core::FileConfirmFn =
         Arc::new(|_prompt: FileOfferPrompt| true);
-    b.set_file_confirm_handler(auto_accept);
+    b.set_file_confirm_handler(Some(auto_accept));
     let recv_dir = config_dir_b.join("received");
     b.set_file_recv_dir_override(Some(recv_dir.clone()));
 
@@ -216,7 +216,7 @@ async fn 接收方拒绝时发送端进入_declined() {
 
     let decline_all: sync_core::FileConfirmFn =
         Arc::new(|_prompt: FileOfferPrompt| false);
-    b.set_file_confirm_handler(decline_all);
+    b.set_file_confirm_handler(Some(decline_all));
     b.set_file_recv_dir_override(Some(config_dir_b.join("received")));
 
     pair(&a, &b).await;
@@ -261,7 +261,7 @@ async fn 坏块导致_sha256_不匹配发送端失败() {
     let config_dir_b = _keep.1.path().to_path_buf();
 
     let auto_accept: sync_core::FileConfirmFn = Arc::new(|_| true);
-    b.set_file_confirm_handler(auto_accept);
+    b.set_file_confirm_handler(Some(auto_accept));
     let recv_dir = config_dir_b.join("received");
     b.set_file_recv_dir_override(Some(recv_dir.clone()));
 
@@ -358,7 +358,7 @@ async fn v3_协商后甲_乙互认_file_v1_特性() {
     let config_dir_b = _keep.1.path().to_path_buf();
 
     let decline: sync_core::FileConfirmFn = Arc::new(|_| false);
-    b.set_file_confirm_handler(decline);
+    b.set_file_confirm_handler(Some(decline));
     b.set_file_recv_dir_override(Some(config_dir_b.join("received")));
 
     pair(&a, &b).await;
@@ -375,4 +375,71 @@ async fn v3_协商后甲_乙互认_file_v1_特性() {
         matches!(offer, Some(Incoming::FileOffer { .. })),
         "乙端应看到 FileOffer 入站事件"
     );
+}
+
+/// file_confirm 决策期间 file_pending_offers() 应包含记录，决策完成后清空；
+/// 回调返回 false → 发送侧终态 Declined、理由 = user_declined，
+/// 且 FileOfferPrompt 携带的 transfer_id / peer_fp 与本端对等。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_confirm拒绝时_pending列表登台后清空且发送端declined() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let (a, mut in_a, b, _in_b) = spawn_pair(&dir_a, &dir_b).await;
+    let _keep = (dir_a, dir_b);
+    let config_dir_b = _keep.1.path().to_path_buf();
+
+    // 回调里断言 prompt.transfer_id 出现在 pending 列表中、peer_fp 非空，
+    // 决策返回 false；回调之外断言 pending 列表随后清空。
+    let b_clone = b.clone();
+    let handler: sync_core::FileConfirmFn = Arc::new(move |prompt: FileOfferPrompt| {
+        assert!(prompt.transfer_id > 0, "transfer_id 应从 1 起单调递增");
+        assert!(!prompt.peer_fp.is_empty(), "应带回发送侧对端指纹");
+        assert_eq!(prompt.size, 48 * 1024, "size 应与原文件一致");
+        let ids: Vec<u64> = b_clone
+            .file_pending_offers()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            ids.contains(&prompt.transfer_id),
+            "决策期间 {prompt:?} 应在 pending 列表，实际 {ids:?}"
+        );
+        false
+    });
+    b.set_file_confirm_handler(Some(handler));
+    b.set_file_recv_dir_override(Some(config_dir_b.join("received")));
+
+    pair(&a, &b).await;
+
+    let src = _keep.0.path().join("ui_decline.bin");
+    std::fs::write(&src, make_bytes(48 * 1024)).unwrap();
+
+    let msg_id = a.send_file_path(&src).unwrap();
+    let state = wait_terminal(&a, &msg_id, Duration::from_secs(15)).await;
+    match state {
+        Some(FileSendState::Declined { reason, .. }) => {
+            assert_eq!(reason, "user_declined");
+        }
+        other => panic!("甲端终态应 Declined，实际 {other:?}"),
+    }
+
+    // 决策完成后 pending_offers 应清空
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if b.file_pending_offers().is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "file_pending_offers 未清空");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // 甲端收到 ok=false 终态事件
+    let done = wait_done(&mut in_a, Duration::from_secs(5), |inc| {
+        matches!(inc, Incoming::FileTransferDone { ok: false, .. })
+    })
+    .await;
+    assert!(matches!(
+        done,
+        Some(Incoming::FileTransferDone { ok: false, .. })
+    ));
 }

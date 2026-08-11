@@ -81,4 +81,13 @@
     <string name="ai_panel_cancel">取消</string>
     <string name="ai_panel_stream_aborted">（已取消）</string>
     <string name="ai_panel_error_stream">流式请求失败：%1$s</string>
+
+    <!-- 文件接收通知（v3 FileOffer） -->
+    <string name="file_offer_notif_title">接收文件</string>
+    <string name="file_offer_notif_body">从 %1$s 接收 %2$s（%3$s）</string>
+    <string name="file_offer_accept">接受</string>
+    <string name="file_offer_decline">拒绝</string>
+    <string name="file_offer_saved">已保存 %1$s 至 Downloads/shurufa</string>
+    <string name="file_offer_failed">接收失败： %1$s</string>
+    <string name="file_offer_unknown">未知设备</string>
 </resources>

@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -251,12 +252,30 @@ pub type SearchHandler = Arc<dyn Fn(&str) -> Vec<crate::protocol::SearchHit> + S
 pub type FileConfirmFn = Arc<dyn Fn(FileOfferPrompt) -> bool + Send + Sync>;
 
 /// 入站文件 Offer 提示；接收方宿主据此弹「接收/拒绝」。
+///
+/// `transfer_id` 由 sync-core 在 Offer 到达时单调生成（自增 AtomicU64），
+/// 用于把「用户稍后在通知上点击接受/拒绝」对应回同一条 Offer——例如
+/// Android 的 BroadcastReceiver 把 transfer_id 回传给 JNI 侧以放行
+/// 阻塞中的决策通道。
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileOfferPrompt {
+    /// 接收侧单调递增的传输 id；仅在当前进程内有效。
+    pub transfer_id: u64,
+    /// 来源设备 SHA-256 指纹（64 字符小写十六进制）。前端可截 8 位展示。
+    pub peer_fp: String,
     pub from_name: String,
     pub name: String,
     pub size: u64,
     pub mime: String,
+}
+
+/// 接收侧 Offer 决策用的单调 id：进程内 AtomicU64，从 1 起自增，
+/// 仅供把「同一进程内的某次 Offer 决策请求」与后来的用户响应一一对应；
+/// 与协议层 msg_id 正交，不参与线上数据。
+static FILE_OFFER_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn next_file_offer_id() -> u64 {
+    FILE_OFFER_SEQ.fetch_add(1, AtomicOrdering::Relaxed)
 }
 
 struct Shared {
@@ -284,6 +303,9 @@ struct Shared {
     search_handler: Mutex<Option<SearchHandler>>,
     /// 入站 Offer 弹出回调（宿主注入）；None 时按白名单+体量自动收。
     file_confirm: Mutex<Option<FileConfirmFn>>,
+    /// 已送达宿主但尚未拿到决策的 Offer（transfer_id → prompt）。
+    /// 用户异步响应（通知按钮/对话框）经此找回同一笔决策。
+    pending_offers: Mutex<HashMap<u64, FileOfferPrompt>>,
     /// 传输中 msg_id → 状态；宿主轮询/测试断言用。
     transfers: Mutex<HashMap<String, FileSendState>>,
     /// 出站 Offer 发出时刻，用于计算 30s 无响应超时。
@@ -543,6 +565,7 @@ impl SyncService {
             // 搜索留给宿主在历史库就绪后再注入，避免阻塞服务启动。
             search_handler: Mutex::new(None),
             file_confirm: Mutex::new(None),
+            pending_offers: Mutex::new(HashMap::new()),
             transfers: Mutex::new(HashMap::new()),
             offer_sent_at: Mutex::new(HashMap::new()),
             stream_progress_at: Mutex::new(HashMap::new()),
@@ -768,13 +791,27 @@ impl SyncService {
     }
 
     /// 在接收侧注入 Offer 确认回调：宿主弹系统对话框 / Toast，返回
-    /// true=接受 false=拒绝。None 时按体量+MIME 白名单自动决策。
-    pub fn set_file_confirm_handler(&self, handler: FileConfirmFn) {
+    /// true=接受 false=拒绝。传 None 时回到默认策略
+    /// （体量 + MIME 白名单自动收），传 Some 时由宿主决策。
+    pub fn set_file_confirm_handler(&self, handler: Option<FileConfirmFn>) {
         *self
             .shared
             .file_confirm
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handler);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = handler;
+    }
+
+    /// 当前已弹给宿主但尚未收到最终决策的 Offer 列表；宿主
+    /// （例如 Android 侧的 BroadcastReceiver）用 transfer_id 反查
+    /// 用户点击对应的是哪一笔。
+    pub fn file_pending_offers(&self) -> Vec<(u64, FileOfferPrompt)> {
+        self.shared
+            .pending_offers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|(id, p)| (*id, p.clone()))
+            .collect()
     }
 
     /// 测试用：将入站文件落盘目录 override 到指定路径；生产代码无需调用。
@@ -1543,12 +1580,39 @@ where
                                 .unwrap_or_else(|p| p.into_inner())
                                 .clone();
                             match cb {
-                                Some(f) => f(FileOfferPrompt {
-                                    from_name: peer_name.clone(),
-                                    name: name.clone(),
-                                    size,
-                                    mime: mime.clone(),
-                                }),
+                                Some(f) => {
+                                    // 生成单调 transfer_id 并入表，便于宿主把"用户
+                                    // 稍后点击的通知按钮"回指到本条 Offer。
+                                    let transfer_id = next_file_offer_id();
+                                    let prompt = FileOfferPrompt {
+                                        transfer_id,
+                                        peer_fp: fp.clone(),
+                                        from_name: peer_name.clone(),
+                                        name: name.clone(),
+                                        size,
+                                        mime: mime.clone(),
+                                    };
+                                    shared
+                                        .pending_offers
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .insert(transfer_id, prompt.clone());
+                                    // 宿主回调可能阻塞（等待用户点击通知上的
+                                    // 接受/拒绝），放进 spawn_blocking，避免
+                                    // 阻塞 duplex 主循环。
+                                    let decision = {
+                                        let prompt_for_cb = prompt.clone();
+                                        tokio::task::spawn_blocking(move || f(prompt_for_cb))
+                                            .await
+                                            .unwrap_or(false)
+                                    };
+                                    shared
+                                        .pending_offers
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .remove(&transfer_id);
+                                    decision
+                                }
                                 None => {
                                     size < FILE_AUTO_ACCEPT_MAX
                                         && mime_is_whitelisted(&mime)
@@ -2157,5 +2221,33 @@ mod tests {
         }
         assert!(first.peers().iter().all(|peer| peer.last_addr.is_none()));
         assert!(second.peers().iter().all(|peer| peer.last_addr.is_none()));
+    }
+
+    /// 单例验证：file_confirm handler 返回 false → 发送侧终态为 Declined，
+    /// 决策理由 = "user_declined"。集成行为由 tests/file_sync.rs 的
+    /// `接收方拒绝时发送端进入_declined` 覆盖；这里只验证 set/clear 接口。
+    #[test]
+    fn 可注入与清空file_confirm_决策回调() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = SyncConfig::new(dir.path().into(), "测试机".into());
+        cfg.port = 0;
+        cfg.enable_mdns = false;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (tx, _rx) = mpsc::channel(4);
+        let svc = rt
+            .block_on(SyncService::start(cfg, tx, None, Box::new(|_| {})))
+            .expect("启动测试 SyncService");
+        // 未注入时默认为 None，pending_offers 也应为空
+        assert!(svc.file_pending_offers().is_empty());
+        let decline: FileConfirmFn = Arc::new(|_p: FileOfferPrompt| false);
+        svc.set_file_confirm_handler(Some(decline));
+        // 清空后再设为 None，应回到 auto 策略（不再持有回调）。
+        svc.set_file_confirm_handler(None);
+        let guard = svc
+            .shared
+            .file_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        assert!(guard.is_none());
     }
 }
