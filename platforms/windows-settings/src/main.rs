@@ -802,22 +802,22 @@ fn list_input_schemes() -> Result<Vec<InputSchemeDto>, String> {
             id: "double_pinyin".to_owned(),
             name_zh: "双拼".to_owned(),
             name_en: "Double Pinyin".to_owned(),
-            subtitle: "双拼（预览 · 需重启输入法）".to_owned(),
-            status: "preview".to_owned(),
+            subtitle: "小鹤双拼 · 与雾凇共享词库（wave 5 实装，stable）".to_owned(),
+            status: "stable".to_owned(),
         },
         InputSchemeDto {
             id: "wubi".to_owned(),
             name_zh: "五笔".to_owned(),
             name_en: "Wubi 86".to_owned(),
-            subtitle: "五笔 86（预览 · 需重启输入法）".to_owned(),
-            status: "preview".to_owned(),
+            subtitle: "五笔 86（码表数据待接入，暂不可用）".to_owned(),
+            status: "unavailable".to_owned(),
         },
         InputSchemeDto {
             id: "cangjie".to_owned(),
             name_zh: "仓颉".to_owned(),
             name_en: "Cangjie 5".to_owned(),
-            subtitle: "仓颉五代（预览 · 需重启输入法）".to_owned(),
-            status: "preview".to_owned(),
+            subtitle: "仓颉五代（码表数据待接入，暂不可用）".to_owned(),
+            status: "unavailable".to_owned(),
         },
     ])
 }

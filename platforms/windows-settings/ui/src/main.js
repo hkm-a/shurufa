@@ -566,7 +566,8 @@ function schemePage() {
   const rows = schemeList
     .map((scheme) => {
       const checked = schemeCurrent === scheme.id ? "checked" : "";
-      const tone = scheme.status === "stable" ? "teal" : "coral";
+      const disabled = scheme.status === "unavailable" ? "disabled" : "";
+      const tone = scheme.status === "stable" ? "teal" : scheme.status === "unavailable" ? "dim" : "coral";
       return `
         <div class="setting-row">
           <div class="row-icon ${tone}"><i data-lucide="circle-dot"></i></div>
@@ -577,7 +578,7 @@ function schemePage() {
             </div>
           </label>
           <label class="switch">
-            <input type="radio" name="scheme" value="${escapeHtml(scheme.id)}" data-scheme-id="${escapeHtml(scheme.id)}" ${checked} />
+            <input type="radio" name="scheme" value="${escapeHtml(scheme.id)}" data-scheme-id="${escapeHtml(scheme.id)}" ${checked} ${disabled} />
             <span></span>
           </label>
         </div>`;
@@ -1112,6 +1113,7 @@ function render() {
     input.onchange = () => {
       const id = input.dataset.schemeId;
       if (!id) return;
+      if (input.disabled) return; // unavailable 方案（五笔/仓颉数据待接入）
       const previous = schemeCurrent;
       invoke("set_input_scheme", { scheme: id })
         .then(() => {
