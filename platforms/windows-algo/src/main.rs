@@ -61,7 +61,24 @@ fn input_scheme_differs(a: &shurufa_options::ImeOptions, b: &shurufa_options::Im
     a.input_scheme != b.input_scheme
 }
 
-fn watch_input_scheme(last_known: std::sync::Arc<std::sync::Mutex<shurufa_options::ImeOptions>>) {
+/// 把 options.json 的 `input_scheme` 映射为 librime schema_id。
+/// 与 schemas/ 目录下 schema 的 schema_id 一一对应；未知值回退 pinyin
+/// （与 ImeOptions::default 的 input_scheme 一致）。
+fn schema_id_for(scheme: &str) -> &'static str {
+    match scheme {
+        "double_pinyin" => "shurufa_double_pinyin",
+        "wubi" => "shurufa_wubi",
+        "cangjie" => "shurufa_cangjie",
+        _ => "rime_ice",
+    }
+}
+
+/// 输入方案热切换：2 秒轮询 options.json，方案变化时把最新 schema_id
+/// 写入共享槽；每个新会话创建后按槽值 select_schema。
+fn watch_input_scheme(
+    last_known: std::sync::Arc<std::sync::Mutex<shurufa_options::ImeOptions>>,
+    current_scheme: std::sync::Arc<std::sync::Mutex<String>>,
+) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_secs(2));
@@ -73,13 +90,35 @@ fn watch_input_scheme(last_known: std::sync::Arc<std::sync::Mutex<shurufa_option
                 stale
             };
             if input_scheme_differs(&old, &current) {
+                let sid = schema_id_for(&current.input_scheme);
+                {
+                    let mut slot = current_scheme.lock().unwrap_or_else(|p| p.into_inner());
+                    *slot = sid.to_owned();
+                }
                 log(&format!(
-                    "input_scheme 变化：{} → {}（wave 4 仅记录；wave 5 将触发热重载）",
-                    old.input_scheme, current.input_scheme
+                    "input_scheme 变化：{} → {}（schema={}），新会话将热切换",
+                    old.input_scheme, current.input_scheme, sid
                 ));
             }
         }
     });
+}
+
+/// 创建会话并按当前方案选择 schema（如果非默认 pinyin）。
+fn create_session_with_scheme(
+    engine: &'static ime_bridge::Engine,
+    current_scheme: &std::sync::Arc<std::sync::Mutex<String>>,
+) -> Result<ime_bridge::Session<'static>, String> {
+    let session = engine.create_session()?;
+    let scheme = current_scheme.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    if scheme != "rime_ice" {
+        if !session.select_schema(&scheme) {
+            log(&format!("select_schema({scheme}) 失败，回退 rime_ice"));
+        } else {
+            log(&format!("会话已切换方案：{scheme}"));
+        }
+    }
+    Ok(session)
 }
 
 /// 共享数据目录：优先取 `SHURUFA_SCHEMAS` 环境变量，否则沿 exe 上级找 schemas，
@@ -133,10 +172,13 @@ fn init_engine() -> ime_bridge::Engine {
 fn run_service() -> ! {
     let engine = init_engine();
     let engine: &'static ime_bridge::Engine = Box::leak(Box::new(engine));
-    // wave 4：启动 2 秒轮询 options.json 的 input_scheme 监听线程。
-    // 注意：wave 5 之前这里只是日志（不 redeploy schema）。
+    // 输入方案热切换：2 秒轮询 options.json，把最新 schema_id 写入共享槽；
+    // 每个新会话创建后 select_schema（见 create_session_with_scheme）。
     let shared_opts = std::sync::Arc::new(std::sync::Mutex::new(shurufa_options::load()));
-    watch_input_scheme(shared_opts);
+    let current_scheme = std::sync::Arc::new(std::sync::Mutex::new(String::from(
+        schema_id_for(&shared_opts.lock().unwrap_or_else(|p| p.into_inner()).input_scheme),
+    )));
+    watch_input_scheme(shared_opts, current_scheme.clone());
     log(&format!("监听 {} …", PIPE_NAME));
     loop {
         let server = match PipeServer::create() {
@@ -154,11 +196,10 @@ fn run_service() -> ! {
         log("收到连接，服务会话…");
         // 每个 TSF 宿主都会长期持有一个连接。接受后立即回到循环创建下一个
         // 管道实例，连接处理在独立线程中进行，避免首个宿主阻塞全部后续宿主。
+        let scheme_slot = current_scheme.clone();
         std::thread::spawn(move || {
             ime_ipc::server::serve_connection(&server, move || {
-                engine
-                    .create_session()
-                    .map_err(|e| format!("创建会话失败：{e}"))
+                create_session_with_scheme(engine, &scheme_slot)
             });
             log("会话结束");
         });

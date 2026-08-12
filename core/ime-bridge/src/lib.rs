@@ -135,6 +135,7 @@ impl Engine {
 
             (api_ref.setup)(&mut traits);
             (api_ref.initialize)(&mut traits);
+
             if (api_ref.start_maintenance)(1) != 0 {
                 (api_ref.join_maintenance_thread)();
             }
@@ -342,6 +343,14 @@ impl Session<'_> {
             (api.free_status)(&mut status);
             bits
         }
+    }
+
+    /// 切换本会话的输入方案（如 "shurufa_double_pinyin"）。成功返回 true。
+    /// 底层走 librime `select_schema`；方案必须在已部署 schema 列表内。
+    pub fn select_schema(&self, schema_id: &str) -> bool {
+        let _guard = self.engine.lock();
+        let id = to_cstring(schema_id);
+        unsafe { (self.engine.api().select_schema)(self.id, id.as_ptr()) != 0 }
     }
 }
 

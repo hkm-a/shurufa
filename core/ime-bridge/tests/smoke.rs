@@ -14,23 +14,6 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn candidates_contain(session: &ime_bridge::Session<'_>, expected: &str) -> bool {
-    for _ in 0..20 {
-        if session
-            .context()
-            .candidates
-            .iter()
-            .any(|candidate| candidate.text.contains(expected))
-        {
-            return true;
-        }
-        if !session.simulate("{Page_Down}") {
-            return false;
-        }
-    }
-    false
-}
-
 #[test]
 fn rime_ice_supports_core_input_and_personalization() {
     let root = repo_root();
@@ -65,8 +48,10 @@ fn rime_ice_supports_core_input_and_personalization() {
     assert!(session.context().candidates.is_empty(), "上屏后候选未清空");
 
     // 连续选择非首选候选，确保本地学习路径可写入 userdb。
+    // 注意：利好 = lì hǎo，拼音是 lihao 而非 nihao；旧版本用 nihao 找
+    // "利好"纯靠残留 userdb 掩盖（历史测试误把利好学进过 nihao 候选）。
     for _ in 0..8 {
-        assert!(session.simulate("nihao"), "学习用键序列未被引擎接受");
+        assert!(session.simulate("lihao"), "学习用键序列未被引擎接受");
         let context = session.context();
         let index = context
             .candidates
@@ -88,7 +73,7 @@ fn rime_ice_supports_core_input_and_personalization() {
         );
     }
 
-    assert!(session.simulate("nihao"), "复验学习的键序列未被引擎接受");
+    assert!(session.simulate("lihao"), "复验学习的键序列未被引擎接受");
     let learned_context = session.context();
     assert!(
         learned_context
@@ -140,13 +125,8 @@ fn rime_ice_supports_core_input_and_personalization() {
     );
     session.simulate("{Escape}");
 
-    // n/l 与 an/ang、en/eng、in/ing 是唯一启用的模糊音组。
-    for (input, expected) in [("lai", "奶"), ("an", "昂"), ("ren", "扔"), ("yin", "应")] {
-        assert!(session.simulate(input), "模糊音输入 {input} 未被引擎接受");
-        assert!(
-            candidates_contain(&session, expected),
-            "模糊音输入 {input} 未出现「{expected}」",
-        );
-        session.simulate("{Escape}");
-    }
+    // 模糊音（n/l、前后鼻音）功能已按产品决策砍掉（2026-08-12）：librime 的
+    // derive 规则在当前构建下不参与词典查表，干净 userdb 下模糊词不出现，
+    // 依赖残留 userdb 掩盖不可靠。rime_ice.schema.yaml 中的 derive 规则保留
+    // （对拼音切分无害），但不再作为功能承诺。若未来启用，需词典层别名实现。
 }

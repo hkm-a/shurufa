@@ -1,0 +1,18 @@
+# Rime dictionary - 双拼词典（小鹤）
+# encoding: utf-8
+#
+# 与 rime_ice 共享全部词条：直接导入雾凇分表（与 rime_ice.dict.yaml 相同），
+# librime 会为本词典按 shurufa_double_pinyin 的 speller.algebra 生成独立
+# prism（双拼码索引）+ table，select_schema 后才能用双拼键序命中词条。
+
+---
+name: shurufa_double_pinyin
+version: "2026.08.12"
+sort: by_weight
+use_preset_vocabulary: true
+import_tables:
+  - cn_dicts/8105     # 字表
+  - cn_dicts/base     # 基础词库
+  - cn_dicts/ext      # 扩展词库
+  - cn_dicts/others   # 一些杂项
+...

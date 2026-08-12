@@ -1,21 +1,21 @@
-# Rime schema (placeholder — wave 4 起被设置中心/安卓键盘的方案选择器引用)
+# Rime schema — 小鹤双拼（wave 5 实装：从占位升级为可部署可用方案）
 # encoding: utf-8
 
-# 双拼输入方案占位（默认映射目标：小鹤双拼）。选型/词表供 wave 5 引擎侧实装；
-# 本文件当前只完成"可被 librime 部署读取的最小骨架"，不参与引擎默认链路。
-#
-# TODO wave 5: concrete double-pinyin mapping table
-#   - speller/algebra 全量映射（多用于小鹤：zh→v, ch→i, sh→u, ai→l, an→j, …）
-#   - 与 rime_ice 词典共享 translator.dictionary，或独立 double_pinyin 词典
-#   - recognizer/patterns 与 key_binder/import_preset 按雾凇基线对齐
+# 双拼输入方案（小鹤映射）。与 rime_ice 共享雾凇核心词典；speller.algebra
+# 为完整的小鹤双拼表（声母 zh→v/ch→i/sh→u；韵母 ai→l/an→j/ang→k/ao→c、
+# ei→z/en→f/eng→g/er→r、ia→x/ian→m/iang→d/iao→n/ie→p/in→b/ing→y/
+# iong→s/iu→q、ong→s/ou→z、ua→x/uai→k/uan→r/uang→d/ui→w/un→y/uo→o、
+# ve→t/van→r/vn→y，ü 系经 [jqxy]u→v 与 [nl]ue→ve 规则并入）。
+# 2026-08-12 由占位升级：设置中心/安卓"方案"选择器切到本方案后即真实生效。
+
 schema:
   schema_id: shurufa_double_pinyin
-  name: 双拼
-  version: "2026.08.11"
+  name: 双拼（小鹤）
+  version: "2026.08.12"
   author:
     - Shurufa
   description: |
-    双拼方案占位（默认小鹤映射）；wave 5 填充具体映射表并接入引擎热重部署。
+    小鹤双拼输入方案，与雾凇拼音共享词典。两键一字：声母 + 韵母键位。
   dependencies:
     - rime_ice
 
@@ -23,6 +23,10 @@ switches:
   - name: ascii_mode
     reset: 0
     states: [ 中文, 西文 ]
+  - name: full_shape
+    states: [ 半角, 全角 ]
+  - name: ascii_punct
+    states: [ 。，, ．， ]
 
 engine:
   processors:
@@ -45,16 +49,66 @@ engine:
     - script_translator
 
 translator:
-  # 与拼音共享雾凇核心词典（初始_quality 与拼音方案一致，避免候选质量漂移）
-  dictionary: rime_ice
+  # 双拼专属词典（词条从 rime_ice 导入）：librime 按本方案 speller.algebra
+  # 为其编译独立 prism（双拼码索引），用户输入双拼键序才能命中词条。
+  # 不能直接复用 rime_ice 词典——那会沿用全拼 prism，双拼键序无法解析。
+  dictionary: shurufa_double_pinyin
   enable_user_dict: true
+  enable_sentence: true
+  max_sentence_length: 8
+  enable_word_completion: true
   initial_quality: 1.2
+  preedit_format:
+    - xform/([nl])v/$1ü/
+    - xform/([nl])ue/$1üe/
+    - xform/([jqxy])v/$1u/
 
 speller:
   alphabet: zyxwvutsrqponmlkjihgfedcba
   delimiter: " '"
-  algebra: []
-    # TODO wave 5: 在此追加双拼映射规则（xform/derive/abbrev）
+  algebra:
+    - erase/^xx$/
+    # 零声母与 j/q/x/y + ü 系列（先于单字母韵母规则，保证命中）
+    - derive/^([jqxy])u$/$1v/
+    - derive/^([nl])ue$/$1ve/
+    - derive/^([aoe])([ioun])$/$1$2/
+    # 声母：三组双字母声母归一键
+    - xform/^zh/v/
+    - xform/^ch/i/
+    - xform/^sh/u/
+    # 韵母：保留声母前缀，仅替换韵母部分（librime 双拼的逆解析依赖此形式）
+    - xform/^([a-z])ai$/$1l/
+    - xform/^([a-z])an$/$1j/
+    - xform/^([a-z])ang$/$1k/
+    - xform/^([a-z])ao$/$1c/
+    - xform/^([a-z])ei$/$1z/
+    - xform/^([a-z])en$/$1f/
+    - xform/^([a-z])eng$/$1g/
+    - xform/^([a-z])er$/$1r/
+    - xform/^([a-z])ie$/$1p/
+    - xform/^([a-z])in$/$1b/
+    - xform/^([a-z])ing$/$1y/
+    - xform/^([a-z])iu$/$1q/
+    - xform/^([a-z])ong$/$1s/
+    - xform/^([a-z])ou$/$1z/
+    - xform/^([a-z])ia$/$1x/
+    - xform/^([a-z])ian$/$1m/
+    - xform/^([a-z])iang$/$1d/
+    - xform/^([a-z])iao$/$1n/
+    - xform/^([a-z])iong$/$1s/
+    - xform/^([a-z])ua$/$1x/
+    - xform/^([a-z])uai$/$1k/
+    - xform/^([a-z])uan$/$1r/
+    - xform/^([a-z])uang$/$1d/
+    - xform/^([a-z])ui$/$1w/
+    - xform/^([a-z])un$/$1y/
+    - xform/^([a-z])uo$/$1o/
+    - xform/^([a-z])ve$/$1t/
+    - xform/^([a-z])van$/$1r/
+    - xform/^([a-z])vn$/$1y/
+    # 首字母缩写（与雾凇拼音一致）
+    - abbrev/^([a-z]).+$/$1/
+    - abbrev/^([zcs]h).+$/$1/
 
 punctuator:
   import_preset: symbols
@@ -64,3 +118,5 @@ key_binder:
 
 recognizer:
   import_preset: default
+  patterns:
+    punct: "^/([0-9]+[a-z]*|[a-z]+)$"
