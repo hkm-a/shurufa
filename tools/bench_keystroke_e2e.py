@@ -227,12 +227,13 @@ def main() -> int:
         is_warm = i < args.warmup
         # 键序：拼音 + 空格（拼音→空格触发 commit）
         keys = rand_pinyin(rng) + " "
-        t_send_start = qpc_now()
-        max_vk_ts = t_send_start
+        # 记录「每个 VK 按下前」的 QPC：LAT 行只对 commit 键（空格）产生，
+        # 时延应量“那只键从按下到上屏”，而不是整串起点。
+        key_times: list[tuple[int, int]] = []  # (vk, qpc_before_down)
         for ch in keys:
             for vk in pinyin_to_vks(ch):
+                key_times.append((vk, qpc_now()))
                 press_char(vk)
-                max_vk_ts = qpc_now()
                 time.sleep(0.028)
         t_send_done = qpc_now()
 
@@ -244,7 +245,7 @@ def main() -> int:
             if len(cur) > n0:
                 cand = [
                     c for c in cur[n0:]
-                    if c["q0"] >= t_send_start
+                    if c["q0"] >= key_times[0][1]
                     and c["q1"] <= t_send_done + int(0.6 * freq)
                 ]
                 if cand:
@@ -258,8 +259,9 @@ def main() -> int:
             time.sleep(0.05)
             continue
 
-        # 键到上屏延迟 = host q1 - python 发送起点 QPC（同 epoch）
-        delta_us = (matched["q1"] - t_send_start) * 1_000_000.0 / freq
+        # 键到上屏延迟 = host q1 - commit 键（最后一只空格）按下前 QPC（同 epoch）
+        commit_vk, commit_key_t0 = key_times[-1]
+        delta_us = (matched["q1"] - commit_key_t0) * 1_000_000.0 / freq
         if not is_warm:
             timings_ms.append(delta_us / 1000.0)
         time.sleep(0.05)
@@ -280,12 +282,13 @@ def main() -> int:
     }
     if timings_ms:
         timings_sorted = sorted(timings_ms)
+        p95_ms = round(
+            timings_sorted[max(0, int(len(timings_sorted) * 0.95) - 1)], 3
+        )
         summary.update(
             {
                 "p50_ms": round(statistics.median(timings_sorted), 3),
-                "p95_ms": round(
-                    timings_sorted[max(0, int(len(timings_sorted) * 0.95) - 1)], 3
-                ),
+                "p95_ms": p95_ms,
                 "p99_ms": round(
                     timings_sorted[max(0, int(len(timings_sorted) * 0.99) - 1)], 3
                 ),
@@ -293,7 +296,7 @@ def main() -> int:
                 "min_ms": round(timings_sorted[0], 3),
                 "max_ms": round(timings_sorted[-1], 3),
                 "threshold_ms": args.p95_ms,
-                "ok": summary.get("p95_ms", 1e9) <= args.p95_ms
+                "ok": p95_ms <= args.p95_ms
                 and len(timings_ms) >= args.iters // 2,
             }
         )
