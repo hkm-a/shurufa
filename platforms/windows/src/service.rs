@@ -7,6 +7,38 @@
 use std::cell::RefCell;
 use std::time::{Duration, Instant, SystemTime};
 
+// R2.1 键序到上屏延迟钩子（SHURUFA_LATENCY_LOG=1 时启用）：
+// handle_key 入口/编辑会话出口拍 QPC，commit 非空时以
+// `LAT commit chars=N keysym=0xXX elapsed_us=... qpc1=...` 单行写 debug 日志；
+// tools/bench_keystroke_e2e.py 驱动 Notepad 时同时记 SendInput 的 QPC，
+// 再与该日志行 QPC（同 epoch）做差，即为真实键到上屏时延。
+mod latency_probe {
+    pub fn enabled() -> bool {
+        std::env::var_os("SHURUFA_LATENCY_LOG")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false)
+    }
+
+    pub fn now() -> u64 {
+        let mut qpc = 0i64;
+        unsafe {
+            windows::Win32::System::Performance::QueryPerformanceCounter(&mut qpc);
+        }
+        qpc as u64
+    }
+
+    pub fn to_us(q0: u64, q1: u64) -> u64 {
+        let mut freq = 0i64;
+        unsafe {
+            windows::Win32::System::Performance::QueryPerformanceFrequency(&mut freq);
+        }
+        if freq <= 0 {
+            return 0;
+        }
+        q1.saturating_sub(q0) * 1_000_000 / (freq as u64)
+    }
+}
+
 use windows::core::{implement, Interface, Ref, Result, BOOL, GUID};
 use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::UI::TextServices::{
@@ -312,6 +344,14 @@ impl Inner {
             return false;
         };
 
+        // R2.1 打点：从按键入处理到编辑会话完成写文本（含 ipc -> engine -> Commit）
+        // 的路径时延计数；只在 SHURUFA_LATENCY_LOG 开关控制下激活。
+        let probe_q0 = if latency_probe::enabled() {
+            Some(latency_probe::now())
+        } else {
+            None
+        };
+
         crate::debug_log(&format!(
             "键 vk=0x{:X} keysym=0x{:X} eaten={} commit={:?} preedit={:?}",
             wparam.0, keysym, eaten, commit, ctx.preedit
@@ -332,6 +372,20 @@ impl Inner {
                         comp.EndComposition(ec)?;
                     } else {
                         insert_text(context, ec, text)?;
+                    }
+                    // R2.1：编辑会话内完成落盘的时点打点（之上往下 1 步即可与
+                    // sender 时间对应）
+                    if let Some(q0) = probe_q0 {
+                        let q1 = latency_probe::now();
+                        let elapsed_us = latency_probe::to_us(q0, q1);
+                        crate::debug_log(&format!(
+                            "LAT commit keysym=0x{:X} chars={} elapsed_us={} q0={} q1={}",
+                            keysym,
+                            text.chars().count(),
+                            elapsed_us,
+                            q0,
+                            q1
+                        ));
                     }
                 }
 
