@@ -169,12 +169,16 @@ pub struct ItemView {
     pub highlighted: bool,
 }
 
-/// 预编辑串内的音节分隔符（空格 / 单引号）位置，UTF-16 码元索引。
+/// 预编辑串内的音节分隔符位置（UTF-16 码元索引）。
 ///
-/// 三条渲染路径共用：GDI 在 paint() 内画，D2D/DComp 通过 PaintView.syllable_breaks 透传。
-/// 绘制策略 = 跳过分隔符本体，槽位用来画 1px 竖线（居中于原字符宽度），
-/// 相邻音节按交替轻微色差填充 —— 视觉 `A|B` 分段，但排版宽度零漂移
-/// （各段宽度按 GetTextExtentPoint32W 实测顺序推进）。
+/// 三种渲染路径共用。分隔符分两类：
+/// - **空格**（` `）：Rime 引擎自动插入的音节分隔（`nihao` → `"ni hao"`），
+///   是用户可读的分隔，**保留原样绘制**（不画竖线），只做轻微色差分段。
+/// - **撇号**（`'`）：用户敲入的音界符（`xi'an`），是输入的一部分，
+///   同样保留原样绘制。
+///
+/// 本函数只负责**找出分隔位置**；绘制层决定如何呈现（空格/撇号本体仍画，
+/// 竖线仅作为可选的视觉增强，见 `draw_preedit_segmented`）。
 pub fn syllable_breaks(preedit: &str) -> Vec<u16> {
     let mut out = Vec::new();
     for (i, u) in preedit.encode_utf16().enumerate() {
