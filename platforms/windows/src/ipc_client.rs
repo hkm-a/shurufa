@@ -25,6 +25,10 @@ const CIRCUIT_BREAKER_COOLDOWN_MS: u64 = 2_000;
 /// 连续失败次数超过该阈值后，冷却窗口翻倍至 4s
 const CIRCUIT_BREAKER_BACKOFF_THRESHOLD: u32 = 3;
 const CIRCUIT_BREAKER_COOLDOWN_LONG_MS: u64 = 4_000;
+/// 单次 IPC 读响应超时（ms）：服务端卡死时客户端必须超时降级，
+/// 绝不阻塞宿主 UI 线程（曾致"应用无响应 + 其他输入法失效"）。
+/// 500ms 远低于可感知延迟，且覆盖正常引擎响应（亚毫秒级）。
+const IPC_READ_TIMEOUT_MS: u64 = 500;
 
 #[allow(dead_code)]
 impl ImeClient {
@@ -88,8 +92,13 @@ impl ImeClient {
         self.consecutive_failures = 0;
     }
 
-    /// 确保已连接；若服务未就绪则自动拉起算法服务并轮询等待。
-    /// 熔断期内直接拒绝，避免频繁自旋。
+    /// 确保已连接；若服务未就绪则尝试拉起算法服务并**单次**连接。
+    ///
+    /// **绝不在 UI 线程长轮询**：历史版本这里做 20×50ms=1s 阻塞轮询，
+    /// algo 不在时每次按键（尤其高频的 Shift）都卡 UI 线程 1s，造成
+    /// "应用无响应 + 其他输入法失效"（2026-08-12 用户反馈）。
+    /// 现在：spawn 一次 + 单次 connect；失败立即返回，由熔断冷却 + supervisor
+    /// 看护（崩溃自动重启）兜底，下一按键自然重试。
     fn ensure(&mut self) -> Option<&PipeClient> {
         if self.pipe.is_some() {
             return self.pipe.as_ref();
@@ -97,29 +106,27 @@ impl ImeClient {
         if self.circuit_open() {
             return None;
         }
-        // 首次连接失败时拉起算法服务并轮询等待（至多 20 次 × 50ms = 1s）
+        // 首次连接失败时尝试拉起算法服务（supervisor 负责常驻；这里只兜底）
         Self::spawn_algo_if_needed();
-        for attempt in 0..20 {
-            match PipeClient::connect() {
-                Ok(c) => {
-                    self.pipe = Some(c);
-                    self.note_success();
-                    if attempt > 0 {
-                        crate::debug_log(&format!("IPC 第{}次重连成功", attempt + 1));
-                    }
-                    return self.pipe.as_ref();
-                }
-                Err(e) => {
-                    crate::debug_log(&format!("IPC 连接算法服务失败（第{}次）：{e}", attempt + 1));
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
+        match PipeClient::connect() {
+            Ok(c) => {
+                self.pipe = Some(c);
+                self.note_success();
+                self.pipe.as_ref()
+            }
+            Err(e) => {
+                crate::debug_log(&format!("IPC 连接算法服务失败：{e}"));
+                self.note_failure();
+                None
             }
         }
-        self.note_failure();
-        None
     }
 
     /// 发送请求并取回应答；连接失效时自动重连一次。
+    ///
+    /// **防 UI 阻塞**：读响应带超时（IPC_READ_TIMEOUT）。服务端若卡死/慢，
+    /// 超时返回 None → 调用方走降级（按键直通），绝不让宿主 UI 线程无限
+    /// 阻塞（曾造成"应用无响应 + 其他输入法失效"，见 2026-08-12）。
     fn roundtrip(&mut self, req: &Request) -> Option<Response> {
         if self.ensure().is_none() {
             return None;
@@ -132,7 +139,11 @@ impl ImeClient {
                 return None;
             }
         }
-        let frame = self.pipe.as_ref()?.read_frame().ok()?;
+        let frame = self
+            .pipe
+            .as_ref()?
+            .read_frame_timeout(std::time::Duration::from_millis(IPC_READ_TIMEOUT_MS))
+            .ok()?;
         decode_response(&frame).ok()
     }
 

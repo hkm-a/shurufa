@@ -19,7 +19,7 @@ use windows::Win32::Storage::FileSystem::{
     PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, SetNamedPipeHandleState,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe, SetNamedPipeHandleState,
     PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
@@ -181,6 +181,41 @@ impl PipeClient {
             ReadFile(self.handle, Some(&mut buf), Some(&mut read), None).map_err(win_err)?;
         }
         message_body(&buf[..read as usize])
+    }
+
+    /// 带超时读一帧：先用 PeekNamedPipe 非阻塞轮询确认有数据，再 ReadFile。
+    /// `timeout` 总预算；超时返回 `timed_out()`（调用方应放弃本次请求并降级，
+    /// 绝不让 UI 线程无限阻塞 —— 服务端卡死时客户端必须能退出）。
+    pub fn read_frame_timeout(&self, timeout: std::time::Duration) -> IoResult<Vec<u8>> {
+        use std::time::Instant;
+        let start = Instant::now();
+        loop {
+            let mut available: u32 = 0;
+            let mut total: u32 = 0;
+            let ok = unsafe {
+                PeekNamedPipe(
+                    self.handle,
+                    None,
+                    0,
+                    None,
+                    Some(&mut available),
+                    Some(&mut total),
+                )
+            };
+            if ok.is_err() {
+                return Err(io::Error::last_os_error());
+            }
+            if available > 0 {
+                return self.read_frame();
+            }
+            if start.elapsed() >= timeout {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "pipe read timed out",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
 

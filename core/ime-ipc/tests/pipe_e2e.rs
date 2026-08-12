@@ -137,3 +137,36 @@ fn pipe_e2e_nihao_candidates() {
     let _ = child.wait();
     trace("service stopped");
 }
+
+/// 超时行为：服务端不应答时，read_frame_timeout 必须在预算内返回超时错误，
+/// 绝不无限阻塞（TSF 在宿主 UI 线程调用，阻塞 = 应用无响应 + 全局输入法失效）。
+#[test]
+#[ignore = "需要先 cargo build -p shurufa-algo；并保证无残留服务占用管道"]
+fn pipe_read_timeout_does_not_block() {
+    let _child = start_service();
+    let mut client = None;
+    for _ in 0..200 {
+        if let Ok(c) = PipeClient::connect() {
+            client = Some(c);
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let client = client.expect("连接算法服务超时");
+
+    // 写入一个请求但不读响应（服务端会等下一帧；我们直接测超时读）。
+    let start = std::time::Instant::now();
+    let result = client.read_frame_timeout(Duration::from_millis(500));
+    let elapsed = start.elapsed();
+
+    // 必须超时返回（服务端没写数据），且耗时 ≈ 预算（500ms ± 300ms 容差）
+    assert!(result.is_err(), "服务端未应答却读到了数据");
+    assert!(
+        elapsed >= Duration::from_millis(400) && elapsed <= Duration::from_millis(1500),
+        "超时耗时异常：{elapsed:?}"
+    );
+    trace("timeout behaved as expected");
+    let mut child = _child;
+    let _ = child.kill();
+    let _ = child.wait();
+}
