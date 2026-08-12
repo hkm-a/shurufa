@@ -287,15 +287,24 @@ impl Inner {
         if modifiers & (keys::MASK_CONTROL | keys::MASK_ALT) != 0 {
             return false;
         }
-        // Tab/Shift+Tab 音节光标导航：composition 活着且 preedit 有 syllable_breaks
-        // 时把 Tab 重映射为 XK_Left/XK_Right，让引擎光标按音节步进；否则透传 Tab。
-        // 0 新 IPC message：仅换 keysym，引擎侧走既有的 librime cursor 处理。
+        // Tab/Shift+Tab 音节光标导航：composition 活着且引擎实时 preedit 有
+        // 音节分隔符时把 Tab 重映射为 XK_Left/XK_Right，让引擎光标按音节步进；
+        // 否则透传 Tab。0 新 IPC message：仅换 keysym，引擎侧走既有 librime
+        // cursor 处理。
+        //
+        // 关键：**不能依赖渲染快照**（PAINT_DATA 是上一帧 show() 的快照，按键时
+        // 可能已过期）。这里实时向引擎查一次 context 取 preedit 的分隔符。
         let tab_remap_candidates = if vk == KeyboardAndMouse::VK_TAB.0 as u32
             && self.composition.is_some()
         {
-            // 借用 PAINT_DATA 的 breaks 快照（由 UI show() 时刚写入）。
-            let preedit_breaks = crate::candidate_window::current_preedit_breaks();
-            remap_tab_key(0xff09, shift, !preedit_breaks.is_empty())
+            let live_breaks = self
+                .client
+                .context()
+                .map(|ctx| {
+                    !crate::candidate_window::syllable_breaks(&ctx.preedit).is_empty()
+                })
+                .unwrap_or(false);
+            remap_tab_key(0xff09, shift, live_breaks)
         } else {
             None
         };
