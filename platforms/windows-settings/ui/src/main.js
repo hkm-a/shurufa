@@ -177,6 +177,15 @@ function workspacePage() {
   const serviceAction = dashboard.service_status === "运行中"
     ? `<button class="outline-action" data-action="stop-service"><i data-lucide="square"></i>停止后台服务</button>`
     : `<button class="primary-action" data-action="start-service"><i data-lucide="play"></i>启动后台服务</button>`;
+  // 当前输入方案（动态）：全拼 / 双拼（小鹤）；五笔/仓颉不可用则回落默认
+  const schemeLabel = (() => {
+    const meta = (schemeList || []).find((s) => s.id === schemeCurrent);
+    if (meta && meta.status !== "unavailable") return meta.name_zh;
+    return schemeCurrent === "double_pinyin" ? "双拼" : "拼音";
+  })();
+  const schemeSub = schemeCurrent === "double_pinyin"
+    ? "小鹤双拼 · 输入双拼码（如 wouiuo=我是说）"
+    : "雾凇拼音 · 全拼输入";
   return `
     <section class="page workspace-page">
       <header class="page-header">
@@ -188,7 +197,7 @@ function workspacePage() {
         ${serviceAction}
       </div>
       <div class="metric-grid">
-        <button class="metric-card metric-link" data-page="input"><div class="metric-icon teal"><i data-lucide="keyboard"></i></div><span>输入方案</span><strong>雾凇拼音</strong><p>查看输入与历史设置</p></button>
+        <button class="metric-card metric-link" data-page="scheme"><div class="metric-icon teal"><i data-lucide="keyboard"></i></div><span>输入方案</span><strong>${escapeHtml(schemeLabel)}</strong><p>${escapeHtml(schemeSub)}</p></button>
         <button class="metric-card metric-link" data-page="history"><div class="metric-icon blue"><i data-lucide="clipboard-list"></i></div><span>剪贴板历史</span><strong>Ctrl+Shift+V</strong><p>查看、复制和整理历史</p></button>
         <button class="metric-card metric-link" data-page="dictionary"><div class="metric-icon coral"><i data-lucide="book-open-text"></i></div><span>热门词库</span><strong>rime-ice</strong><p>检查并更新词库</p></button>
       </div>
@@ -196,15 +205,24 @@ function workspacePage() {
 }
 
 function inputPage() {
+  // 当前输入方案（与工作台一致）
+  const schemeLabel = (() => {
+    const meta = (schemeList || []).find((s) => s.id === schemeCurrent);
+    if (meta && meta.status !== "unavailable") return meta.name_zh;
+    return schemeCurrent === "double_pinyin" ? "双拼" : "拼音";
+  })();
+  const schemeDesc = schemeCurrent === "double_pinyin"
+    ? "小鹤双拼已启用 · 每字两键（如 wouiuo=我是说）"
+    : "雾凇拼音方案已部署 · 全拼输入";
   return `
     <section class="page settings-page">
       <header class="page-header"><div><p class="eyebrow">INPUT</p><h1>输入</h1></div>${statusPill()}</header>
       <article class="setting-panel">
-        <div class="setting-row selected"><div class="row-icon"><i data-lucide="circle-dot"></i></div><div><h3>拼音输入</h3><p>雾凇拼音方案已部署</p></div><button class="outline-action" data-action="open-settings"><i data-lucide="arrow-up-right"></i>系统设置</button></div>
+        <div class="setting-row selected"><div class="row-icon"><i data-lucide="circle-dot"></i></div><div><h3>${escapeHtml(schemeLabel)}输入</h3><p>${escapeHtml(schemeDesc)}</p></div><button class="outline-action" data-page="scheme"><i data-lucide="keyboard"></i>切换方案</button></div>
         <div class="divider"></div>
         <div class="setting-row"><div class="row-icon dim"><i data-lucide="sparkles"></i></div><div><h3>候选与历史</h3><p>使用 Ctrl+Shift+V 呼出剪贴板历史</p></div><button class="outline-action" data-page="history"><i data-lucide="clipboard-list"></i>管理历史</button></div>
       </article>
-      <article class="hint-card"><i data-lucide="lightbulb"></i><p>后台服务负责剪贴板历史与跨设备同步。它会以隐藏窗口运行。</p></article>
+      <article class="hint-card"><i data-lucide="lightbulb"></i><p>后台服务负责剪贴板历史与跨设备同步。它会以隐藏窗口运行。语音转写（Ctrl+Shift+S）当前为 dev-stub。</p></article>
     </section>`;
 }
 
@@ -1420,4 +1438,7 @@ function escapeTextarea(value) {
   return String(value).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
 }
 
-refreshDashboard().catch((error) => showToast(String(error), true)).finally(render);
+refreshDashboard()
+  .catch((error) => showToast(String(error), true))
+  .then(() => refreshSchemes().catch(() => {})) // 工作台首页方案卡需要当前方案
+  .finally(render);
