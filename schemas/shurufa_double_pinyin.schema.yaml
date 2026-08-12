@@ -46,13 +46,24 @@ engine:
     - fallback_segmentor
   translators:
     - punct_translator
-    - script_translator
+    - script_translator          # 双拼主方案（2 键/音节）
+    - script_translator@full_pinyin  # 全拼兼容（低权重，排在双拼之后）
 
 translator:
   # 双拼专属词典（词条从 rime_ice 导入）：librime 按本方案 speller.algebra
   # 为其编译独立 prism（双拼码索引），用户输入双拼键序才能命中词条。
   # 不能直接复用 rime_ice 词典——那会沿用全拼 prism，双拼键序无法解析。
   dictionary: shurufa_double_pinyin
+
+# 全拼兼容 translator：用户在双拼模式误输全拼（如 woshishuo）时也能命中
+# 词条（搜狗等成熟输入法的双拼+全拼混输）。权重低（0.4），双拼键序优先；
+# 用 rime_ice 词典（全拼 prism），speller 层仍按双拼切分，全拼键序经
+# algebra 逆映射后命中。
+full_pinyin:
+  dictionary: rime_ice
+  enable_user_dict: true
+  enable_sentence: true
+  initial_quality: 0.4
   enable_user_dict: true
   enable_sentence: true
   max_sentence_length: 8
@@ -66,6 +77,8 @@ translator:
 speller:
   alphabet: zyxwvutsrqponmlkjihgfedcba
   delimiter: " '"
+  # 双拼每音节恰好 2 键：强制 max_code_length=2，避免 9 字母全拼键序被
+  # 切成单字母碎片（woshishuo → "wo s h is h uo" 的根因）。
   algebra:
     - erase/^xx$/
     # 零声母与 j/q/x/y + ü 系列（先于单字母韵母规则，保证命中）
