@@ -54,46 +54,10 @@ keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_v
 keybd_event.restype = None
 KEYEVENTF_KEYUP = 0x0002
 
-INPUT_KEYBOARD = 1
-KEYEVENTF_SCANCODE = 0x0008
-KEYEVENTF_KEYUP_UP = 0x0002
-KEYEVENTF_SCANCODE_BELOW = 0x0008
-KEYEVENTF_UNICODE = 0x0004
-
-
-class KEYBDINPUT(ctypes.Structure):
-    _fields_ = [
-        ("wVk", wintypes.WORD),
-        ("wScan", wintypes.WORD),
-        ("dwFlags", wintypes.DWORD),
-        ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
-    ]
-
-
-class INPUT_UNION(ctypes.Union):
-    _fields_ = [("ki", KEYBDINPUT)]
-
-
-class INPUT(ctypes.Structure):
-    _anonymous_ = ("u",)
-    _fields_ = [("type", wintypes.DWORD), ("u", INPUT_UNION)]
-
-
-SendInput = user32.SendInput
-SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
-SendInput.restype = wintypes.UINT
-
 
 def send_vk(vk: int, up: bool) -> None:
-    flags = KEYEVENTF_KEYUP if up else 0
-    ki = KEYBDINPUT(wVk=vk, dwFlags=flags)
-    inp = INPUT(type=INPUT_KEYBOARD, u=INPUT_UNION(ki=ki))
-    arr = (INPUT * 1)(inp)
-    sent = SendInput(1, arr, ctypes.sizeof(INPUT))
-    if sent != 1:
-        # UIPI 被拦：回退 keybd_event
-        keybd_event(vk, 0, KEYEVENTF_KEYUP if up else 0, None)
+    """keybd_event 单键；成功与否不返回值，UIPI 由老 API 本身免。"""
+    keybd_event(vk, 0, KEYEVENTF_KEYUP if up else 0, None)
 
 
 def press_char(vk: int) -> None:

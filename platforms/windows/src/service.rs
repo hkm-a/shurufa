@@ -337,19 +337,19 @@ impl Inner {
             let _ = self.fallback_commit(context, vk, shift);
             return false;
         };
+        // R2.1 打点起点：必须在 process_key 之前（含引擎 IPC + 算法 + commit 全程），
+        // 否则量到的只是"写文本"一段，对于 commit 路径（快路径）误差大。
+        let probe_q0 = if latency_probe::enabled() {
+            Some(latency_probe::now())
+        } else {
+            None
+        };
+
         let Some((eaten, commit, ctx)) = self.client.process_key(keysym, modifiers) else {
             // 引擎连接失败：把当前按键作为原字符落入文档，避免“只能输入英文”。
             let _ = self.fallback_commit(context, vk, shift);
             crate::debug_log("引擎 IPC 不可用，按键直通");
             return false;
-        };
-
-        // R2.1 打点：从按键入处理到编辑会话完成写文本（含 ipc -> engine -> Commit）
-        // 的路径时延计数；只在 SHURUFA_LATENCY_LOG 开关控制下激活。
-        let probe_q0 = if latency_probe::enabled() {
-            Some(latency_probe::now())
-        } else {
-            None
         };
 
         crate::debug_log(&format!(
