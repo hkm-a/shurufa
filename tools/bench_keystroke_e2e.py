@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""R2.1 键序到上屏真实延迟自检：ctypes SendInput → Notepad → shurufa TSF 命中
+"""R2.1 键序到上屏真实延迟自检：ctypes SendInput → **Notepad4**，shurufa TSF 打点
 `SHURUFA_LATENCY_LOG=1` 时 host 侧会在 %TEMP%\\shurufa-tsf.log 写
-`LAT commit keysym=0x.. chars=N elapsed_us=.. q0=.. q1=..`。本脚本（Python）
-在 SendInput 同时也用 ctypes QPC 记时间戳（同 epoch），最后配对起止
-窗口并求时延，p95 需 ≤ 阈值（50ms）。
+`LAT commit keysym=0x.. chars=N elapsed_us=.. q0=.. q1=..`。本脚本在 SendInput
+同时也用 ctypes QPC 记时间戳（同 epoch），配对求差以 p95 门槛。
 
-运行：
-  set SHURUFA_LATENCY_LOG=1（在启动 host 的 shell；host 侧 run 模式下生效）
-  python tools/bench_keystroke_e2e.py --iters 200 --warmup 20 --p95-ms 50
+用法（依赖用户已安装 Notepad4；Windows 系统上不再保证 `notepad.exe` 存在）：
+  set SHURUFA_LATENCY_LOG=1  # 在拉起 host 的 shell 里先设再启 host
+  python tools/bench_keystroke_e2e.py --warmup 10 --iters 150 --p95-ms 50
 """
 from __future__ import annotations
 
 import argparse
 import ctypes
 import json
+import os
 import random
 import statistics
 import subprocess
@@ -46,13 +46,19 @@ def qpc_freq() -> int:
     return v.value
 
 
-def qpc_delta_us(t0: int, t1: int, freq: int) -> float:
-    return (t1 - t0) * 1_000_000.0 / freq
-
-
-SendInput = user32.SendInput
-INPUT_KEYBOARD = 1
+# ---- 键盘事件（keybd_event；SendInput 被 Notepad4 UIPI 隔离阻断时用回退）----
+# SendInput 在某些桌面应用（比如 arm64 UWP、提权应用）会被完整性级别拦截，
+# 报 sent=0。ctypes keybd_event 是遗留 API，目标同进程组，避免 UIPI 卡死。
+keybd_event = user32.keybd_event
+keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_void_p]
+keybd_event.restype = None
 KEYEVENTF_KEYUP = 0x0002
+
+INPUT_KEYBOARD = 1
+KEYEVENTF_SCANCODE = 0x0008
+KEYEVENTF_KEYUP_UP = 0x0002
+KEYEVENTF_SCANCODE_BELOW = 0x0008
+KEYEVENTF_UNICODE = 0x0004
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -74,6 +80,11 @@ class INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("u", INPUT_UNION)]
 
 
+SendInput = user32.SendInput
+SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
+SendInput.restype = wintypes.UINT
+
+
 def send_vk(vk: int, up: bool) -> None:
     flags = KEYEVENTF_KEYUP if up else 0
     ki = KEYBDINPUT(wVk=vk, dwFlags=flags)
@@ -81,23 +92,51 @@ def send_vk(vk: int, up: bool) -> None:
     arr = (INPUT * 1)(inp)
     sent = SendInput(1, arr, ctypes.sizeof(INPUT))
     if sent != 1:
-        raise RuntimeError(f"SendInput vk={vk:#x} up={up} sent={sent}")
+        # UIPI 被拦：回退 keybd_event
+        keybd_event(vk, 0, KEYEVENTF_KEYUP if up else 0, None)
 
 
 def press_char(vk: int) -> None:
-    """按下并抬起（单次，不热混动）。"""
     send_vk(vk, up=False)
     time.sleep(0.001)
     send_vk(vk, up=True)
 
 
-def launch_notepad() -> subprocess.Popen:
-    p = subprocess.Popen(["notepad.exe"])
-    time.sleep(1.2)
-    return p
+# ---- Notepad4 ----
+
+NOTEPAD_CANDIDATES = [
+    Path(r"C:\Users\hkm\AppData\Local\Microsoft\WinGet\Links\Notepad4.exe"),
+    Path(r"C:\Program Files\Notepad4\Notepad4.exe"),
+    Path(r"C:\Windows\System32\notepad.exe"),
+    Path(r"C:\Windows\notepad.exe"),
+]
 
 
-def focus_notepad_by_pid(pid: int) -> bool:
+def find_editor_exe() -> Path | None:
+    for p in NOTEPAD_CANDIDATES:
+        if p.exists():
+            return p
+    # 让 PATH 一阵（含 winget links）
+    try:
+        out = subprocess.check_output(
+            ["where", "Notepad4.exe"], text=True, encoding="utf-8", errors="replace"
+        ).strip()
+        if out:
+            return Path(out.splitlines()[0].strip())
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    try:
+        out = subprocess.check_output(
+            ["where", "notepad.exe"], text=True, encoding="utf-8", errors="replace"
+        ).strip()
+        if out:
+            return Path(out.splitlines()[0].strip())
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return None
+
+
+def focus_editor_by_pid(pid: int, match_titles: list[str]) -> bool:
     EnumWindows = user32.EnumWindows
     GetWindowThreadProcessId = user32.GetWindowThreadProcessId
     IsWindowVisible = user32.IsWindowVisible
@@ -120,7 +159,7 @@ def focus_notepad_by_pid(pid: int) -> bool:
                 buf = ctypes.create_unicode_buffer(length + 1)
                 GetWindowTextW(hwnd, buf, length + 1)
                 title = buf.value
-                if "无标题" in title or "Notepad" in title or "记事本" in title:
+                if any(t in title for t in match_titles):
                     found.append(hwnd)
         return True
 
@@ -131,8 +170,11 @@ def focus_notepad_by_pid(pid: int) -> bool:
 
 
 def tsf_latency_log_path() -> Path:
-    tmp = Path(sys.base_prefix) / ".." / "AppData" / "Local" / "Temp"
-    return tmp.resolve() / "shurufa-tsf.log"
+    # 与 TSF debug_log 同一解析路径：%TEMP%\shurufa-tsf.log
+    tmp = os.environ.get("TEMP") or os.environ.get("TMP")
+    if tmp:
+        return Path(tmp).resolve() / "shurufa-tsf.log"
+    return Path(os.path.expandvars(r"%LOCALAPPDATA%\Temp")).resolve() / "shurufa-tsf.log"
 
 
 def lookup_lat_entries(log_path: Path) -> list[dict]:
@@ -158,13 +200,12 @@ def lookup_lat_entries(log_path: Path) -> list[dict]:
     return out
 
 
-# ---- 拼音批次 ----
-
 INITIALS = list("bpmfdtnlgkhjqxzcsr") + ["zh", "ch", "sh", "y", "w"]
 FINALS = [
     "a", "o", "e", "ai", "ei", "ao", "ou", "an", "en", "ang", "eng", "ong",
     "i", "ia", "ie", "iao", "iu", "ian", "in", "iang", "ing", "iong",
-    "u", "ua", "uo", "uai", "ui", "uan", "un", "uang", "ueng", "v", "ve",
+    "u", "ua", "uo", "uai", "ui", "uan", "un", "uang", "ueng",
+    "v", "ve",
 ]
 VK_LETTER_BASE = 0x41  # A..Z
 
@@ -176,6 +217,8 @@ def pinyin_to_vks(text: str) -> list[int]:
             vks.append(VK_LETTER_BASE + ord(ch.upper()) - ord("A"))
         elif ch == "'":
             vks.append(0xDE)  # VK_OEM_7
+        elif ch == " ":
+            vks.append(0x20)  # VK_SPACE
         else:
             raise ValueError(f"不支持字符：{ch}")
     return vks
@@ -193,36 +236,32 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=20260811)
     args = ap.parse_args()
 
-    # 0) 确认 SHURUFA_LATENCY_LOG
-    # （本脚本不在 host 的进程组里设不了；需要用户在 shell 里先 set 后启动 host，
-    #  或更新 deploy-v4 脚本后再 supervise。此处用环境变量检 host 侧是否在写。）
-    if not (subprocess.list2cmdline(["cmd", "/c", "echo", "%SHURUFA_LATENCY_LOG%"]).strip()):
-        pass  # 无强依赖；不外发 —— host 侧启动时自己查环境
+    notepad = find_editor_exe()
+    if not notepad:
+        print("❌ 未找到 Notepad4 / notepad.exe", file=sys.stderr)
+        return 2
+
+    print(f"[setup] 编辑器：{notepad}")
+    print(f"[setup] host 侧 SHURUFA_LATENCY_LOG=1 需要在拉起 host 的 shell 里先设")
 
     log_path = tsf_latency_log_path()
-    print(f"[setup] 日志：{log_path}")
+    baseline = lookup_lat_entries(log_path)
+    n0 = len(baseline)
+    print(f"[setup] 现有 LAT 条目：{n0}")
 
-    proc = launch_notepad()
-    if proc.poll() is not None:
-        print("❌ Notepad 启动失败", file=sys.stderr)
-        return 2
-    focus_ok = focus_notepad_by_pid(proc.pid)
-    if not focus_ok:
-        print("⚠️  Notepad 未聚焦；SendInput 将落到当前前台窗", file=sys.stderr)
+    proc = subprocess.Popen([str(notepad)])
+    time.sleep(1.8)
+
+    if not focus_editor_by_pid(proc.pid, ["Notepad4", "notepad", "无标题", "记事本"]):
+        print("⚠️  编辑器未聚焦", file=sys.stderr)
 
     freq = qpc_freq()
     rng = random.Random(args.seed)
 
-    # 记录基准日志存量
-    baseline = lookup_lat_entries(log_path)
-    n0 = len(baseline)
-    print(f"[setup] 已有 LAT 条目：{n0}")
-
     timings_ms: list[float] = []
-
     for i in range(args.warmup + args.iters):
         is_warm = i < args.warmup
-        # 每只键序：拼音 + Space（引擎 commit）
+        # 键序：拼音 + 空格（拼音→空格触发 commit）
         keys = rand_pinyin(rng) + " "
         t_send_start = qpc_now()
         max_vk_ts = t_send_start
@@ -233,33 +272,32 @@ def main() -> int:
                 time.sleep(0.028)
         t_send_done = qpc_now()
 
-        # 等到 LAT 新增（串扫，取 q0 落在本次发送窗内的条目）
-        deadline = time.time() + 0.45
+        # 等 LAT 行出现且落在本次发送窗内
+        deadline = time.time() + 0.6
         matched = None
         while time.time() < deadline:
             cur = lookup_lat_entries(log_path)
             if len(cur) > n0:
-                # 过滤：q0 ≥ t_send_start 且 q1 ≤ t_send_done + 450ms
                 cand = [
                     c for c in cur[n0:]
                     if c["q0"] >= t_send_start
-                    and c["q1"] <= t_send_done + int(0.45 * freq)
+                    and c["q1"] <= t_send_done + int(0.6 * freq)
                 ]
                 if cand:
                     matched = cand[-1]
                     break
-            time.sleep(0.02)
+            time.sleep(0.03)
+        n0 = len(lookup_lat_entries(log_path))
         if matched is None:
             if not is_warm:
-                print(f"⚠️  第 {i} 次未发现对应 LAT（可能该批未触发 commit）")
+                print(f"⚠️  第 {i} 次未等到 LAT（可能该键序未产生 commit）")
+            time.sleep(0.05)
             continue
 
-        # 时长 = host q1（编辑会话内写文本时刻）－ python 端 send_start 的 QPC
-        # （同 epoch），是键序到上屏的真实 wall-time
-        delta_secs = (matched["q1"] - t_send_start) / freq
+        # 键到上屏延迟 = host q1 - python 发送起点 QPC（同 epoch）
+        delta_us = (matched["q1"] - t_send_start) * 1_000_000.0 / freq
         if not is_warm:
-            timings_ms.append(delta_secs * 1000.0)
-        n0 = len(lookup_lat_entries(log_path))
+            timings_ms.append(delta_us / 1000.0)
         time.sleep(0.05)
 
     proc.terminate()
@@ -273,6 +311,7 @@ def main() -> int:
         "warmup": args.warmup,
         "measured": len(timings_ms),
         "seed": hex(args.seed),
+        "editor": str(notepad),
         "ts": datetime.now().isoformat(),
     }
     if timings_ms:
@@ -290,31 +329,31 @@ def main() -> int:
                 "min_ms": round(timings_sorted[0], 3),
                 "max_ms": round(timings_sorted[-1], 3),
                 "threshold_ms": args.p95_ms,
-                "ok": (
-                    summary.get("p95_ms", float("inf")) <= args.p95_ms
-                    and len(timings_ms) >= args.iters // 2
-                ),
+                "ok": summary.get("p95_ms", 1e9) <= args.p95_ms
+                and len(timings_ms) >= args.iters // 2,
             }
         )
     else:
         summary["ok"] = False
-        summary["reason"] = "整个批次里没等到任何 LAT 提交（确认 SHURUFA_LATENCY_LOG=1 已在 host shell 启 host）"
+        summary["reason"] = "未等到任何 LAT 条目；请确认 SHURUFA_LATENCY_LOG=1 已生效"
 
     out_dir = Path(__file__).resolve().parent.parent / "target" / "bench"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_json = out_dir / f"keystroke-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
+    stem = f"keystroke-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+    out_json = out_dir / f"{stem}.json"
     out_md = out_dir / "last-keystroke.md"
     out_json.write_text(
-        json.dumps({"summary": summary, "timings_ms": timings_ms}, indent=2),
+        json.dumps({"summary": summary, "timings_ms": timings_ms}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    ok_mark = "✅" if summary.get("ok") else "❌"
+    ok = "✅" if summary.get("ok") else "❌"
     out_md.write_text(
         f"# R2.1 键序到上屏延迟\n"
         f"- {summary['ts']}\n"
-        f"- p95 {summary.get('p95_ms', 'n/a')} ms （阈值 {args.p95_ms}ms）\n"
+        f"- 编辑器: {summary['editor']}\n"
         f"- 样本 {len(timings_ms)}/{args.iters}\n"
-        f"- {ok_mark}\n",
+        f"- p50={summary.get('p50_ms', 'n/a')}ms p95={summary.get('p95_ms', 'n/a')}ms p99={summary.get('p99_ms', 'n/a')}ms\n"
+        f"- {ok}\n",
         encoding="utf-8",
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
