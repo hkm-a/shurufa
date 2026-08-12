@@ -238,9 +238,14 @@ impl Inner {
         let ctrl = modifiers & keys::MASK_CONTROL != 0;
         let alt = modifiers & keys::MASK_ALT != 0;
 
-        // Shift 单独按下：只记录按下时刻；任何切换动作都推迟到 release 时决定
-        // （长按 → visual_caps 角标，短按 → 中/英 toggle，均走 OnKeyUp）。
+        // Shift 单独按下：立即执行中/英切换（收尾残留组合），并记录按下时刻。
         // 吃掉该键，否则系统会走默认中英文切换，导致双触发。
+        //
+        // 为什么在按下时切换而非 release：TSF 的 OnKeyUp/OnTestKeyUp 只在宿主
+        // 主动调用 TestKeyUp 时触发，多数应用（Electron/Chrome/VS Code 等）不发送
+        // KeyUp 试探 → 依赖 release 的切换在这些宿主上永不执行（用户反馈"Shift
+        // 切换中英文不起作用"的根因）。按下即切是可靠路径；长按视觉提示保留为
+        // 可选增强（OnKeyUp 若触发则覆盖为长按/清除，见 handle_shift_release）。
         if vk == KeyboardAndMouse::VK_SHIFT.0 as u32 {
             if !self.opts.shift_switch_cn_en {
                 return false;
@@ -248,6 +253,13 @@ impl Inner {
             self.shift_down_at_ms = Some(unsafe {
                 windows::Win32::System::SystemInformation::GetTickCount64()
             });
+            // 立即切换（可靠性优先）：先收尾残留组合，再把请求交给引擎。
+            self.end_pending_composition(context);
+            if let Some(is_ascii) = self.client.toggle_ascii() {
+                crate::debug_log(&format!(
+                    "Shift 按下切换中英文：ascii={is_ascii}（fallback：release 触发则覆盖）"
+                ));
+            }
             return true;
         }
         // CapsLock：开启选项时切到英文直输（只进不出，回中文用 Shift）。
@@ -431,9 +443,10 @@ impl Inner {
     /// 实现约定：
     /// - 未在按下时记录时刻（None）说明 Shift 是被选项关着/直接跳过的，
     ///   release 直通不动作。
+    /// - **防双触发**：Shift 切换已在按下时执行（可靠路径，见 handle_key），
+    ///   此处短按分支**不再重复 toggle**——否则应用支持 TestKeyUp 时按下+松开
+    ///   会切两次回到原状态。release 只处理长按视觉/清除。
     /// - 长按路径**不**调 ToggleAscii、**不**改组合：仅设 caps_visual + 触发候选窗重绘。
-    /// - 短按路径在已有组合存在时先 end_pending_composition，再 toggle_ascii ——
-    ///   行为与"eaten-on-down 时代"等效，仅挪到 release 完成。
     fn handle_shift_release(&mut self, sink: &ITfCompositionSink, context: &ITfContext) -> bool {
         let Some(down_at) = self.shift_down_at_ms.take() else {
             return false;
@@ -463,18 +476,14 @@ impl Inner {
                 true
             }
             ShiftReleaseAction::ShortKeepToggle => {
-                // 常规短按：中/英切换（收尾残留组合，再把请求交给引擎）。
-                self.end_pending_composition(context);
-                let _ = sink; // 保留参数：未来若短按也要触发文档侧组合重建则用得上。
-                if let Some(is_ascii) = self.client.toggle_ascii() {
-                    crate::debug_log(&format!(
-                        "Shift 短按切换中英文：held={}ms ascii={is_ascii}",
-                        held
-                    ));
-                    true
-                } else {
-                    false
-                }
+                // 常规短按：切换已在按下时完成（防双触发），这里仅记录——
+                // 若需要"长按可取消切换"，在此恢复（当前不做，保持按下即切）。
+                crate::debug_log(&format!(
+                    "Shift 短按 release（切换已在按下时执行，不重复）held={held}ms"
+                ));
+                let _ = sink;
+                let _ = context;
+                true
             }
         }
     }
