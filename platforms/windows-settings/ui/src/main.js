@@ -174,8 +174,11 @@ function statusPill() {
 }
 
 function workspacePage() {
+  // 后台服务（输入引擎 + 剪贴板同步）应常驻自愈，不提供"停止"入口——
+  // 停止会让 TSF 失去引擎（输入法失效），旧版还曾导致应用无响应。
+  // 仅在异常停止时显示"启动"（自愈入口）。
   const serviceAction = dashboard.service_status === "运行中"
-    ? `<button class="outline-action" data-action="stop-service"><i data-lucide="square"></i>停止后台服务</button>`
+    ? `<span class="status-pill online"><span></span>后台服务运行中</span>`
     : `<button class="primary-action" data-action="start-service"><i data-lucide="play"></i>启动后台服务</button>`;
   // 当前输入方案（动态）：全拼 / 双拼（小鹤）；五笔/仓颉不可用则回落默认
   const schemeLabel = (() => {
