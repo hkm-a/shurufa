@@ -209,13 +209,19 @@ impl Session<'_> {
     }
 
     /// 切换中英文（ascii_mode）；返回切换后是否为英文直输模式。
+    ///
+    /// **绝不能嵌套调用本类的其它方法**：`self.engine.lock()` 是 std Mutex，
+    /// 不可重入，`get_option()`/`set_option()` 内部会再次 lock 造成自死锁，
+    /// 死锁线程将永久持有引擎锁，拖垮全部并发会话（2026-08-12 实测：
+    /// 每次 Shift 触发 toggle_ascii → serve 线程死锁 → 全局 IPC 无响应）。
+    /// 这里已持有锁，一律直接走底层 FFI。
     pub fn toggle_ascii(&self) -> bool {
         let _guard = self.engine.lock();
-        let now = !self.get_option("ascii_mode");
-        // 已持有锁，直接走底层 FFI，避免嵌套死锁
+        let api = self.engine.api();
         let opt = to_cstring("ascii_mode");
+        let now = unsafe { (api.get_option)(self.id, opt.as_ptr()) == 0 };
         unsafe {
-            (self.engine.api().set_option)(self.id, opt.as_ptr(), now as ffi::Bool);
+            (api.set_option)(self.id, opt.as_ptr(), now as ffi::Bool);
         }
         now
     }
