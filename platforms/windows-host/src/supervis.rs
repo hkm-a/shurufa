@@ -32,6 +32,39 @@ const ALGO_MUTEX: &str = "Global\\shurufa-algo";
 /// 过快重启时最大幂次退避（秒上限）。
 const BACKOFF_CAP: u32 = 5;
 
+/// 算法服务健康探针间隔：进程存活 ≠ 服务健康，serve 线程死锁（如引擎锁被
+/// 永久占用）时进程活着但 IPC 全线无响应。supervisor 若只看进程退出码，
+/// 永远检测不到这类"卡死"（2026-08-12 实测：toggle_ascii 嵌套锁自死锁，
+/// 全部请求 2s 超时，用户 Shift 卡 500ms）。
+const ALGO_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+/// 单次探针读响应超时：正常引擎亚毫秒级，500ms 足以区分健康/卡死。
+const ALGO_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+/// 连续探针失败达到该次数即判定卡死，杀进程触发重启。
+const ALGO_PROBE_FAIL_LIMIT: u32 = 2;
+/// 算法服务启动宽限期：期间只做进程存活检查，不做健康探针——引擎首次
+/// 部署（词典编译，数十秒）在管道监听之前，此时探针必失败，须避免误杀。
+const ALGO_GRACE_PERIOD: Duration = Duration::from_secs(30);
+
+/// 健康探针：连接算法服务管道，发一个轻量请求并在超时预算内读到合法应答。
+/// 任何一环失败（连不上 / 写不进 / 读超时 / 应答非法）都视为不健康。
+fn algo_health_check() -> bool {
+    use ime_ipc::pipe::PipeClient;
+    use ime_ipc::{decode_response, encode_request, Request};
+    let Ok(client) = PipeClient::connect() else {
+        return false;
+    };
+    let Ok(frame) = encode_request(&Request::GetOption("ascii_mode".to_string())) else {
+        return false;
+    };
+    if client.write_frame(&frame).is_err() {
+        return false;
+    }
+    match client.read_frame_timeout(ALGO_PROBE_TIMEOUT) {
+        Ok(f) => decode_response(&f).is_ok(),
+        Err(_) => false,
+    }
+}
+
 /// 持有的命名 Mutex 句柄；Drop 时释放。
 pub struct SingletonLock(HANDLE);
 
@@ -249,7 +282,11 @@ pub fn supervise() -> ! {
                         continue;
                     }
                 };
-                // 等待算法服务退出
+                // 健康探针状态：宽限期从本次 spawn 起算；失败计数跨 restart 重置
+                let spawn_time = std::time::Instant::now();
+                let mut probe_last = std::time::Instant::now();
+                let mut probe_failures: u32 = 0;
+                // 等待算法服务退出或判定卡死
                 loop {
                     if stop.load(Ordering::SeqCst) {
                         let _ = child.kill();
@@ -279,7 +316,44 @@ pub fn supervise() -> ! {
                             );
                             break;
                         }
-                        Ok(None) => std::thread::sleep(Duration::from_millis(250)),
+                        Ok(None) => {
+                            // 进程还活着：宽限期过后周期性做健康探针，连续失败判定卡死
+                            if spawn_time.elapsed() >= ALGO_GRACE_PERIOD
+                                && probe_last.elapsed() >= ALGO_PROBE_INTERVAL
+                            {
+                                probe_last = std::time::Instant::now();
+                                if algo_health_check() {
+                                    probe_failures = 0;
+                                } else {
+                                    probe_failures += 1;
+                                    crate::log_line(&format!(
+                                        "算法服务健康探针失败 {probe_failures}/{ALGO_PROBE_FAIL_LIMIT}"
+                                    ));
+                                    if probe_failures >= ALGO_PROBE_FAIL_LIMIT {
+                                        crate::log_line("算法服务无响应（疑似卡死），强制重启");
+                                        algo_restarts += 1;
+                                        pid.store(0, Ordering::SeqCst);
+                                        write_state(
+                                            "restarting",
+                                            {
+                                                let w = wcell.load(Ordering::SeqCst);
+                                                if w == 0 {
+                                                    None
+                                                } else {
+                                                    Some(w)
+                                                }
+                                            },
+                                            None,
+                                            algo_restarts,
+                                        );
+                                        let _ = child.kill();
+                                        let _ = child.wait();
+                                        break;
+                                    }
+                                }
+                            }
+                            std::thread::sleep(Duration::from_millis(250));
+                        }
                         Err(_) => {
                             algo_restarts += 1;
                             crate::log_line("算法服务监视出错，重启");
