@@ -153,7 +153,7 @@ let schemeBanner = null;
 // ---------------------------------------------------------------------------
 
 let uiMode = "bar";
-let appliedSizeKey = "bar";
+let appliedSizeKey = null;
 let autostartInfo = null;
 let defaultIme = null;
 
@@ -2097,6 +2097,11 @@ function escapeTextarea(value) {
 // 启动：恢复上次悬浮条位置（没有则放主屏右下角）；注册窗口事件；
 // 已部署且未配置时默认开启悬浮条自启。失败全部静默，不阻塞 UI。
 async function bootShell() {
+  try {
+    // 启动即按悬浮条内容尺寸调整窗口（此前 appliedSizeKey 初始为 "bar"，
+    // 导致窗口停在 tauri.conf 的初始尺寸，与条内容长度不匹配）
+    await applyMode("bar");
+  } catch (_error) { /* 忽略 */ }
   try {
     const saved = localStorage.getItem("shurufa-window-pos");
     if (saved) {

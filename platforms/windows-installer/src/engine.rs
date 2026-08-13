@@ -382,6 +382,27 @@ pub fn run_install(app: &tauri::AppHandle, dir: &str, create_start_menu: bool) -
     run_cmd_logged(target, "regsvr32 注册 TSF", "regsvr32.exe", &["/s", tsf.to_str().unwrap()])
         .map_err(|e| format!("注册 TSF 输入法失败：{e}"))?;
 
+    // 5.5 清理孤儿 TSF DLL：只保留本次注册的那个文件，删掉历次安装累积的
+    //     shurufa_tsf-*.dll / .old-* 残留（被占用时跳过，下次安装再清）
+    if let Ok(entries) = fs::read_dir(target) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_tsf = name.starts_with("shurufa_tsf") && name.ends_with(".dll");
+            let is_old_backup = name.starts_with("shurufa_tsf") && name.contains(".old-");
+            if !is_tsf && !is_old_backup {
+                continue;
+            }
+            if name == tsf_dest {
+                continue; // 本次注册的文件保留
+            }
+            let path = entry.path();
+            match fs::remove_file(&path) {
+                Ok(()) => log_append(target, &format!("  ✓ 清理孤儿 TSF 文件：{name}")),
+                Err(_) => log_append(target, &format!("  ⚠ 孤儿 TSF 文件占用中，暂留：{name}")),
+            }
+        }
+    }
+
     // 6. 配置后台服务登录自启动
     emit_step(app, 75, "正在配置自启动…");
     run_cmd_logged(

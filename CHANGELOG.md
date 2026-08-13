@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.5.2] - 2026-08-13
+
+### 修复
+- 安装页进度条与步骤文字挨近（去掉右侧对齐）
+- 悬浮条不能拖拽：控制中心缺 `core:window:allow-start-dragging` 权限 → 补 capability
+- 悬浮条长度不匹配内容：启动时未按条尺寸调整窗口（appliedSizeKey 初始值问题）
+  且 minWidth 300 挡住了条的目标宽度 → 启动强制 resize + minWidth 调至 120
+- 安装后输入双字母（如 jjiinn）：旧版宿主进程残留 + 历次安装累积的孤儿 TSF DLL
+  → 引擎安装后清理孤儿 shurufa_tsf-*.dll（只保留注册的那个）；旧宿主需重启清除
+
 ## [0.5.1] - 2026-08-13
 
 ### 修复

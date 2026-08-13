@@ -3,5 +3,5 @@
   "identifier": "main-capability",
   "description": "Shurufa 控制中心主窗口权限。仅允许 core:default（基础 IPC + 窗口事件），不授予 fs/shell/process/http/clipboard 等高风险插件能力。可调用命令以 src/main.rs 中 #[tauri::command] 注册的 32 项为白名单（dashboard_state/e2e_ping/save_relay/start_service/stop_service/update_dictionary/open_system_settings/open_data_directory/history_entries/copy_history/set_history_pinned/delete_history/clear_unpinned_history/ime_options/save_ime_options/get_general_settings/save_general_settings/get_speech_settings/save_speech_settings/set_autostart/typing_stats/dictionary_info/dictionary_history/rollback_dictionary/rollback_dictionary_to/skin_payload/save_skin/reset_skin/list_skins/apply_skin/list_input_schemes/set_input_scheme），新增命令需评审。",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }
