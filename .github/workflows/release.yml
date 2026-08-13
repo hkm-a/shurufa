@@ -47,6 +47,9 @@ jobs:
           Invoke-WebRequest -Uri https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-Windows-msvc-x64.7z -OutFile third_party\librime\rime.7z
           7z x -y third_party\librime\rime.7z -othird_party\librime
 
+      - name: 安装设置页前端依赖（tauri CLI 在 node_modules/.bin）
+        run: npm --prefix platforms/windows-settings ci
+
       - name: 构建 Windows Release 并打包 FOX 安装器
         run: ./scripts/build-installer.ps1
 
