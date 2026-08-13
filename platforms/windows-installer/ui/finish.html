@@ -1,0 +1,186 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FOX输入法 安装完成</title>
+    <link rel="stylesheet" href="theme.css">
+    <style>
+        /* 主体内容 */
+        .main-content {
+            flex: 1;
+            display: flex;
+            padding: 36px 44px 24px 44px;
+            gap: 40px;
+            align-items: flex-start;
+        }
+
+        /* 吉祥物（狐狸 SVG 线稿） */
+        .mascot-wrapper { width: 120px; flex-shrink: 0; }
+        .mascot-svg { width: 100%; height: auto; }
+
+        /* 文字与选项 */
+        .text-container { display: flex; flex-direction: column; padding-top: 6px; flex: 1; }
+        .title-success {
+            color: var(--fox-success);
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            letter-spacing: 0.5px;
+        }
+        .sub-success { color: var(--fox-text); font-size: 14px; margin-bottom: 22px; }
+
+        .options { display: flex; flex-direction: column; gap: 14px; }
+        .options label {
+            display: flex;
+            align-items: center;
+            font-size: 14px;
+            color: var(--fox-text-strong);
+            cursor: pointer;
+        }
+        .options input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            margin-right: 10px;
+            accent-color: var(--fox-success);
+            cursor: pointer;
+        }
+
+        /* 底部 */
+        .footer {
+            height: 64px;
+            border-top: 1px solid var(--fox-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 32px;
+            background: #fcfcfc;
+        }
+        .footer .thanks { color: var(--fox-text); font-size: 13px; }
+        .btn-finish {
+            background: linear-gradient(135deg, var(--fox-primary-soft), var(--fox-primary));
+            color: #fff;
+            border: none;
+            padding: 10px 52px;
+            font-size: 16px;
+            border-radius: 3px;
+            cursor: pointer;
+            letter-spacing: 2px;
+            transition: all 0.2s;
+            box-shadow: 0 3px 8px rgba(176, 113, 92, 0.25);
+        }
+        .btn-finish:hover {
+            background: linear-gradient(135deg, var(--fox-primary), var(--fox-primary-deep));
+        }
+        .btn-finish:active { transform: scale(0.98); }
+    </style>
+</head>
+<body>
+
+    <div class="window">
+        <!-- 头部 -->
+        <div class="title-bar" data-tauri-drag-region>
+            <div class="title-left" data-tauri-drag-region>
+                <div class="title-icon">F</div>
+                <span>FOX输入法 0.5.0</span>
+                <span style="color: var(--fox-text); font-weight: normal;">安装完成</span>
+            </div>
+            <div class="window-controls">
+                <button class="control-btn" id="btn-min" title="最小化">—</button>
+                <button class="control-btn close" id="btn-close" title="关闭">✕</button>
+            </div>
+        </div>
+
+        <!-- 主体 -->
+        <div class="main-content">
+            <!-- 狐狸吉祥物 -->
+            <div class="mascot-wrapper">
+                <svg class="mascot-svg" viewBox="0 0 120 180" xmlns="http://www.w3.org/2000/svg">
+                    <!-- 阴影 -->
+                    <ellipse cx="42" cy="160" rx="40" ry="10" fill="#efe9e2" />
+                    <!-- 尾巴（大而卷曲，白尖） -->
+                    <path d="M 54 118 C 82 112 102 78 92 50 C 80 62 86 92 64 110 Z"
+                          fill="none" stroke="#B0715C" stroke-width="3" stroke-linecap="round"/>
+                    <path d="M 92 50 C 96 42 100 46 98 52"
+                          fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+                    <!-- 身体与腿（跳跃姿态） -->
+                    <path d="M 42 82 C 47 88 57 112 52 132 C 47 147 57 165 62 170"
+                          fill="none" stroke="#B0715C" stroke-width="3" stroke-linecap="round"/>
+                    <path d="M 32 88 C 37 102 22 118 17 132 C 14 142 27 157 32 167"
+                          fill="none" stroke="#B0715C" stroke-width="3" stroke-linecap="round"/>
+                    <!-- 前脚 -->
+                    <path d="M 27 166 C 32 161 40 166 44 161" fill="none" stroke="#B0715C" stroke-width="3" stroke-linecap="round"/>
+                    <path d="M 57 168 C 62 162 70 164 67 156" fill="none" stroke="#B0715C" stroke-width="3" stroke-linecap="round"/>
+                    <!-- 手臂 -->
+                    <path d="M 44 94 C 57 88 66 78 62 62 C 60 57 52 57 47 62" fill="none" stroke="#B0715C" stroke-width="3" stroke-linecap="round"/>
+                    <path d="M 32 98 C 22 88 12 68 17 52 C 20 42 30 38 37 43" fill="none" stroke="#B0715C" stroke-width="3" stroke-linecap="round"/>
+                    <!-- 头部轮廓 -->
+                    <circle cx="40" cy="50" r="28" fill="none" stroke="#B0715C" stroke-width="3"/>
+                    <!-- 耳朵（尖三角，内耳浅色） -->
+                    <path d="M 18 36 L 14 10 L 36 22 Z" fill="#B0715C" stroke="#B0715C" stroke-width="2" stroke-linejoin="round"/>
+                    <path d="M 54 26 L 64 10 L 68 32 Z" fill="#B0715C" stroke="#B0715C" stroke-width="2" stroke-linejoin="round"/>
+                    <path d="M 22 32 L 19 16 L 32 24 Z" fill="#C48D75"/>
+                    <path d="M 56 28 L 62 17 L 65 30 Z" fill="#C48D75"/>
+                    <!-- 眼睛 -->
+                    <circle cx="30" cy="44" r="6" fill="#3E4348" />
+                    <circle cx="28" cy="42" r="2.5" fill="#fff" />
+                    <!-- 鼻子 -->
+                    <circle cx="48" cy="52" r="3.5" fill="#3E4348" />
+                    <!-- 嘴 -->
+                    <path d="M 44 60 C 46 64 52 62 54 58" fill="none" stroke="#B0715C" stroke-width="2" stroke-linecap="round"/>
+                    <!-- 围巾 -->
+                    <path d="M 22 66 C 30 76 56 76 62 64" fill="none" stroke="#9E6450" stroke-width="6" stroke-linecap="round"/>
+                </svg>
+            </div>
+
+            <!-- 文字与选项 -->
+            <div class="text-container">
+                <h2 class="title-success">FOX输入法 0.5.0 已安装成功！</h2>
+                <p class="sub-success">将在新打开的程序中生效</p>
+
+                <div class="options">
+                    <label><input type="checkbox" id="opt-default" checked> 设为默认输入法</label>
+                    <label><input type="checkbox" id="opt-run" checked> 立即运行 FOX 输入法</label>
+                    <label><input type="checkbox" id="opt-desktop" checked> 创建桌面快捷方式</label>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部 -->
+        <div class="footer">
+            <div class="thanks">感谢使用 FOX 输入法，祝你打字愉快。</div>
+            <button class="btn-finish" id="btn-finish">完成</button>
+        </div>
+    </div>
+
+    <script type="importmap">
+    {"imports":{"@tauri-apps/api/core":"./tauri-api/core.js","@tauri-apps/api/event":"./tauri-api/event.js","@tauri-apps/api/webviewWindow":"./tauri-api/webviewWindow.js"}}
+    </script>
+    <script type="module">
+      import("./mcp-plugin.js").then((m) => { if (m.setupPluginListeners) m.setupPluginListeners(); })
+        .catch((e) => console.warn("mcp 绑定未初始化", e));
+    </script>
+    <script src="tauri-global.js"></script>
+    <script>
+      const { getCurrentWindow } = window.__TAURI__.window;
+      const { invoke } = window.__TAURI__.core;
+      document.getElementById('btn-min').addEventListener('click', () => getCurrentWindow().minimize().catch(console.error));
+      document.getElementById('btn-close').addEventListener('click', () => getCurrentWindow().close().catch(console.error));
+
+      document.getElementById('btn-finish').addEventListener('click', async () => {
+        const payload = {
+          dir: localStorage.getItem('install_dir') || 'C:\\Program Files\\FOX',
+          defaultIme: document.getElementById('opt-default').checked,
+          runFox: document.getElementById('opt-run').checked,
+          desktopShortcut: document.getElementById('opt-desktop').checked,
+        };
+        try {
+          await invoke('finish_install', payload);
+        } catch (err) {
+          console.error('finish_install 失败', err);
+        }
+        getCurrentWindow().close();
+      });
+    </script>
+</body>
+</html>

@@ -4,9 +4,10 @@ param(
     # 部署目标目录；默认与安装器一致（SetShellVarContext all 后的 $APPDATA 即 ProgramData）。
     [string]$InstallDir = (Join-Path $env:ProgramData 'shurufa'),
 
-    [Parameter(Mandatory)]
+    # 构建配置。非 Mandatory：本文件会被 register-host-startup/activate-default-ime/verify-install
+    # 以点源方式复用（不带参数），若 Mandatory 会在非交互 PowerShell 里报错导致安装流程中止。
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration,
+    [string]$Configuration = 'Release',
 
     # 本轮构建产物所在目录（默认 target\<Configuration>）。
     [string]$TargetDir,

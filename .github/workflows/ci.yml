@@ -50,21 +50,19 @@ jobs:
           cargo test --workspace --locked
       - name: Tauri 设置页前端安装
         run: npm --prefix platforms/windows-settings ci
-      - name: Release 构建 Windows 宿主/算法/设置
+      - name: Release 构建 Windows 宿主/算法/设置/安装器
         run: |
-          cargo build --release --locked -p shurufa-tsf -p shurufa-algo -p shurufa-host
+          cargo build --release --locked -p shurufa-tsf -p shurufa-algo -p shurufa-host -p shurufa-installer
           npm --prefix platforms/windows-settings run tauri -- build --no-bundle
-      - name: 安装 NSIS 并打包
-        run: |
-          choco install nsis -y --no-progress
-          ./scripts/build-installer.ps1 -SkipBuild
+      - name: 打包 FOX 安装器
+        run: ./scripts/build-installer.ps1 -SkipBuild
       - name: 上传安装包与校验和
         uses: actions/upload-artifact@v4
         with:
-          name: shurufa-setup
+          name: fox-setup
           path: |
-            dist/Shurufa-Setup-*.exe
-            dist/Shurufa-Setup-*.exe.sha256
+            dist/FOX-Setup-*.exe
+            dist/FOX-Setup-*.exe.sha256
           retention-days: 14
 
   android-build:

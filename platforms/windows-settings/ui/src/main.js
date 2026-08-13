@@ -1,9 +1,12 @@
 import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  ArrowLeft,
   ArrowUpRight,
   BookOpenText,
   ChartColumn,
+  ChevronUp,
   CircleDot,
   ClipboardList,
   Copy,
@@ -15,12 +18,15 @@ import {
   Keyboard,
   Languages,
   LayoutDashboard,
+  LayoutGrid,
   Lightbulb,
+  Mic,
   MonitorSmartphone,
   Moon,
   Palette,
   Pin,
   Play,
+  Power,
   RadioTower,
   RefreshCw,
   Search,
@@ -34,9 +40,11 @@ import {
 } from "lucide";
 
 const controlCenterIcons = {
+  ArrowLeft,
   ArrowUpRight,
   BookOpenText,
   ChartColumn,
+  ChevronUp,
   CircleDot,
   ClipboardList,
   Copy,
@@ -47,12 +55,15 @@ const controlCenterIcons = {
   Keyboard,
   Languages,
   LayoutDashboard,
+  LayoutGrid,
   Lightbulb,
+  Mic,
   MonitorSmartphone,
   Moon,
   Palette,
   Pin,
   Play,
+  Power,
   RadioTower,
   RefreshCw,
   Search,
@@ -136,16 +147,610 @@ let schemeList = null;
 let schemeCurrent = "pinyin";
 let schemeBanner = null;
 
+// ---------------------------------------------------------------------------
+// 悬浮外壳：bar（悬浮条）/ menu（菜单面板）/ page（页面子视图）三态。
+// 窗口尺寸由后端 set_window_size 控制；位置由 onMoved 记忆、启动时恢复。
+// ---------------------------------------------------------------------------
+
+let uiMode = "bar";
+let appliedSizeKey = "bar";
+let autostartInfo = null;
+let defaultIme = null;
+
+// 面板逻辑尺寸（不含透明窗口四周的 PANEL_PAD 留白，阴影绘制区）
+const PANEL_PAD = 10;
+const PAGE_SIZES = {
+  workspace: { width: 520, height: 640 },
+  general: { width: 480, height: 660 },
+  input: { width: 480, height: 560 },
+  stats: { width: 560, height: 660 },
+  history: { width: 520, height: 640 },
+  dictionary: { width: 500, height: 600 },
+  scheme: { width: 480, height: 600 },
+  skin: { width: 560, height: 700 },
+  sync: { width: 480, height: 560 },
+  settings: { width: 500, height: 660 }
+};
+
+function windowSizeFor(mode) {
+  let panel;
+  // bar 尺寸按 pics/4.png 比例（logo 32 方块 + 4 个 30px 图标）；
+  // menu 宽 = 主菜单 320 + 间距 4 + 二级面板 236，高含底部悬浮条 38+6
+  if (mode === "bar") panel = { width: 172, height: 38 };
+  else if (mode === "menu") panel = { width: 560, height: 560 };
+  else panel = PAGE_SIZES[activePage] || { width: 520, height: 640 };
+  return {
+    width: Math.round(panel.width + PANEL_PAD * 2),
+    height: Math.round(panel.height + PANEL_PAD * 2)
+  };
+}
+
+function sizeKeyFor(mode) {
+  return mode === "page" ? `page:${activePage}` : mode;
+}
+
+// bar → menu/page 展开前记住条的位置；收回 bar 时精确回到原位
+// （展开时窗口向上生长可能被工作区钳制平移，不恢复会让条越用越漂）。
+let barPosStash = null;
+
+async function applyMode(mode) {
+  const prev = uiMode;
+  if (mode !== "bar" && prev === "bar") {
+    try {
+      const pos = await getCurrentWindow().outerPosition();
+      barPosStash = { x: pos.x, y: pos.y };
+    } catch (_error) {
+      barPosStash = null;
+    }
+  }
+  uiMode = mode;
+  const key = sizeKeyFor(mode);
+  if (key !== appliedSizeKey) {
+    appliedSizeKey = key;
+    try {
+      // anchor_bottom：窗口底边不动向上生长——菜单/页面弹在悬浮条上方
+      await invoke("set_window_size", { size: { ...windowSizeFor(mode), anchor_bottom: true } });
+    } catch (error) {
+      console.error("[shurufa] set_window_size", error);
+    }
+  }
+  if (mode === "bar" && barPosStash) {
+    try {
+      await invoke("restore_window_position", { x: barPosStash.x, y: barPosStash.y });
+    } catch (_error) { /* 位置恢复失败不影响使用 */ }
+    barPosStash = null;
+  }
+  if (mode === "menu") void refreshMenuData();
+  render();
+}
+
+// 菜单打开时并行拉取二级菜单数据；完成后仍在菜单态才重绘。
+async function refreshMenuData() {
+  await Promise.allSettled([
+    refreshTypingStats().catch(() => { typingStats = null; }),
+    refreshSchemes().catch(() => {}),
+    refreshImeOptions().catch(() => { imeOptions = null; }),
+    refreshHistory().catch(() => { historyEntries = []; }),
+    invoke("list_skins").then((v) => { skinPresets = v; }).catch(() => {})
+  ]);
+  if (uiMode === "menu") render();
+}
+
+// S logo（复刻 pics/4.png：橙红渐变圆角方块 + 白色粗斜体 S 带深红投影）
+function logoMark(size = 36, rx = 8) {
+  return `
+    <svg class="logo-mark" width="${size}" height="${size}" viewBox="0 0 36 36" aria-hidden="true">
+      <defs><linearGradient id="shurufa-logo-g" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#C08A73"/><stop offset="1" stop-color="#9E6450"/>
+      </linearGradient></defs>
+      <rect width="36" height="36" rx="${rx}" fill="url(#shurufa-logo-g)"/>
+      <text x="19.2" y="26.5" text-anchor="middle" font-family="'Arial Black','Microsoft YaHei',sans-serif"
+        font-size="23" font-weight="900" font-style="italic" fill="#8a5744">F</text>
+      <text x="18" y="25.5" text-anchor="middle" font-family="'Arial Black','Microsoft YaHei',sans-serif"
+        font-size="23" font-weight="900" font-style="italic" fill="#ffffff">F</text>
+    </svg>`;
+}
+
+// ---------------------------------------------------------------------------
+// 搜狗风自绘图标（pics/4.png 状态条蓝色系）。条上只放真实可用的功能：
+// 方案切换（全局热生效）、剪贴板历史、语音设置、菜单——不放无法作用于
+// 焦点应用的假开关（中英/标点是 per-TSF-会话状态，控制中心切不到）。
+// ---------------------------------------------------------------------------
+
+// 蓝色粗体字图标（「拼」「双」等，与搜狗状态条「中」同款视觉）
+function glyphIcon(ch) {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><text x="12" y="18.4" text-anchor="middle"
+    font-family="'Microsoft YaHei','SimHei',sans-serif" font-size="17" font-weight="700" fill="currentColor">${ch}</text></svg>`;
+}
+
+const BAR_ICONS = {
+  // 剪贴板（历史）
+  clip: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+    <rect x="5" y="4.6" width="14" height="16" rx="1.6"/>
+    <path d="M9 4.6a3 3 0 0 1 6 0"/>
+    <path d="M8.6 10.4h6.8M8.6 14h6.8M8.6 17.6h4.2"/></svg>`,
+  // 麦克风（语音）—— 实心头 + 描边支架
+  mic: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="9.4" y="3.4" width="5.2" height="9.4" rx="2.6" fill="currentColor"/>
+    <path d="M6.4 11.4a5.6 5.6 0 0 0 11.2 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <path d="M12 17v3.2M8.8 20.4h6.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
+  // 四宫格（工具箱/菜单）—— 对角实心
+  grid: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="4.2" y="4.2" width="6.8" height="6.8" rx="1.6" fill="currentColor"/>
+    <rect x="13" y="4.2" width="6.8" height="6.8" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.9"/>
+    <rect x="4.2" y="13" width="6.8" height="6.8" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.9"/>
+    <rect x="13" y="13" width="6.8" height="6.8" rx="1.6" fill="currentColor"/></svg>`
+};
+
+// 菜单头像：白底方块内的橙色粗线人像（pics/5.png 左上角）
+const AVATAR_ICON = `<svg viewBox="0 0 48 48" fill="none" stroke="#F45832" stroke-width="4.6" stroke-linecap="round" aria-hidden="true">
+  <circle cx="24" cy="16.5" r="7.4"/>
+  <path d="M9.5 41.5a14.5 14.5 0 0 1 29 0"/></svg>`;
+
+// 工具箱 3×2 彩色扁平图标（pics/5.png：齿轮/T恤/Ω/柱状图/双气泡/四宫格+红点）
+const TOOLBOX_ICONS = {
+  gear: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#FF8A00" d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.73 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg>`,
+  shirt: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="#F5478C" d="M7.9 3.6c.7 1.2 2.3 2 4.1 2s3.4-.8 4.1-2L21 6.9l-2.3 3.4-1.7-1V20H7v-10.7l-1.7 1L3 6.9z"/>
+    <text x="12" y="15.6" text-anchor="middle" font-family="'Arial Black',sans-serif" font-size="7.5"
+      font-weight="900" font-style="italic" fill="#ffffff">S</text></svg>`,
+  omega: `<svg viewBox="0 0 24 24" fill="none" stroke="#2F7BE0" stroke-width="2.7" stroke-linecap="round" aria-hidden="true">
+    <path d="M5.4 19.6h4.4v-2.3a6.9 6.9 0 0 1-3.5-6C6.3 7.2 8.8 4.6 12 4.6s5.7 2.6 5.7 6.7a6.9 6.9 0 0 1-3.5 6v2.3h4.4"/></svg>`,
+  chart: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="3.6" y="11.4" width="4.6" height="8.6" rx="1" fill="#4A90E2"/>
+    <rect x="9.7" y="7.4" width="4.6" height="12.6" rx="1" fill="#FFC30F"/>
+    <rect x="15.8" y="3.6" width="4.6" height="16.4" rx="1" fill="#7FBA00"/></svg>`,
+  translate: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="#2F7BE0" d="M9.6 2.8a6.8 6.8 0 0 1 6.8 6.8 6.8 6.8 0 0 1-6.8 6.8c-.5 0-1-.05-1.5-.16L4.6 17.6l.9-3A6.8 6.8 0 0 1 9.6 2.8z"/>
+    <text x="9.6" y="12.6" text-anchor="middle" font-family="'Arial Black',sans-serif" font-size="8" font-weight="900" fill="#ffffff">E</text>
+    <path fill="#1953A8" d="M17.2 12.4a4.6 4.6 0 0 1 4.6 4.6 4.6 4.6 0 0 1-4.6 4.6 4.7 4.7 0 0 1-1.1-.13l-2.5.83.63-2.1a4.6 4.6 0 0 1 2.97-7.8z"/>
+    <text x="17.2" y="19.4" text-anchor="middle" font-family="'Microsoft YaHei',sans-serif" font-size="5.4" font-weight="700" fill="#ffffff">中</text></svg>`,
+  more: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="3.4" y="3.4" width="8" height="8" rx="2" fill="#7CC142"/>
+    <rect x="12.8" y="3.4" width="8" height="8" rx="2" fill="#7CC142"/>
+    <rect x="3.4" y="12.8" width="8" height="8" rx="2" fill="#7CC142"/>
+    <rect x="12.8" y="12.8" width="8" height="8" rx="2" fill="#7CC142"/>
+    <circle cx="19.6" cy="4.6" r="3.3" fill="#FF4B2A"/></svg>`
+};
+
+// 主菜单 6 项：全部 hover 右弹二级（搜狗菜单交互，pics/6、7.png）
+const MENU_ITEMS = [
+  { id: "skins", label: "更换皮肤", key: "H", icon: "palette" },
+  { id: "schemes", label: "输入方案", key: "F", icon: "circle-dot" },
+  { id: "options", label: "输入选项", key: "E", icon: "keyboard" },
+  { id: "history", label: "剪贴板历史", key: "K", icon: "clipboard-list" },
+  { id: "pages", label: "设置中心", key: "Y", icon: "layout-dashboard" },
+  { id: "help", label: "帮助", key: "Z", icon: "info" }
+];
+
+// 工具箱 3×2（图标形状复刻 pics/5.png，入口=打开对应设置页；
+// 与主菜单二级合计覆盖全部页面）
+const TOOLBOX_ITEMS = [
+  { page: "settings", label: "偏好设置", key: "P", icon: "gear" },
+  { page: "skin", label: "皮肤盒子", key: "M", icon: "shirt" },
+  { page: "dictionary", label: "词库更新", key: "X", icon: "omega" },
+  { page: "stats", label: "输入统计", key: "B", icon: "chart" },
+  { page: "sync", label: "跨设备", key: "N", icon: "translate" },
+  { page: "general", label: "通用设置", key: "O", icon: "more" }
+];
+
+function barTemplate() {
+  // 「拼/双」显示当前输入方案，点击在全拼⇄双拼间切换（全局热生效）
+  const schemeGlyph = schemeCurrent === "double_pinyin" ? "双" : "拼";
+  const schemeTitle = schemeCurrent === "double_pinyin"
+    ? "当前：双拼（小鹤）· 点击切换到全拼"
+    : "当前：全拼 · 点击切换到双拼（小鹤）";
+  return `
+    <div id="bar" class="floating-bar" data-tauri-drag-region>
+      <button class="bar-logo" data-mode-toggle="menu" title="FOX 菜单" aria-label="展开菜单">${logoMark(32, 7)}</button>
+      <span class="bar-divider" data-tauri-drag-region></span>
+      <button class="bar-icon" data-bar-scheme title="${schemeTitle}">${glyphIcon(schemeGlyph)}</button>
+      <button class="bar-icon" data-page="history" title="剪贴板历史（面板热键 Ctrl+Shift+V）">${BAR_ICONS.clip}</button>
+      <button class="bar-icon" data-page="general" title="语音转写设置（热键 Ctrl+Shift+S）">${BAR_ICONS.mic}</button>
+      <button class="bar-icon" data-mode-toggle="menu" title="菜单 / 工具箱" aria-label="展开菜单">${BAR_ICONS.grid}</button>
+    </div>`;
+}
+
+// 菜单态外壳：菜单面板悬浮在条上方（窗口底边锚定，条保持原位可见），
+// 二级面板从主菜单右侧弹出——与搜狗状态栏菜单的空间关系一致。
+function menuShellTemplate() {
+  return `
+    <div class="floating-shell">
+      <div class="menu-zone">
+        ${menuTemplate()}
+        <div id="submenu" class="floating-submenu" role="menu"></div>
+      </div>
+      ${barTemplate()}
+    </div>`;
+}
+
+function menuTemplate() {
+  const today = typingStats ? formatCount(typingStats.today_chars) : "0";
+  const list = MENU_ITEMS.map(
+    (item) => `
+      <button class="menu-item" data-submenu="${item.id}">
+        <span class="menu-item-icon"><i data-lucide="${item.icon}"></i></span>
+        <span class="menu-item-label">${item.label}</span>
+        <span class="menu-item-key">(${item.key})</span>
+        <span class="menu-item-arrow"></span>
+      </button>`
+  ).join("");
+  const toolbox = TOOLBOX_ITEMS.map(
+    (item) => `
+      <button class="toolbox-item" data-page="${item.page}">
+        <span class="toolbox-icon">${TOOLBOX_ICONS[item.icon]}</span>
+        <span class="toolbox-label">${item.label}<em>(${item.key})</em></span>
+      </button>`
+  ).join("");
+  return `
+    <div id="menu" class="floating-menu">
+      <header class="menu-header">
+        <div class="menu-avatar">${AVATAR_ICON}</div>
+        <div class="menu-heading">
+          <div class="menu-brand">FOX输入法 <em>享受输入</em></div>
+          <div class="menu-stats">今日共输入 <b>${today}</b> 字</div>
+        </div>
+        <div class="menu-header-actions">
+          <button type="button" class="theme-toggle" aria-label="切换主题" title="主题：跟随系统"><i data-lucide="monitor-smartphone"></i></button>
+          <button class="icon-action menu-collapse" data-mode-toggle="bar" title="收起菜单"><i data-lucide="chevron-up"></i></button>
+        </div>
+      </header>
+      <nav class="menu-list">${list}</nav>
+      <div class="menu-toolbox-title">FOX 工具箱</div>
+      <div class="menu-toolbox">${toolbox}</div>
+    </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// 二级菜单内容：全部绑定真实命令（apply_skin / set_input_scheme /
+// save_ime_options / copy_history / 打开目录与系统设置）。
+// ---------------------------------------------------------------------------
+
+function submenuHtml(id) {
+  if (id === "skins") {
+    const rows = skinPresets.length
+      ? skinPresets
+          .map(
+            (p) => `
+        <button class="submenu-item" data-skin-apply="${escapeHtml(p.id)}" title="${escapeHtml(p.name_en)}">
+          <span class="submenu-swatch" style="background:${escapeHtml(p.preview_hint)}"></span>
+          <span class="submenu-label">${escapeHtml(p.name_zh)}</span>
+        </button>`
+          )
+          .join("")
+      : `<div class="submenu-empty">预设皮肤读取中…</div>`;
+    return `${rows}
+      <div class="submenu-divider"></div>
+      <button class="submenu-item" data-page="skin"><span class="submenu-mark"></span><span class="submenu-label">皮肤编辑器…</span></button>`;
+  }
+  if (id === "schemes") {
+    if (!schemeList) return `<div class="submenu-empty">方案读取中…</div>`;
+    return schemeList
+      .map((s) => {
+        const active = schemeCurrent === s.id;
+        const disabled = s.status === "unavailable";
+        return `
+        <button class="submenu-item${disabled ? " disabled" : ""}" data-scheme-set="${escapeHtml(s.id)}" ${disabled ? "disabled" : ""}>
+          <span class="submenu-mark">${active ? "●" : ""}</span>
+          <span class="submenu-label">${escapeHtml(s.name_zh)}</span>
+          <span class="submenu-side">${escapeHtml(s.name_en)}</span>
+        </button>`;
+      })
+      .join("");
+  }
+  if (id === "options") {
+    if (!imeOptions) return `<div class="submenu-empty">选项读取中…</div>`;
+    const items = [
+      ["shift_switch_cn_en", "Shift 切换中英文"],
+      ["shift_space_full_shape", "Shift+空格 全/半角"],
+      ["ctrl_period_ascii_punct", "Ctrl+. 中/英标点"],
+      ["capslock_to_english", "CapsLock 直输英文"]
+    ];
+    return items
+      .map(
+        ([key, label]) => `
+      <button class="submenu-item" data-ime-toggle="${key}" title="改动对正在输入的应用约 2 秒内热生效">
+        <span class="submenu-mark">${imeOptions[key] ? "✓" : ""}</span>
+        <span class="submenu-label">${label}</span>
+      </button>`
+      )
+      .join("");
+  }
+  if (id === "history") {
+    const entries = historyEntries.slice(0, 8);
+    const rows = entries.length
+      ? entries
+          .map((e) => {
+            const text = String(e.text ?? "");
+            const label = text.length > 18 ? `${text.slice(0, 18)}…` : text;
+            return `
+        <button class="submenu-item" data-copy-id="${e.id}" title="点击复制到剪贴板">
+          <span class="submenu-label ellipsis">${escapeHtml(label)}</span>
+          <span class="submenu-side">${escapeHtml(e.kind)}</span>
+        </button>`;
+          })
+          .join("")
+      : `<div class="submenu-empty">暂无剪贴板历史</div>`;
+    return `${rows}
+      <div class="submenu-divider"></div>
+      <button class="submenu-item" data-page="history"><span class="submenu-label">管理历史…</span></button>`;
+  }
+  if (id === "pages") {
+    return pages
+      .map(
+        (p) => `
+      <button class="submenu-item" data-page="${p.id}">
+        <span class="submenu-icon"><i data-lucide="${p.icon}"></i></span>
+        <span class="submenu-label">${p.label}</span>
+      </button>`
+      )
+      .join("");
+  }
+  if (id === "help") {
+    return `
+      <button class="submenu-item" data-menu-act="data-dir"><span class="submenu-label">打开数据目录</span></button>
+      <button class="submenu-item" data-menu-act="system-ime"><span class="submenu-label">系统输入法设置</span></button>
+      <div class="submenu-divider"></div>
+      <button class="submenu-item" data-menu-act="restart-service"><span class="submenu-label">启动 / 自愈后台服务</span></button>`;
+  }
+  return "";
+}
+
+function pageShellTemplate() {
+  const meta = pages.find((p) => p.id === activePage) || pages[0];
+  return `
+    <div id="page" class="floating-page">
+      <header class="page-topbar">
+        <button class="page-back icon-action" data-mode-toggle="menu" title="返回菜单"><i data-lucide="arrow-left"></i></button>
+        <span class="page-topbar-title">${meta.label}</span>
+        <span class="page-topbar-grow"></span>
+        <button class="page-collapse icon-action" data-mode-toggle="bar" title="收起为悬浮条"><i data-lucide="chevron-up"></i></button>
+      </header>
+      <div class="page-content">${pageTemplate()}</div>
+    </div>`;
+}
+
+function bindShell() {
+  // 主题切换按钮（菜单面板头部；render 会重置 DOM，每次 render 后重新点亮）。
+  // data-mode-toggle / data-page 按钮统一走 #app 点击委托，不在此重复绑定。
+  const themeBtn = app.querySelector(".theme-toggle");
+  if (themeBtn) {
+    const t = currentTheme();
+    const icon = t === "dark" ? "moon" : t === "light" ? "sun" : "monitor-smartphone";
+    themeBtn.innerHTML = `<i data-lucide="${icon}"></i>`;
+    themeBtn.title = `主题：${t === "auto" ? "跟随系统" : t === "light" ? "亮色" : "暗色"}`;
+    createIcons({ icons: controlCenterIcons });
+    themeBtn.onclick = () => toggleTheme();
+  }
+  bindBarDrag();
+}
+
+// 悬浮条整条可拖（搜狗行为）：按下后位移超过阈值才开始拖窗口，
+// 原地松开仍触发按钮点击。监听挂 window 级——条只有 38px 高，
+// 挂在条上鼠标稍一移出就收不到 mousemove，拖动会时灵时不灵。
+let barDragCtx = null;
+window.addEventListener("mousemove", (event) => {
+  if (!barDragCtx || barDragCtx.moved) return;
+  if (Math.abs(event.screenX - barDragCtx.x) + Math.abs(event.screenY - barDragCtx.y) > 3) {
+    barDragCtx.moved = true;
+    try {
+      void getCurrentWindow().startDragging();
+    } catch (_error) { /* 非 Tauri 环境忽略 */ }
+  }
+});
+window.addEventListener("mouseup", () => {
+  // 原生拖动循环会吞掉 mouseup；能收到说明这是一次原地点击，
+  // 下一次 mousedown 会重建上下文，这里直接清空即可。
+  if (barDragCtx && !barDragCtx.moved) barDragCtx = null;
+});
+// 拖动结束后的残留 moved 标记：任何新的按下（含菜单面板上）先清掉，
+// 避免误吞下一次合法点击（原生拖动已吞掉自己的 click）。
+window.addEventListener("mousedown", () => {
+  if (barDragCtx && barDragCtx.moved) barDragCtx = null;
+}, true);
+
+function bindBarDrag() {
+  const bar = app.querySelector("#bar");
+  if (!bar) return;
+  bar.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    // 阻止 SVG 文本选择与原生元素拖拽干扰窗口拖动
+    event.preventDefault();
+    barDragCtx = { x: event.screenX, y: event.screenY, moved: false };
+  });
+}
+
 const app = document.querySelector("#app");
 
 app.addEventListener("click", (event) => {
+  // 拖动过的这次按下不当点击（原生拖动多数情况下已吞掉 click，这里兜底）
+  if (barDragCtx && barDragCtx.moved) {
+    barDragCtx = null;
+    return;
+  }
   const target = event.target;
-  const button = target instanceof Element ? target.closest("button") : null;
+  const el = target instanceof Element ? target : null;
+  const button = el ? el.closest("button") : null;
+  // 菜单态点击窗口透明区/面板外空白 → 收起菜单（等价"点外部关闭"）
+  if (!button && uiMode === "menu" && el && !el.closest(".floating-menu, .floating-submenu, .floating-bar")) {
+    void applyMode("bar");
+    return;
+  }
   if (!button || !app.contains(button) || button.disabled) return;
+  if (button.dataset.modeToggle) {
+    void applyMode(button.dataset.modeToggle);
+    return;
+  }
   if (button.dataset.page) {
     void navigateTo(button.dataset.page);
+    return;
+  }
+  if (button.dataset.barScheme !== undefined) {
+    void cycleScheme();
+    return;
+  }
+  if (button.dataset.skinApply) {
+    void menuApplySkin(button.dataset.skinApply);
+    return;
+  }
+  if (button.dataset.schemeSet) {
+    void menuSetScheme(button.dataset.schemeSet);
+    return;
+  }
+  if (button.dataset.imeToggle) {
+    void menuToggleImeOption(button.dataset.imeToggle);
+    return;
+  }
+  if (button.dataset.copyId) {
+    void menuCopyHistory(Number(button.dataset.copyId));
+    return;
+  }
+  if (button.dataset.menuAct) {
+    void menuHelpAction(button.dataset.menuAct);
   }
 });
+
+// ---------------------------------------------------------------------------
+// 悬浮条 / 二级菜单动作：全部真实命令，成功后按搜狗习惯收起菜单 + toast。
+// ---------------------------------------------------------------------------
+
+// 条上「拼/双」：全拼 ⇄ 双拼（写 options.json，输入侧热生效）
+async function cycleScheme() {
+  const next = schemeCurrent === "double_pinyin" ? "pinyin" : "double_pinyin";
+  try {
+    await invoke("set_input_scheme", { scheme: next });
+    schemeCurrent = next;
+    render();
+    showToast(next === "double_pinyin" ? "已切换：双拼（小鹤）· 请输入双拼码" : "已切换：全拼");
+  } catch (error) {
+    showToast(String(error), true);
+  }
+}
+
+async function menuApplySkin(id) {
+  try {
+    await invoke("apply_skin", { id });
+    const meta = skinPresets.find((p) => p.id === id);
+    await applyMode("bar");
+    showToast(`已应用皮肤：${meta ? meta.name_zh : id}`);
+  } catch (error) {
+    showToast(String(error), true);
+  }
+}
+
+async function menuSetScheme(id) {
+  if (id === schemeCurrent) {
+    await applyMode("bar");
+    return;
+  }
+  try {
+    await invoke("set_input_scheme", { scheme: id });
+    schemeCurrent = id;
+    const meta = (schemeList || []).find((s) => s.id === id);
+    await applyMode("bar");
+    showToast(id === "double_pinyin"
+      ? "已切换到双拼（小鹤）· 请输入双拼码，如「我是说」= wouiuo"
+      : `已切换到 ${meta ? meta.name_zh : id}`);
+  } catch (error) {
+    showToast(String(error), true);
+  }
+}
+
+// 输入选项勾选：保存后留在菜单里刷新勾选态（便于连续调整多项）
+async function menuToggleImeOption(key) {
+  if (!imeOptions) return;
+  const next = { ...imeOptions, [key]: !imeOptions[key] };
+  try {
+    await invoke("save_ime_options", { opts: next });
+    imeOptions = next;
+    render();
+    showToast("已保存（输入侧约 2 秒内生效）");
+  } catch (error) {
+    showToast(String(error), true);
+  }
+}
+
+async function menuCopyHistory(id) {
+  try {
+    await invoke("copy_history", { id });
+    await applyMode("bar");
+    showToast("已复制到剪贴板");
+  } catch (error) {
+    showToast(String(error), true);
+  }
+}
+
+async function menuHelpAction(act) {
+  const map = {
+    "data-dir": ["open_data_directory", "已打开本地数据目录"],
+    "system-ime": ["open_system_settings", "已打开 Windows 输入法设置"],
+    "restart-service": ["start_service", "已发送后台服务启动请求"]
+  };
+  const entry = map[act];
+  if (!entry) return;
+  try {
+    await invoke(entry[0]);
+    await applyMode("bar");
+    showToast(entry[1]);
+  } catch (error) {
+    showToast(String(error), true);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 二级菜单 hover 交互（pics/6、7.png）：悬停主项 ~140ms 展开右侧面板，
+// 面板顶边与主项对齐、空间不足向上收；移到其他主项即切换，
+// 移入头部/工具箱或移出菜单区则关闭。
+// ---------------------------------------------------------------------------
+
+function bindMenuHover() {
+  const zone = app.querySelector(".menu-zone");
+  if (!zone) return;
+  const sub = zone.querySelector("#submenu");
+  const menu = zone.querySelector("#menu");
+  if (!sub || !menu) return;
+  let timer = 0;
+  const closeSubmenu = () => {
+    sub.classList.remove("show");
+    sub.innerHTML = "";
+    menu.querySelectorAll(".menu-item.active").forEach((n) => n.classList.remove("active"));
+  };
+  const openSubmenu = (id, item) => {
+    sub.innerHTML = submenuHtml(id);
+    sub.classList.add("show");
+    createIcons({ icons: controlCenterIcons });
+    menu.querySelectorAll(".menu-item.active").forEach((n) => n.classList.remove("active"));
+    item.classList.add("active");
+    // 顶边对齐主项；底部越界时向上收（搜狗软键盘长列表同款行为）
+    const zoneRect = zone.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    const wanted = itemRect.top - zoneRect.top;
+    const top = Math.max(0, Math.min(wanted, zone.clientHeight - sub.offsetHeight));
+    sub.style.top = `${Math.round(top)}px`;
+  };
+  menu.querySelectorAll(".menu-item[data-submenu]").forEach((item) => {
+    item.addEventListener("mouseenter", () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => openSubmenu(item.dataset.submenu, item), 140);
+    });
+    // 点击主项立即展开（触屏/快速点击场景，与 hover 等价）
+    item.addEventListener("click", () => {
+      window.clearTimeout(timer);
+      openSubmenu(item.dataset.submenu, item);
+    });
+  });
+  menu.querySelectorAll(".toolbox-item, .menu-header").forEach((el) => {
+    el.addEventListener("mouseenter", () => {
+      window.clearTimeout(timer);
+      closeSubmenu();
+    });
+  });
+  sub.addEventListener("mouseenter", () => window.clearTimeout(timer));
+  zone.addEventListener("mouseleave", () => {
+    window.clearTimeout(timer);
+    closeSubmenu();
+  });
+}
 
 app.addEventListener("input", (event) => {
   if (event.target.id !== "history-search") return;
@@ -155,18 +760,6 @@ app.addEventListener("input", (event) => {
   search?.focus();
   search?.setSelectionRange(historyQuery.length, historyQuery.length);
 });
-
-function navTemplate() {
-  return pages
-    .map(
-      (page) => `
-        <button class="nav-item ${page.id === activePage ? "active" : ""}" data-page="${page.id}">
-          <i data-lucide="${page.icon}"></i>
-          <span>${page.label}</span>
-        </button>`
-    )
-    .join("");
-}
 
 function statusPill() {
   const running = dashboard.service_status === "运行中";
@@ -309,14 +902,38 @@ function imeOptionsPanel() {
 }
 
 function settingsPage() {
+  const autostartOn = autostartInfo ? autostartInfo.enabled : false;
+  const imeRow = defaultIme
+    ? `<div class="setting-row">
+        <div class="row-icon blue"><i data-lucide="keyboard"></i></div>
+        <div><h3>系统默认输入法</h3><p>${escapeHtml(defaultIme.is_default ? "当前默认就是 FOX 拼音" : defaultIme.tip ? `当前默认：${defaultIme.tip}` : "未设置默认输入法（安装器可自动设置）")}</p></div>
+        <div class="row-side">
+          ${defaultIme.is_default
+            ? `<button class="outline-action" data-action="clear-default-ime"><i data-lucide="arrow-up-right"></i>清除默认</button>`
+            : `<button class="primary-action compact" data-action="set-default-ime"><i data-lucide="arrow-up-right"></i>设为默认</button>`}
+        </div>
+      </div>
+      <div class="divider"></div>`
+    : "";
   return `
     <section class="page settings-page">
       <header class="page-header"><div><p class="eyebrow">PREFERENCES</p><h1>偏好</h1></div></header>
       ${imeOptionsPanel()}
       <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon teal"><i data-lucide="layout-grid"></i></div><div><h3>悬浮条</h3><p>控制中心以悬浮条常驻桌面，点 logo 或 ⊞ 展开菜单</p></div></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="play"></i></div>
+          <label class="setting-toggle"><div><h3>开机自启常驻</h3><p>登录时自动显示悬浮条（HKCU Run · FOXSettings）</p></div></label>
+          <label class="switch"><input type="checkbox" data-settings-field="autostart" ${autostartOn ? "checked" : ""} ${autostartInfo ? "" : "disabled"} /><span></span></label>
+        </div>
+      </article>
+      <article class="setting-panel">
+        ${imeRow}
         <div class="setting-row"><div class="row-icon"><i data-lucide="settings-2"></i></div><div><h3>系统输入法</h3><p>管理语言、输入法和默认输入法</p></div><button class="outline-action" data-action="open-settings"><i data-lucide="arrow-up-right"></i>打开设置</button></div>
         <div class="divider"></div>
         <div class="setting-row"><div class="row-icon dim"><i data-lucide="folder-open"></i></div><div><h3>本地数据</h3><p class="path-value">${escapeHtml(dashboard.data_directory)}</p></div><button class="outline-action" data-action="open-data-directory"><i data-lucide="folder-open"></i>打开目录</button></div>
+        <div class="divider"></div>
+        <div class="setting-row"><div class="row-icon dim"><i data-lucide="power"></i></div><div><h3>退出控制中心</h3><p>完全退出进程；开机自启开启时下次登录重新出现</p></div><button class="outline-action" data-action="exit-app"><i data-lucide="power"></i>退出</button></div>
       </article>
     </section>`;
 }
@@ -1001,26 +1618,16 @@ function bindSkinForm() {
 }
 
 function render() {
-  app.innerHTML = `
-    <aside class="sidebar">
-      <div class="brand"><div class="brand-mark"><i data-lucide="languages"></i></div><div><strong>Shurufa</strong><span>拼音与剪贴板</span></div></div>
-      <nav>${navTemplate()}</nav>
-      <div class="sidebar-footer"><span class="footer-dot"></span><span>后台服务 ${dashboard.service_status}</span></div>
-    </aside>
-    <main class="content">${pageTemplate()}</main>
-    <div id="toast" class="${notice ? `show${notice.error ? " error" : ""}` : ""}" aria-live="polite">${notice ? escapeHtml(notice.message) : ""}</div>
-    <button type="button" class="theme-toggle" aria-label="切换主题" title="主题：跟随系统"><i data-lucide="monitor-smartphone"></i></button>`;
+  const shell = uiMode === "bar"
+    ? barTemplate()
+    : uiMode === "menu"
+      ? menuShellTemplate()
+      : pageShellTemplate();
+  app.innerHTML = `${shell}
+    <div id="toast" class="${notice ? `show${notice.error ? " error" : ""}` : ""}" aria-live="polite">${notice ? escapeHtml(notice.message) : ""}</div>`;
   createIcons({ icons: controlCenterIcons });
-  const themeBtn = app.querySelector(".theme-toggle");
-  if (themeBtn) {
-    // 把按钮图标同步成当前主题（render 会重置 DOM，这里要每次 render 后重新点亮）
-    const t = currentTheme();
-    const icon = t === "dark" ? "moon" : t === "light" ? "sun" : "monitor-smartphone";
-    themeBtn.innerHTML = `<i data-lucide="${icon}"></i>`;
-    themeBtn.title = `主题：${t === "auto" ? "跟随系统" : t === "light" ? "亮色" : "暗色"}`;
-    createIcons({ icons: controlCenterIcons });
-    themeBtn.onclick = () => toggleTheme();
-  }
+  bindShell();
+  if (uiMode === "menu") bindMenuHover();
   app.querySelectorAll("button[data-action]").forEach((button) => {
     button.onclick = () => {
       button.disabled = true;
@@ -1127,6 +1734,23 @@ function render() {
           if (input.type === "checkbox") input.checked = !input.checked;
           showToast(String(error), true);
         });
+    };
+  });
+  // 偏好页：悬浮条自启开关（change 即存；注册表写入在后端）
+  app.querySelectorAll("input[data-settings-field]").forEach((input) => {
+    input.onchange = () => {
+      const key = input.dataset.settingsField;
+      if (key === "autostart") {
+        invoke("settings_autostart_set", { enabled: input.checked })
+          .then(() => {
+            autostartInfo = { ...(autostartInfo || { enabled: false, installed: false }), enabled: input.checked };
+            showToast("已保存");
+          })
+          .catch((error) => {
+            input.checked = !input.checked;
+            showToast(String(error), true);
+          });
+      }
     };
   });
   // 方案页：radio 点击 → 立即写入 options.json → 绿 banner（失败红色 + 回滚选中态）
@@ -1236,6 +1860,16 @@ async function navigateTo(page) {
       imeOptions = null;
       showToast(String(error), true);
     }
+    try {
+      autostartInfo = await invoke("settings_autostart_info");
+    } catch (_error) {
+      autostartInfo = null;
+    }
+    try {
+      defaultIme = await invoke("default_ime_status");
+    } catch (_error) {
+      defaultIme = null;
+    }
   } else if (page === "general") {
     try {
       await refreshGeneralSettings();
@@ -1272,7 +1906,7 @@ async function navigateTo(page) {
       // 失败时 dictionaryPage 内已做兜底
     }
   }
-  render();
+  await applyMode("page");
 }
 
 async function handleAction(button) {
@@ -1294,6 +1928,25 @@ async function handleAction(button) {
       "refresh-history": [undefined, undefined, "历史已刷新"],
       refresh: [undefined, undefined, "后台状态已刷新"]
     };
+    if (action === "set-default-ime" || action === "clear-default-ime") {
+      try {
+        await invoke(action === "set-default-ime" ? "set_default_ime" : "clear_default_ime");
+        defaultIme = await invoke("default_ime_status");
+        render();
+        showToast(action === "set-default-ime" ? "已设为默认输入法（新应用生效）" : "已清除默认输入法");
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "exit-app") {
+      try {
+        await invoke("exit_app");
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
     if (action === "refresh-stats") {
       try {
         await refreshTypingStats();
@@ -1441,7 +2094,47 @@ function escapeTextarea(value) {
   return String(value).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
 }
 
+// 启动：恢复上次悬浮条位置（没有则放主屏右下角）；注册窗口事件；
+// 已部署且未配置时默认开启悬浮条自启。失败全部静默，不阻塞 UI。
+async function bootShell() {
+  try {
+    const saved = localStorage.getItem("shurufa-window-pos");
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      await invoke("restore_window_position", { x: parsed.x, y: parsed.y });
+    } else {
+      await invoke("place_window_bottom_right");
+    }
+  } catch (_error) {
+    try {
+      await invoke("place_window_bottom_right");
+    } catch (_ignored) { /* 忽略 */ }
+  }
+  try {
+    const win = getCurrentWindow();
+    win.onMoved(async () => {
+      try {
+        const pos = await win.outerPosition();
+        localStorage.setItem("shurufa-window-pos", JSON.stringify({ x: pos.x, y: pos.y }));
+      } catch (_e) { /* 忽略 */ }
+    });
+    // 菜单面板失焦自动收回悬浮条；页面子视图不收回（避免打断正在进行的操作）
+    win.onFocusChanged(({ payload: focused }) => {
+      if (!focused && uiMode === "menu") void applyMode("bar");
+    });
+  } catch (_e) { /* 非 Tauri 环境忽略 */ }
+  try {
+    const info = await invoke("settings_autostart_info");
+    autostartInfo = info;
+    if (info.installed && !info.enabled) {
+      await invoke("settings_autostart_set", { enabled: true });
+      autostartInfo = { ...info, enabled: true };
+    }
+  } catch (_e) { /* 忽略 */ }
+}
+
 refreshDashboard()
   .catch((error) => showToast(String(error), true))
   .then(() => refreshSchemes().catch(() => {})) // 工作台首页方案卡需要当前方案
+  .then(bootShell)
   .finally(render);

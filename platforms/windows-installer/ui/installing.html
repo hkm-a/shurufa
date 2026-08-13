@@ -1,0 +1,214 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FOX输入法 安装中</title>
+    <link rel="stylesheet" href="theme.css">
+    <style>
+        /* 输入区域：拼音 + 候选词彩蛋 */
+        .input-area {
+            padding: 20px 30px 0 30px;
+            display: flex;
+            flex-direction: column;
+        }
+        .pinyin-display {
+            font-size: 22px;
+            color: var(--fox-blue);
+            background: var(--fox-bg);
+            padding: 10px 15px;
+            border: 1px solid var(--fox-border);
+            display: flex;
+            align-items: center;
+            letter-spacing: 0.5px;
+            user-select: text;
+        }
+        .candidates {
+            margin-top: 12px;
+            font-size: 18px;
+            display: flex;
+            gap: 40px;
+            flex-wrap: wrap;
+            line-height: 1.6;
+        }
+        .candidate-item { display: flex; align-items: center; }
+        .candidate-item .num { color: var(--fox-text); margin-right: 5px; font-size: 16px; }
+        .candidate-1 { color: var(--fox-primary-deep); font-weight: 500; }
+        .candidate-3 { color: var(--fox-text); }
+
+        /* 简笔画插图（莫兰迪灰线稿） */
+        .illustration {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: flex-end;
+            padding-bottom: 16px;
+            margin-top: 16px;
+        }
+        svg { width: 72%; height: 82%; }
+
+        /* 底部进度条 */
+        .footer {
+            height: 48px;
+            border-top: 1px solid var(--fox-border);
+            background: #fff;
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            gap: 14px;
+        }
+        .progress-track {
+            width: 160px;
+            height: 18px;
+            background: var(--fox-panel);
+            border: 1px solid var(--fox-border);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            min-width: 36px;
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--fox-progress-a), var(--fox-progress-b));
+            transition: width 0.15s linear;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .progress-fill .pct {
+            font-size: 11px;
+            color: #fff;
+            font-weight: bold;
+        }
+        .step-text {
+            color: var(--fox-text);
+            font-size: 13px;
+            margin-left: auto;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="window">
+        <!-- 头部 -->
+        <div class="title-bar" data-tauri-drag-region>
+            <div class="title-left" data-tauri-drag-region>
+                <div class="title-icon">F</div>
+                <span>FOX输入法 0.5.0</span>
+                <span style="color: var(--fox-text); font-weight: normal;">正在安装</span>
+            </div>
+            <div class="window-controls">
+                <button class="control-btn" id="btn-min" title="最小化">—</button>
+                <button class="control-btn close" id="btn-close" title="关闭">✕</button>
+            </div>
+        </div>
+
+        <!-- 输入及候选字 -->
+        <div class="input-area">
+            <div class="pinyin-display">wo'men'zai'zhe'yi'ci'de'an'zhuang'zhong'xiang'yu</div>
+            <div class="candidates">
+                <div class="candidate-item candidate-1">
+                    <span class="num">1.</span> 我们在这一次的安装中相遇了
+                </div>
+                <div class="candidate-item candidate-1">
+                    <span class="num">2.</span> 狐狸正在把词库搬进你的电脑
+                </div>
+                <div class="candidate-item candidate-3">
+                    <span class="num">3.</span> 太幸运，能遇见你
+                </div>
+            </div>
+        </div>
+
+        <!-- 简笔画插图 -->
+        <div class="illustration">
+            <svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+                <!-- 云 -->
+                <ellipse cx="100" cy="120" rx="30" ry="15" fill="none" stroke="#8A8F94" stroke-width="1.5"/>
+                <ellipse cx="125" cy="115" rx="25" ry="15" fill="none" stroke="#8A8F94" stroke-width="1.5"/>
+                <line x1="50" y1="135" x2="150" y2="135" stroke="#8A8F94" stroke-width="1"/>
+                <line x1="100" y1="135" x2="100" y2="150" stroke="#8A8F94" stroke-width="1"/>
+
+                <!-- 建筑 -->
+                <rect x="200" y="80" width="40" height="60" fill="none" stroke="#9BA1A6" stroke-width="2"/>
+                <line x1="220" y1="80" x2="220" y2="140" stroke="#9BA1A6" stroke-width="1" stroke-dasharray="4,4"/>
+                <rect x="180" y="120" width="40" height="25" fill="none" stroke="#9BA1A6" stroke-width="2"/>
+                <rect x="240" y="130" width="50" height="15" fill="none" stroke="#9BA1A6" stroke-width="2"/>
+
+                <!-- 气泡 Hi -->
+                <circle cx="280" cy="110" r="25" fill="none" stroke="#8A8F94" stroke-width="1.5"/>
+                <text x="270" y="116" font-family="Arial" font-size="20" fill="#6B7177">Hi</text>
+                <line x1="255" y1="120" x2="245" y2="135" stroke="#8A8F94" stroke-width="1.5"/>
+
+                <!-- 人物与弧线 -->
+                <path d="M 120 160 Q 180 100 240 160" fill="none" stroke="#C9CECB" stroke-width="1.5"/>
+                <circle cx="200" cy="140" r="6" fill="none" stroke="#8A8F94" stroke-width="1.5"/>
+                <line x1="200" y1="146" x2="200" y2="170" stroke="#8A8F94" stroke-width="1.5"/>
+                <line x1="190" y1="152" x2="210" y2="152" stroke="#8A8F94" stroke-width="1.5"/>
+                <line x1="200" y1="170" x2="190" y2="185" stroke="#8A8F94" stroke-width="1.5"/>
+                <line x1="200" y1="170" x2="210" y2="185" stroke="#8A8F94" stroke-width="1.5"/>
+
+                <line x1="30" y1="180" x2="360" y2="180" stroke="#C9CECB" stroke-width="1"/>
+                <line x1="50" y1="180" x2="50" y2="190" stroke="#C9CECB" stroke-width="1"/>
+                <line x1="340" y1="180" x2="340" y2="190" stroke="#C9CECB" stroke-width="1"/>
+            </svg>
+        </div>
+
+        <!-- 底部进度条 -->
+        <div class="footer">
+            <div class="progress-track">
+                <div class="progress-fill" id="bar"><span class="pct" id="pct">0%</span></div>
+            </div>
+            <div class="step-text" id="step"></div>
+        </div>
+    </div>
+
+    <script type="importmap">
+    {"imports":{"@tauri-apps/api/core":"./tauri-api/core.js","@tauri-apps/api/event":"./tauri-api/event.js","@tauri-apps/api/webviewWindow":"./tauri-api/webviewWindow.js"}}
+    </script>
+    <script type="module">
+      import("./mcp-plugin.js").then((m) => { if (m.setupPluginListeners) m.setupPluginListeners(); })
+        .catch((e) => console.warn("mcp 绑定未初始化", e));
+    </script>
+    <script src="tauri-global.js"></script>
+    <script>
+      const { getCurrentWindow } = window.__TAURI__.window;
+      const { invoke } = window.__TAURI__.core;
+      const { listen } = window.__TAURI__.event;
+      document.getElementById('btn-min').addEventListener('click', () => getCurrentWindow().minimize().catch(console.error));
+      document.getElementById('btn-close').addEventListener('click', () => getCurrentWindow().close().catch(console.error));
+
+      const bar = document.getElementById('bar');
+      const pct = document.getElementById('pct');
+      const step = document.getElementById('step');
+
+      (async () => {
+        await listen('install-progress', (e) => {
+          const v = Number(e.payload) || 0;
+          bar.style.width = v + '%';
+          pct.textContent = v + '%';
+        });
+        await listen('install-step', (e) => { step.textContent = e.payload; });
+        await listen('install-error', (e) => {
+          bar.style.width = '100%';
+          pct.textContent = '失败';
+          step.textContent = '安装失败：' + e.payload;
+          step.style.color = 'var(--fox-primary-deep)';
+          bar.style.background = 'var(--fox-primary-deep)';
+        });
+        await listen('install-finished', () => {
+          window.location.href = 'finish.html';
+        });
+        const dir = localStorage.getItem('install_dir') || 'C:\\Program Files\\FOX';
+        const createStartMenu = localStorage.getItem('create_start_menu') !== 'false';
+        invoke('start_install', { dir, createStartMenu }).catch((err) => {
+          // 引擎已通过 install-error 事件上报；这里兜底显示
+          step.textContent = '安装失败：' + String(err);
+          step.style.color = 'var(--fox-primary-deep)';
+        });
+      })();
+    </script>
+</body>
+</html>

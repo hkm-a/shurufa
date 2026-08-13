@@ -93,6 +93,12 @@ const UI_E2E_SCRIPT: &str = r##"
         delay(3000).then(() => { throw new Error("e2e_ping IPC 超时"); })
       ]);
       results.push("e2e_ping");
+      // 悬浮外壳默认在 bar 态；导航按钮在菜单面板里，先展开菜单再跑页面动作
+      const menuButton = document.querySelector('[data-mode-toggle="menu"]');
+      if (!menuButton) throw new Error("缺少菜单展开按钮");
+      menuButton.click();
+      await waitFor(() => document.querySelector('[data-page="settings"]') !== null, "菜单面板出现");
+      results.push("menu_open");
       await runAction("settings", "open-data-directory", "open_data_directory");
       await runAction("input", "open-settings", "open_system_settings");
       await runAction("dictionary", "update-dictionary", "update_dictionary");
@@ -958,7 +964,278 @@ fn apply_skin(id: String) -> Result<(), String> {
     save_skin(content)
 }
 
+// ---------------------------------------------------------------------------
+// 悬浮窗口：三态（悬浮条 bar / 菜单 menu / 页面 page）由前端控制尺寸与位置。
+// 后端只做两件事：把逻辑尺寸换算成物理像素并应用；按锚定方式保持窗口
+// 位置（默认左上角向下展开；anchor_bottom 保持底边不动向上生长，用于
+// 菜单/页面在悬浮条上方弹出而不遮挡条本身），并钳制到工作区内。
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct WindowSize {
+    width: f64,
+    height: f64,
+    /// true = 保持窗口底边（及左边）不动，向上扩展/收缩
+    #[serde(default)]
+    anchor_bottom: bool,
+}
+
+#[tauri::command]
+fn set_window_size(window: tauri::Window, size: WindowSize) -> Result<(), String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "无可用显示器".to_owned())?;
+    let work = monitor.work_area();
+    let scale = monitor.scale_factor();
+    let target_w = ((size.width * scale).round() as i32).max(1);
+    let target_h = ((size.height * scale).round() as i32).max(1);
+    let current = window.outer_position().map_err(|error| error.to_string())?;
+    let current_size = window.outer_size().map_err(|error| error.to_string())?;
+    // anchor_bottom：底边不动（y 随高度差上移）；否则左上角锚定
+    let raw_y = if size.anchor_bottom {
+        current.y + current_size.height as i32 - target_h
+    } else {
+        current.y
+    };
+    // 超出工作区（上/下/右）则整体回收进可视范围
+    let x = current
+        .x
+        .clamp(work.position.x + 8, work.position.x + work.size.width as i32 - target_w - 8);
+    let y = raw_y
+        .clamp(work.position.y + 8, work.position.y + work.size.height as i32 - target_h - 8);
+    window
+        .set_position(tauri::PhysicalPosition::new(x, y))
+        .map_err(|error| error.to_string())?;
+    window
+        .set_size(tauri::PhysicalSize::new(target_w, target_h))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// 首次启动定位：当前窗口尺寸下放到主屏工作区右下角（距边 16px）。
+/// 之后的位置由前端记忆（onMoved → localStorage），不重复调用。
+#[tauri::command]
+fn place_window_bottom_right(window: tauri::Window) -> Result<(), String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "无可用显示器".to_owned())?;
+    let work = monitor.work_area();
+    let size = window.outer_size().map_err(|error| error.to_string())?;
+    let x = work.position.x + work.size.width as i32 - size.width as i32 - 16;
+    let y = work.position.y + work.size.height as i32 - size.height as i32 - 16;
+    window
+        .set_position(tauri::PhysicalPosition::new(x, y))
+        .map_err(|error| error.to_string())
+}
+
+/// 启动时恢复上次记忆的窗口位置（物理像素）；钳制回当前工作区避免屏幕外。
+#[tauri::command]
+fn restore_window_position(window: tauri::Window, x: i32, y: i32) -> Result<(), String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "无可用显示器".to_owned())?;
+    let work = monitor.work_area();
+    let size = window.outer_size().map_err(|error| error.to_string())?;
+    let cx = x.clamp(work.position.x + 8, work.position.x + work.size.width as i32 - size.width as i32 - 8);
+    let cy = y.clamp(work.position.y + 8, work.position.y + work.size.height as i32 - size.height as i32 - 8);
+    window
+        .set_position(tauri::PhysicalPosition::new(cx, cy))
+        .map_err(|error| error.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// 悬浮条开机自启（HKCU Run → 本 exe；与 shurufa-host 的 supervise 自启独立）。
+// 只在已部署（exe 位于 ProgramData\shurufa）时允许自动开启，避免开发目录
+// 的临时 exe 被写进登录启动项。
+// ---------------------------------------------------------------------------
+
+const SETTINGS_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const SETTINGS_RUN_VALUE: &str = "FOXSettings";
+
+fn settings_run_command() -> String {
+    let exe = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    format!("\"{exe}\"")
+}
+
+fn settings_autostart_enabled() -> bool {
+    windows_registry::CURRENT_USER
+        .open(SETTINGS_RUN_KEY)
+        .ok()
+        .and_then(|key| key.get_string(SETTINGS_RUN_VALUE).ok())
+        .is_some_and(|value| value == settings_run_command())
+}
+
+#[derive(Serialize)]
+struct AutostartInfo {
+    enabled: bool,
+    /// exe 是否位于 ProgramData（已部署）；开发目录运行时为 false，此时不自动开自启
+    installed: bool,
+}
+
+#[tauri::command]
+fn settings_autostart_info() -> AutostartInfo {
+    let exe = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    AutostartInfo {
+        enabled: settings_autostart_enabled(),
+        installed: exe.to_lowercase().contains("programdata"),
+    }
+}
+
+#[tauri::command]
+fn settings_autostart_set(enabled: bool) -> Result<(), String> {
+    if enabled {
+        let key = windows_registry::CURRENT_USER
+            .create(SETTINGS_RUN_KEY)
+            .map_err(|error| format!("打开 Run 键失败：{error}"))?;
+        key.set_string(SETTINGS_RUN_VALUE, &settings_run_command())
+            .map_err(|error| format!("写入 Run 键失败：{error}"))?;
+    } else if let Ok(key) = windows_registry::CURRENT_USER.open(SETTINGS_RUN_KEY) {
+        let _ = key.remove_value(SETTINGS_RUN_VALUE);
+    }
+    if settings_autostart_enabled() != enabled {
+        return Err("自启动注册写回不一致".to_owned());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 默认输入法：状态查询走只读 Get-WinDefaultInputMethodOverride；设置/清除走
+// 部署目录 activate-default-ime.ps1（NSIS 同款单一事实源），经 UAC 提权执行。
+// ---------------------------------------------------------------------------
+
+/// 与 installer/Deploy-Shurufa.ps1 的 $script:ShurufaInputTip 保持一致（SSOT）。
+const SHURUFA_INPUT_TIP: &str = "0804:{8A5C1B49-3D2E-4F7A-9C61-0B7E2D5A9F13}{C4E9D2A7-6B31-4A58-8F0D-1E9A7C3B5D26}";
+
+#[derive(Serialize)]
+struct DefaultImeStatus {
+    /// 当前系统默认输入法 InputTip；未设置覆盖时为空字符串
+    tip: String,
+    /// 本产品 InputTip（供前端展示"默认 = Shurufa"）
+    expected: String,
+    /// 当前默认是否就是 Shurufa
+    is_default: bool,
+}
+
+#[tauri::command]
+async fn default_ime_status() -> Result<DefaultImeStatus, String> {
+    let tip = run_blocking(|| {
+        let output = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                "(Get-WinDefaultInputMethodOverride).InputMethodTip",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|error| format!("无法执行默认输入法查询：{error}"))?;
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    })
+    .await?;
+    Ok(DefaultImeStatus {
+        tip: tip.clone(),
+        expected: SHURUFA_INPUT_TIP.to_owned(),
+        is_default: tip == SHURUFA_INPUT_TIP,
+    })
+}
+
+/// 定位 activate-default-ime.ps1：env 覆盖 → ProgramData 部署 → 仓库 installer/。
+fn resolve_activate_ime_script() -> Result<std::path::PathBuf, String> {
+    let candidates: Vec<std::path::PathBuf> = vec![
+        std::env::var_os("SHURUFA_ACTIVATE_IME_PS1").map(PathBuf::from),
+        std::env::var_os("ProgramData").map(|dir| PathBuf::from(dir).join("shurufa").join("activate-default-ime.ps1")),
+        std::env::current_exe().ok().and_then(|exe| {
+            let root = exe.parent()?.parent()?.parent()?.to_path_buf();
+            Some(root.join("installer").join("activate-default-ime.ps1"))
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| "未找到 activate-default-ime.ps1（请先运行安装器）".to_owned())
+}
+
+/// 提权执行部署脚本：外层 powershell 用 Start-Process -Verb RunAs 拉起提权进程
+/// （UAC 弹窗），-Wait -PassThru 拿退出码透传。inner 加 -WindowStyle Hidden 隐藏控制台。
+async fn run_activate_ime_elevated(extra_args: &[&str]) -> Result<String, String> {
+    let script = resolve_activate_ime_script()?;
+    let script_str = script.display().to_string();
+    let extra = extra_args
+        .iter()
+        .map(|argument| format!(",'{argument}'"))
+        .collect::<String>();
+    let command = format!(
+        "$p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','{script_str}'{extra}; exit $p.ExitCode",
+    );
+    run_blocking(move || {
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &command])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|error| format!("无法启动提权进程：{error}"))?;
+        if output.status.success() {
+            Ok("已执行（UAC 已确认）".to_owned())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            Err(if stderr.is_empty() {
+                format!("提权执行失败（退出码 {:?}）", output.status.code())
+            } else {
+                format!("提权执行失败：{stderr}")
+            })
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_default_ime() -> Result<String, String> {
+    run_activate_ime_elevated(&[]).await
+}
+
+#[tauri::command]
+async fn clear_default_ime() -> Result<String, String> {
+    run_activate_ime_elevated(&["-Clear"]).await
+}
+
+/// 真正退出控制中心（偏好页"退出"按钮；悬浮条的收起只改窗口尺寸不退出进程）。
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// 控制中心单实例：命名 Mutex 保证一台机器只有一个悬浮条进程。
+/// 返回 false 表示已存在另一个实例，调用方应直接退出。
+fn is_single_instance() -> bool {
+    use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+    use windows::core::HSTRING;
+    let mutex = match unsafe { CreateMutexW(None, true, &HSTRING::from("Global\\FOXControlCenter")) }
+    {
+        Ok(m) => m,
+        Err(_) => return true, // 创建失败时放行，避免误伤
+    };
+    // 句柄不释放：进程生命周期内保持所有权，进程退出时系统自动释放
+    let r = unsafe { WaitForSingleObject(mutex, 0) };
+    r == WAIT_OBJECT_0 || r == WAIT_ABANDONED
+}
+
 fn main() {
+    // 单例：已有一个控制中心实例在跑 → 本进程直接退出
+    if !is_single_instance() {
+        return;
+    }
     let builder = tauri::Builder::default().invoke_handler(tauri::generate_handler![
         dashboard_state,
         e2e_ping,
@@ -991,7 +1268,16 @@ fn main() {
         list_skins,
         apply_skin,
         list_input_schemes,
-        set_input_scheme
+        set_input_scheme,
+        set_window_size,
+        place_window_bottom_right,
+        restore_window_position,
+        settings_autostart_info,
+        settings_autostart_set,
+        default_ime_status,
+        set_default_ime,
+        clear_default_ime,
+        exit_app
     ]);
     #[cfg(feature = "ui-e2e")]
     let builder = builder.on_page_load(|webview, payload| {
@@ -1010,7 +1296,7 @@ fn main() {
     });
     builder
         .run(tauri::generate_context!())
-        .expect("启动 Shurufa 控制中心失败");
+        .expect("启动 FOX 控制中心失败");
 }
 
 #[cfg(test)]
@@ -1065,7 +1351,7 @@ mod tests {
     #[test]
     fn 预设清单结构可反序列化() {
         // 与 schemas/skins-index.json 保持一致的字段形态；防后续手改清单破坏编译期固化的字段名
-        let text = r##"[{"id":"mist","name_zh":"雾灰蓝","name_en":"Mist","file":"mist.json","author":"Shurufa","tags":["light"],"preview_hint":"#F7FAFC"}]"##;
+        let text = r##"[{"id":"mist","name_zh":"雾灰蓝","name_en":"Mist","file":"mist.json","author":"FOX","tags":["light"],"preview_hint":"#F7FAFC"}]"##;
         let metas: Vec<super::SkinMeta> = serde_json::from_str(text).expect("skins-index 行可反序列化");
         assert_eq!(metas.len(), 1);
         assert_eq!(metas[0].id, "mist");

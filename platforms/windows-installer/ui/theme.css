@@ -1,0 +1,52 @@
+/* =============================================================================
+ * FOX输入法 安装器 · 莫兰迪主题（本项目统一配色）
+ * 低饱和灰调色板：陶土红（狐狸主色）/ 雾蓝 / 豆沙绿 / 燕麦米白 / 暖灰
+ * ========================================================================== */
+
+:root {
+  --fox-primary:      #B0715C;   /* 陶土红（主色/狐狸） */
+  --fox-primary-deep: #9E6450;   /* 主色深（hover/渐变深端） */
+  --fox-primary-soft: #C48D75;   /* 主色浅（渐变浅端） */
+  --fox-bg:           #F4F1EC;   /* 米白底 */
+  --fox-panel:        #EFEAE3;   /* 标题栏/面板 */
+  --fox-border:       #DAD3C9;   /* 描边 */
+  --fox-text:         #5C6368;   /* 次要文字 */
+  --fox-text-strong:  #3E4348;   /* 标题栏文字 */
+  --fox-title:        #46515C;   /* 主标题（深灰蓝） */
+  --fox-blue:         #7D96B0;   /* 链接（雾蓝） */
+  --fox-success:      #7E9B7A;   /* 成功（豆沙绿） */
+  --fox-progress-a:   #B0715C;   /* 进度条渐变起 */
+  --fox-progress-b:   #C8A48F;   /* 进度条渐变止 */
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box;
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif; }
+
+body { display: flex; justify-content: center; align-items: center;
+    min-height: 100vh; background: var(--fox-bg); overflow: hidden; user-select: none; }
+
+.window { width: 780px; height: 580px; background: #fff; border-radius: 6px;
+    border: 1px solid var(--fox-border); display: flex; flex-direction: column;
+    overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.12); }
+
+/* 标题栏：Tauri 官方拖拽区；按钮/链接等可点击元素自动豁免拖拽 */
+.title-bar { height: 40px; background: var(--fox-panel); display: flex;
+    justify-content: space-between; align-items: center;
+    padding: 0 10px 0 15px; border-bottom: 1px solid var(--fox-border); }
+
+.title-left { display: flex; align-items: center; gap: 12px;
+    color: var(--fox-text-strong); font-size: 14px; }
+
+.title-icon { width: 24px; height: 24px; display: flex; align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, var(--fox-primary-soft), var(--fox-primary-deep));
+    border-radius: 50%; color: #fff; font-weight: bold; font-size: 14px;
+    font-family: Arial, sans-serif; }
+
+.window-controls { display: flex; gap: 5px; }
+.control-btn { width: 30px; height: 30px; display: flex; align-items: center;
+    justify-content: center; background: transparent; border: none; cursor: pointer;
+    color: var(--fox-text); font-size: 16px; border-radius: 4px;
+    transition: background 0.15s; }
+.control-btn:hover { background: var(--fox-border); }
+.control-btn.close:hover { background: var(--fox-primary); color: #fff; }
