@@ -90,8 +90,8 @@ jobs:
         with:
           body: ${{ steps.changelog.outputs.body }}
           files: |
-            dist/Shurufa-Setup-*.exe
-            dist/Shurufa-Setup-*.exe.sha256
+            dist/FOX-Setup-*.exe
+            dist/FOX-Setup-*.exe.sha256
             platforms/android/app/build/outputs/apk/versioned/*.apk
           draft: false
           prerelease: false
