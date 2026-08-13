@@ -83,7 +83,7 @@ jobs:
           $lines = Get-Content CHANGELOG.md
           $idx = -1
           for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -like "## [$version]*") { $idx = $i; break }
+            if ($lines[$i].StartsWith("## [$version]")) { $idx = $i; break }
           }
           if ($idx -ge 0) {
             $end = $idx + 1
