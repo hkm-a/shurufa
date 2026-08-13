@@ -80,9 +80,12 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content version.json -Raw | ConvertFrom-Json).version
-          $text = Get-Content CHANGELOG.md -Raw
-          if ($text -match "(?ms)^## \[$([regex]::Escape($version))\].*?$(?=^## \[|\z)") {
-            $body = $Matches[0].Trim()
+          $lines = Get-Content CHANGELOG.md
+          $idx = [Array]::IndexOf($lines, "## [$version]")
+          if ($idx -ge 0) {
+            $end = $idx + 1
+            while ($end -lt $lines.Count -and $lines[$end] -notmatch '^## \[') { $end++ }
+            $body = ($lines[$idx..($end-1)] -join "`n").Trim()
           } else {
             $body = "详见 CHANGELOG.md"
           }
