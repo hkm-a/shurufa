@@ -59,12 +59,14 @@ jobs:
           rustup target add aarch64-linux-android
           echo "ANDROID_NDK_HOME=$env:ANDROID_SDK_ROOT/ndk/28.0.13004108" >> "$env:GITHUB_ENV"
       - name: 配置第三方预编译 librime（Android）
+        continue-on-error: true   # librime 1.17.0 无 Android 资产，失败不阻断 Windows 发布
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force third_party\librime-android | Out-Null
           Invoke-WebRequest -Uri https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-Android-arm64-v8a.7z -OutFile third_party\librime-android\rime.7z
           7z x -y third_party\librime-android\rime.7z -othird_party\librime-android
       - name: 构建 Android Debug APK
+        continue-on-error: true
         run: |
           cargo build --release --target aarch64-linux-android -p shurufa-rimejni --locked
           New-Item -ItemType Directory -Force platforms\android\app\src\main\jniLibs\arm64-v8a | Out-Null
