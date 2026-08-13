@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -216,6 +216,80 @@
         .agreement-link:hover {
             text-decoration: underline;
         }
+
+        /* 协议弹层（页内 Modal，替代被 MCP 插件桩掉的 alert） */
+        .eula-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(62, 55, 48, 0.42);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+        .eula-overlay.show { display: flex; }
+        .eula-panel {
+            width: 540px;
+            max-height: 72%;
+            background: #fff;
+            border: 1px solid var(--fox-border);
+            border-radius: 8px;
+            box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .eula-head {
+            padding: 13px 20px;
+            background: var(--fox-panel);
+            border-bottom: 1px solid var(--fox-border);
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--fox-text-strong);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .eula-close {
+            border: 0;
+            background: transparent;
+            cursor: pointer;
+            color: var(--fox-text);
+            font-size: 16px;
+            padding: 4px 6px;
+        }
+        .eula-body {
+            padding: 18px 22px;
+            overflow-y: auto;
+            font-size: 13px;
+            line-height: 1.9;
+            color: var(--fox-text);
+            white-space: pre-wrap;
+        }
+        .eula-foot {
+            padding: 12px 20px;
+            border-top: 1px solid var(--fox-border);
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        /* 轻提示（替代 alert） */
+        .toast {
+            position: fixed;
+            bottom: 96px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--fox-text-strong);
+            color: #fff;
+            padding: 9px 20px;
+            border-radius: 4px;
+            font-size: 13px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+            z-index: 60;
+        }
+        .toast.show { opacity: 1; }
     </style>
 </head>
 <body>
@@ -225,7 +299,7 @@
         <div class="title-bar" data-tauri-drag-region>
             <div class="title-left" data-tauri-drag-region>
                 <div class="title-icon">F</div>
-                <span>FOX输入法 0.5.0 安装向导</span>
+                <span>FOX输入法 0.5.1 安装向导</span>
             </div>
             <div class="window-controls">
                 <button class="control-btn" id="btn-min" title="最小化">—</button>
@@ -270,6 +344,23 @@
         </div>
     </div>
 
+    <!-- 协议弹层 -->
+    <div class="eula-overlay" id="eula-overlay">
+        <div class="eula-panel">
+            <div class="eula-head">
+                FOX输入法 最终用户协议
+                <button class="eula-close" id="eula-close" title="关闭">✕</button>
+            </div>
+            <div class="eula-body" id="eula-body"></div>
+            <div class="eula-foot">
+                <button class="browse-btn" id="eula-ok">我已了解</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 轻提示 -->
+    <div class="toast" id="toast"></div>
+
     <script type="importmap">
     {"imports":{"@tauri-apps/api/core":"./tauri-api/core.js","@tauri-apps/api/event":"./tauri-api/event.js","@tauri-apps/api/webviewWindow":"./tauri-api/webviewWindow.js"}}
     </script>
@@ -300,10 +391,29 @@
         '5. 若本软件让你的打字速度超过同事，请保持低调，以免引发嫉妒。\n' +
         '6. 本协议最终解释权归狐狸所有，狐狸保留随时卖萌的权利。\n' +
         '\n点击"立即安装"即表示你已理解并接受以上条款。';
+
+      // 协议弹层（alert 会被 MCP 插件桩掉，改页内 Modal）
+      const eulaOverlay = document.getElementById('eula-overlay');
+      const eulaBody = document.getElementById('eula-body');
+      eulaBody.textContent = EULA;
+      const hideEula = () => eulaOverlay.classList.remove('show');
       document.getElementById('eula-link').addEventListener('click', (e) => {
         e.preventDefault();
-        alert(EULA);
+        eulaOverlay.classList.add('show');
       });
+      document.getElementById('eula-close').addEventListener('click', hideEula);
+      document.getElementById('eula-ok').addEventListener('click', hideEula);
+      eulaOverlay.addEventListener('click', (e) => { if (e.target === eulaOverlay) hideEula(); });
+
+      // 轻提示（替代 alert）
+      let toastTimer;
+      function showToast(msg) {
+        const t = document.getElementById('toast');
+        t.textContent = msg;
+        t.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+      }
 
       const dirInput = document.getElementById('install-dir');
       const spaceFree = document.getElementById('space-free');
@@ -326,7 +436,7 @@
 
       document.getElementById('btn-install').addEventListener('click', async () => {
         if (!document.getElementById('agree').checked) {
-          alert('请先勾选"已阅读并接受最终用户协议"。');
+          showToast('请先勾选"已阅读并接受最终用户协议"。');
           return;
         }
         localStorage.setItem('install_dir', dirInput.value);

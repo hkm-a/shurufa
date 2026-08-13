@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.5.1] - 2026-08-13
+
+### 修复
+- 最终用户协议点不开（alert 被调试插件桩掉）→ 改页内莫兰迪弹层
+- 安装器 exe 图标过丑 → 重绘莫兰迪陶土红 F 图标（7 尺寸 ICO）
+- 安装进度条过短 → 加长至 420px
+- 配置自启动失败"后台宿主不存在"：`register-host-startup.ps1`/`verify-install.ps1`
+  点源 `Deploy-Shurufa.ps1` 时同名 `$InstallDir`/`$TargetDir` 参数被默认值覆盖
+  → 改用独立变量 `$InstalledDir` 保存安装目录
+
 ## [0.5.0] - 2026-08-13
 
 ### 新增
