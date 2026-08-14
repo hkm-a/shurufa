@@ -539,10 +539,22 @@ window.addEventListener("mousemove", (event) => {
   }
 });
 window.addEventListener("mouseup", () => {
-  // 原生拖动循环会吞掉 mouseup；能收到说明这是一次原地点击，
-  // 下一次 mousedown 会重建上下文，这里直接清空即可。
-  if (barDragCtx && !barDragCtx.moved) barDragCtx = null;
+  if (!barDragCtx) return;
+  const wasMoved = barDragCtx.moved;
+  barDragCtx = null;
+  // 拖拽结束：把条钳回工作区，防止整条被拖出屏幕丢失（无标题栏窗口没有
+  // 系统级"部分可见"约束）。原地点击（未移动）不处理。
+  if (wasMoved) void clampBarPosition();
 });
+// 拖拽结束后把窗口位置钳制回当前工作区（后端按 monitor work_area clamp，
+// 触发 onMoved 落盘记忆，收敛无回环）。
+async function clampBarPosition() {
+  try {
+    const win = getCurrentWindow();
+    const pos = await win.outerPosition();
+    await invoke("restore_window_position", { x: pos.x, y: pos.y });
+  } catch (_e) { /* 忽略 */ }
+}
 // 拖动结束后的残留 moved 标记：任何新的按下（含菜单面板上）先清掉，
 // 避免误吞下一次合法点击（原生拖动已吞掉自己的 click）。
 window.addEventListener("mousedown", () => {
@@ -607,6 +619,19 @@ app.addEventListener("click", (event) => {
   }
   if (button.dataset.menuAct) {
     void menuHelpAction(button.dataset.menuAct);
+  }
+});
+
+// Esc：菜单态收起为悬浮条；页面态返回菜单（搜狗式层级返回）。
+// 仅在本窗口获得键盘焦点时生效；不干扰其它应用里的 Esc。
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (uiMode === "page") {
+    event.preventDefault();
+    void applyMode("menu");
+  } else if (uiMode === "menu") {
+    event.preventDefault();
+    void applyMode("bar");
   }
 });
 
@@ -2106,7 +2131,17 @@ async function bootShell() {
     const saved = localStorage.getItem("shurufa-window-pos");
     if (saved) {
       const parsed = JSON.parse(saved);
-      await invoke("restore_window_position", { x: parsed.x, y: parsed.y });
+      // 位置校验：Windows 隐藏窗口会把窗口移到 (-32000,-32000) 哨兵位，
+      // onMoved 会把它存进 localStorage → 下次启动 restore 被钳到屏幕左上角
+      // 死角（2026-08-14 实机复现）。NaN/超范围值同样丢弃，回退右下角。
+      const plausible = Number.isFinite(parsed.x) && Number.isFinite(parsed.y)
+        && parsed.x > -10000 && parsed.y > -10000
+        && parsed.x < 100000 && parsed.y < 100000;
+      if (plausible) {
+        await invoke("restore_window_position", { x: parsed.x, y: parsed.y });
+      } else {
+        await invoke("place_window_bottom_right");
+      }
     } else {
       await invoke("place_window_bottom_right");
     }
@@ -2121,6 +2156,12 @@ async function bootShell() {
       try {
         const pos = await win.outerPosition();
         localStorage.setItem("shurufa-window-pos", JSON.stringify({ x: pos.x, y: pos.y }));
+      } catch (_e) { /* 忽略 */ }
+      // 拖拽中窗口被拖出工作区时拉回：原生拖动循环会吞掉 JS mouseup，
+      // 拖拽结束的钳制必须挂在 onMoved 上（最后一次移动的 onMoved 会在
+      // 循环结束后落地）。在位时后端 no-op，不影响正常拖动。
+      try {
+        await invoke("clamp_window_to_work_area");
       } catch (_e) { /* 忽略 */ }
     });
     // 菜单面板失焦自动收回悬浮条；页面子视图不收回（避免打断正在进行的操作）

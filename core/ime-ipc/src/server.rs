@@ -7,9 +7,15 @@ use crate::{decode_request, encode_response, Request, Response};
 
 /// 处理一个客户端连接：循环读取请求、基于会话执行、写回应答。
 /// `create_session` 可在会话丢失时重建（引擎由调用方持有）。
+/// `decorate_process_key(raw_before, raw_after, response)` 在每条 ProcessKey
+/// 应答组装后、写回客户端前调用，供调用方做候选级装饰（如 MRU 提频/记录）：
+/// - `raw_before`：本键处理**前**的原始拼音（上屏落定的那串，commit 会清空
+///   组合，必须提前捕获）；
+/// - `raw_after`：本键处理**后**的当前组合拼音（有候选时即当前预编辑）。
 pub fn serve_connection(
     server: &PipeServer,
     mut create_session: impl FnMut() -> Result<Session<'static>, String>,
+    mut decorate_process_key: impl FnMut(&str, &str, Response) -> Response,
 ) {
     let mut session: Option<Session<'static>> = None;
     let _ = create_session().map(|s| session = Some(s));
@@ -25,7 +31,15 @@ pub fn serve_connection(
                 continue;
             }
         };
+        let is_process_key = matches!(&request, Request::ProcessKey { .. });
+        let raw_before = session.as_ref().map(|s| s.input()).unwrap_or_default();
         let response = handle_request(request, &mut session, &mut create_session);
+        let response = if is_process_key {
+            let raw_after = session.as_ref().map(|s| s.input()).unwrap_or_default();
+            decorate_process_key(&raw_before, &raw_after, response)
+        } else {
+            response
+        };
         if server
             .write_frame(&encode_response(&response).unwrap())
             .is_err()

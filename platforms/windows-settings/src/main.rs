@@ -13,6 +13,7 @@ use std::process::Command;
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore};
 use serde::{Deserialize, Serialize};
 use shurufa_options::{validate_input_scheme, GeneralSettings, ImeOptions, LogLevel, SpeechSettings};
+use tauri::Manager;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -1013,6 +1014,33 @@ fn set_window_size(window: tauri::Window, size: WindowSize) -> Result<(), String
     Ok(())
 }
 
+/// 窗口越出当前工作区时拉回（前端在 onMoved 里调用；在位时不做任何事，
+/// 避免与原生拖动循环抢位置产生抖动）。用于防悬浮条被拖出屏幕丢失：
+/// 原生拖动循环会吞掉 JS mouseup，拖拽结束的钳制必须挂在 onMoved 上，
+/// 最后一次窗口移动的 onMoved 钳制会在拖动循环结束后落地。
+#[tauri::command]
+fn clamp_window_to_work_area(window: tauri::Window) -> Result<(), String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "无可用显示器".to_owned())?;
+    let work = monitor.work_area();
+    let size = window.outer_size().map_err(|error| error.to_string())?;
+    let pos = window.outer_position().map_err(|error| error.to_string())?;
+    let min_x = work.position.x;
+    let min_y = work.position.y;
+    let max_x = work.position.x + work.size.width as i32 - size.width as i32;
+    let max_y = work.position.y + work.size.height as i32 - size.height as i32;
+    let cx = pos.x.clamp(min_x, max_x.max(min_x));
+    let cy = pos.y.clamp(min_y, max_y.max(min_y));
+    if cx != pos.x || cy != pos.y {
+        window
+            .set_position(tauri::PhysicalPosition::new(cx, cy))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 /// 首次启动定位：当前窗口尺寸下放到主屏工作区右下角（距边 16px）。
 /// 之后的位置由前端记忆（onMoved → localStorage），不重复调用。
 #[tauri::command]
@@ -1031,6 +1059,9 @@ fn place_window_bottom_right(window: tauri::Window) -> Result<(), String> {
 }
 
 /// 启动时恢复上次记忆的窗口位置（物理像素）；钳制回当前工作区避免屏幕外。
+/// 记忆值若完全脱离工作区（如 Windows 隐藏窗口的 -32000 哨兵位，或曾被
+/// 移到另一块已拔除的显示器）由前端在调用前拦截（plausible 校验），
+/// 这里只做纯钳制——拖拽结束时也会走本命令把条拉回视野，不能拒绝。
 #[tauri::command]
 fn restore_window_position(window: tauri::Window, x: i32, y: i32) -> Result<(), String> {
     let monitor = window
@@ -1236,7 +1267,18 @@ fn main() {
     if !is_single_instance() {
         return;
     }
-    let builder = tauri::Builder::default().invoke_handler(tauri::generate_handler![
+    let builder = tauri::Builder::default()
+        .setup(|app| {
+            // skipTaskbar 配置在窗口创建时（尚未显示/注册任务栏按钮）调用
+            // tao 的 ITaskbarList::DeleteTab 大概率是 no-op；这里在窗口就绪后
+            // 再次应用，确保悬浮条不出现任务栏按钮（2026-08-14 实证）。
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_skip_taskbar(true);
+            }
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
         dashboard_state,
         e2e_ping,
         save_relay,
@@ -1272,6 +1314,7 @@ fn main() {
         set_window_size,
         place_window_bottom_right,
         restore_window_position,
+        clamp_window_to_work_area,
         settings_autostart_info,
         settings_autostart_set,
         default_ime_status,

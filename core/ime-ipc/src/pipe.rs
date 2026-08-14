@@ -44,8 +44,12 @@ unsafe impl Send for PipeServer {}
 
 /// 生成的 SDDL，仅允许 SYSTEM、Administrators 与"创建者所有者"（即当前用户）访问。
 /// 不再走默认 DACL，避免同机其他用户/沙盒进程注入按键或窃取 preedit。
+/// 额外带 `S:(ML;;NW;;;ME)`：把管道标记为 Medium 完整性。若宿主链因故被提权
+/// （如安装器以管理员启动服务），High 进程创建的管道默认隐式 High 标签会拒绝
+/// 普通（Medium）应用连接 → 输入法整体失效（2026-08-14 实机复现：安装后
+/// 普通应用 IPC 全拒，err=5）。显式 Medium 标签让普通应用在 DACL 允许时始终可达。
 const PIPE_SDDL: &str =
-    "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)";
+    "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)S:(ML;;NW;;;ME)";
 
 impl PipeServer {
     /// 新建管道实例并允许客户端连接（FILE_FLAG_FIRST_PIPE_INSTANCE 仅首个实例）。

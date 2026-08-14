@@ -54,6 +54,55 @@ fn mru_record_commit(pinyin: &str, committed: &str) {
     let _ = mru_store().lock().unwrap_or_else(|p| p.into_inner()).save();
 }
 
+/// ProcessKey 应答装饰器（经 ime-ipc::server::serve_connection 每键调用）：
+/// - 记录：上屏文本非空时，以提交前的 raw 拼音为 key 记入 MRU；
+/// - 提频：当前组合有候选时，以 raw 拼音为 key 把最近选过的词前置。
+///
+/// 历史坑：此前 MRU 只在 main.rs 定义了 store/boost/record 却从未接线到
+/// 请求路径（死代码），用户"最近选过的词"永不前置（2026-08-14 发现）。
+/// 接入点选在服务端应答前统一装饰，避免在 TSF 客户端重复实现。
+fn decorate_process_key(raw_before: &str, raw_after: &str, resp: ime_ipc::Response) -> ime_ipc::Response {
+    let ime_ipc::Response::ProcessKey { eaten, commit, mut context } = resp else {
+        return resp;
+    };
+    // 记录：commit 已取走、组合已被引擎清空，必须用提交前的 raw
+    if let Some(text) = commit.as_deref() {
+        if !text.is_empty() {
+            mru_record_commit(raw_before, text);
+        }
+    }
+    // 提频：候选按 MRU 重排，高亮跟随原高亮词的新位置
+    if !context.candidates.is_empty() && !raw_after.is_empty() {
+        let original = context.candidates.clone();
+        let boosted = mru_boost_candidates(
+            raw_after,
+            original.iter().map(|c| c.text.clone()).collect(),
+        );
+        if boosted.len() == original.len() {
+            let hl_text = original.get(context.highlighted).map(|c| c.text.clone());
+            context.candidates = boosted
+                .iter()
+                .map(|text| {
+                    original
+                        .iter()
+                        .find(|c| &c.text == text)
+                        .cloned()
+                        .unwrap_or_else(|| ime_ipc::Candidate {
+                            text: text.clone(),
+                            comment: String::new(),
+                        })
+                })
+                .collect();
+            if let Some(t) = hl_text {
+                if let Some(pos) = context.candidates.iter().position(|c| c.text == t) {
+                    context.highlighted = pos;
+                }
+            }
+        }
+    }
+    ime_ipc::Response::ProcessKey { eaten, commit, context }
+}
+
 /// 比对 options.json 前后两份快照的 input_scheme 是否不同。同一份判定逻辑
 /// 同时被 TSF (service.rs) 与 algo (此处) 消费；本函数本身留在 algo 是因为
 /// algo 是 wave 5 真实 redeploy 的宿主，TSF 只是日志转发。
@@ -198,9 +247,11 @@ fn run_service() -> ! {
         // 管道实例，连接处理在独立线程中进行，避免首个宿主阻塞全部后续宿主。
         let scheme_slot = current_scheme.clone();
         std::thread::spawn(move || {
-            ime_ipc::server::serve_connection(&server, move || {
-                create_session_with_scheme(engine, &scheme_slot)
-            });
+            ime_ipc::server::serve_connection(
+                &server,
+                move || create_session_with_scheme(engine, &scheme_slot),
+                decorate_process_key,
+            );
             log("会话结束");
         });
     }

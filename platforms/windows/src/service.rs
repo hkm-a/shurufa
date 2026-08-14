@@ -68,6 +68,12 @@ pub struct Inner {
     /// "大写视觉提示"（视觉提示，不切引擎）：长按 release 后置 true；
     /// 下一次短按 Shift release 清零。不影响 IPC 上的 ascii_mode。
     caps_visual: bool,
+    /// Shift 中/英切换"挂起"标记：Shift 按下时置位，等（a）松开结算、
+    /// （b）下一个非 Shift 组合键结算、或（c）Shift 组合键（大写）取消。
+    /// 旧实现 Shift 按下即切——英文模式打大写字母时每个 Shift+字母 都会把
+    /// 模式切回中文（输入体验 bug，用户打 "Hello" 打一个 H 就变中文组字）。
+    /// 改为按下仅挂起，切不切由后续按键/松开判定。
+    shift_toggle_pending: bool,
 }
 
 /// Shift 按住时长阈值：超过即视长按（→ 大写视觉提示），否则按既有的
@@ -87,22 +93,31 @@ pub(crate) enum ShiftReleaseAction {
     LongPressVisualCaps,
     /// 当前已处视觉提示态的短按：仅清除提示，不切中英。
     ClearVisualCaps,
-    /// 常规短按：走既有的 ToggleAscii。
-    ShortKeepToggle,
+    /// Shift 单独按下并松开（挂起且无组合键介入）：结算中/英切换。
+    FireToggle,
+    /// 短按且非挂起态（如已随 Shift+字母 取消）：不动作。
+    NoToggle,
 }
 
-/// 状态机（纯函数）：根据 (held_ms, caps_visual_now) 推下一步动作。
+/// 状态机（纯函数）：根据 (held_ms, caps_visual_now, toggle_pending) 推下一步动作。
 /// 规则文档化：
-/// - held ≥ SHIFT_LONG_PRESS_MS ⇒ LongPressVisualCaps（无视当前 visual 状态）
+/// - held ≥ SHIFT_LONG_PRESS_MS ⇒ LongPressVisualCaps（无视当前 visual/pending 状态）
 /// - held  < 阈值 且 caps_visual 已激活 ⇒ ClearVisualCaps
-/// - held  < 阈值 且未激活 ⇒ ShortKeepToggle
-pub(crate) fn decide_shift_release(held_ms: u64, caps_visual: bool) -> ShiftReleaseAction {
+/// - held  < 阈值 且未激活 且 pending ⇒ FireToggle（Shift 单独使用）
+/// - held  < 阈值 且未激活 且非 pending ⇒ NoToggle（切换已随组合键取消/结算）
+pub(crate) fn decide_shift_release(
+    held_ms: u64,
+    caps_visual: bool,
+    toggle_pending: bool,
+) -> ShiftReleaseAction {
     if is_long_press(held_ms) {
         ShiftReleaseAction::LongPressVisualCaps
     } else if caps_visual {
         ShiftReleaseAction::ClearVisualCaps
+    } else if toggle_pending {
+        ShiftReleaseAction::FireToggle
     } else {
-        ShiftReleaseAction::ShortKeepToggle
+        ShiftReleaseAction::NoToggle
     }
 }
 
@@ -178,6 +193,7 @@ impl TextService {
                 opts_mtime: None,
                 shift_down_at_ms: None,
                 caps_visual: false,
+                shift_toggle_pending: false,
             }),
         }
     }
@@ -238,14 +254,15 @@ impl Inner {
         let ctrl = modifiers & keys::MASK_CONTROL != 0;
         let alt = modifiers & keys::MASK_ALT != 0;
 
-        // Shift 单独按下：立即执行中/英切换（收尾残留组合），并记录按下时刻。
-        // 吃掉该键，否则系统会走默认中英文切换，导致双触发。
+        // Shift 单独按下：挂起中/英切换（不立即切），收尾残留组合，并记录
+        // 按下时刻。吃掉该键，否则系统会走默认中英文切换，导致双触发。
         //
-        // 为什么在按下时切换而非 release：TSF 的 OnKeyUp/OnTestKeyUp 只在宿主
-        // 主动调用 TestKeyUp 时触发，多数应用（Electron/Chrome/VS Code 等）不发送
-        // KeyUp 试探 → 依赖 release 的切换在这些宿主上永不执行（用户反馈"Shift
-        // 切换中英文不起作用"的根因）。按下即切是可靠路径；长按视觉提示保留为
-        // 可选增强（OnKeyUp 若触发则覆盖为长按/清除，见 handle_shift_release）。
+        // 为什么"挂起"而非按下即切：按下即切会让英文模式下打大写字母
+        // （Shift+字母）把模式误切回中文——用户打 "Hello" 第一个 H 就被切回
+        // 中文组字（输入体验 bug）。挂起后由三种路径结算：
+        //   - 松开（有 TestKeyUp 的宿主）：短按 → 切换落地；
+        //   - 下一个不带 Shift 的键（无 TestKeyUp 的宿主兜底）：切换落地；
+        //   - 下一个带 Shift 的键（大写/上档符号）：取消挂起，不切换。
         if vk == KeyboardAndMouse::VK_SHIFT.0 as u32 {
             if !self.opts.shift_switch_cn_en {
                 return false;
@@ -253,14 +270,31 @@ impl Inner {
             self.shift_down_at_ms = Some(unsafe {
                 windows::Win32::System::SystemInformation::GetTickCount64()
             });
-            // 立即切换（可靠性优先）：先收尾残留组合，再把请求交给引擎。
+            self.shift_toggle_pending = true;
+            // 收尾残留组合（主流输入法一致：Shift 提交拼音）
             self.end_pending_composition(context);
-            if let Some(is_ascii) = self.client.toggle_ascii() {
-                crate::debug_log(&format!(
-                    "Shift 按下切换中英文：ascii={is_ascii}（fallback：release 触发则覆盖）"
-                ));
-            }
+            crate::debug_log("Shift 按下：挂起中英文切换，待松开/组合键结算");
             return true;
+        }
+
+        // ---- Shift 挂起结算：按下 Shift 后的第一个按键决定切换是否落地 ----
+        // - 该键带 Shift（大写/上档符号/Shift+方向选择）：Shift 被用作组合键，
+        //   取消挂起（这次 Shift 不是切换意图）；
+        // - 该键不带 Shift（Shift 已松开）：Shift 被单独使用 → 此刻结算切换。
+        //   （无 TestKeyUp 的宿主收不到 release，这里兜底；有 TestKeyUp 的宿主
+        //   handle_shift_release 已优先结算并清掉挂起，走到这里已是 false。）
+        if self.shift_toggle_pending {
+            self.shift_toggle_pending = false;
+            if !shift {
+                self.shift_down_at_ms = None;
+                if let Some(is_ascii) = self.client.toggle_ascii() {
+                    crate::debug_log(&format!(
+                        "Shift 挂起结算（后续按键无 Shift）：ascii={is_ascii}"
+                    ));
+                }
+            } else {
+                crate::debug_log("Shift 挂起取消（后续按键带 Shift，视为组合键）");
+            }
         }
         // CapsLock：开启选项时切到英文直输（只进不出，回中文用 Shift）。
         // 吃掉该键后系统不再翻转大写灯（OnTestKeyDown 已声明接管）。
@@ -294,6 +328,29 @@ impl Inner {
             let ok = self.client.set_option("ascii_punct", next);
             crate::debug_log(&format!("Ctrl+. 切换中/英标点：ascii_punct={next} ok={ok}"));
             return true;
+        }
+        // Shift+可打印字符（大写字母/上档符号）：直接上屏，不进 rime。
+        // 中文态打 "Hello 世界" 的 H（Shift+H）必须立即上屏，否则 rime 会把它
+        // 收进组字串（实测 preedit='H'，无候选、不自动提交）；英文态同理避免
+        // 误触发组字。纯 TSF 落盘，引擎挂掉也能用。Shift 已在挂起结算分支
+        // 按组合键取消，此路径不再涉及中英切换。
+        if shift
+            && !ctrl
+            && !alt
+            && self.composition.is_none()
+            && (0x20..=0x7E).contains(&keys::vk_to_keysym(vk, true).unwrap_or(0))
+        {
+            if let Some(keysym) = keys::vk_to_keysym(vk, true) {
+                if let Some(ch) = char::from_u32(keysym as u32) {
+                    let text = ch.to_string();
+                    let client_id = self.client_id;
+                    let _ = edit_session(client_id, context, |ec| unsafe {
+                        insert_text(context, ec, &text)
+                    });
+                    crate::debug_log(&format!("Shift+可打印键直接上屏：{ch:?}"));
+                    return true;
+                }
+            }
         }
         // Ctrl/Alt 组合键与不认识的键一律放行
         if modifiers & (keys::MASK_CONTROL | keys::MASK_ALT) != 0 {
@@ -344,6 +401,9 @@ impl Inner {
             crate::debug_log("引擎 IPC 不可用，按键直通");
             return false;
         };
+        // 防御双字：引擎返回了上屏文本却声称未吃掉（异常/边界态）时，只要落了盘
+        // 就必须吃掉该键，否则应用会再处理一次 → 双字（曾现 "你好你好" 类问题）。
+        let eaten = eaten || commit.is_some();
 
         crate::debug_log(&format!(
             "键 vk=0x{:X} keysym=0x{:X} eaten={} commit={:?} preedit={:?}",
@@ -437,15 +497,16 @@ impl Inner {
         self.ui.hide();
     }
 
-    /// Shift release 分流：长按 → 视觉大写角标；短按 → 中/英 toggle 或解除角标。
-    /// 返回 true = 已吃掉（按键路径上不再交还系统）。
+    /// Shift release 分流：长按 → 视觉大写角标；短按 + 挂起 → 结算中/英切换；
+    /// 短按 + 视觉态 → 解除角标。返回 true = 已吃掉（按键路径上不再交还系统）。
     ///
     /// 实现约定：
     /// - 未在按下时记录时刻（None）说明 Shift 是被选项关着/直接跳过的，
     ///   release 直通不动作。
-    /// - **防双触发**：Shift 切换已在按下时执行（可靠路径，见 handle_key），
-    ///   此处短按分支**不再重复 toggle**——否则应用支持 TestKeyUp 时按下+松开
-    ///   会切两次回到原状态。release 只处理长按视觉/清除。
+    /// - **切换结算**：切换在 Shift 单独使用时才落地（按下时只挂起，见 handle_key）。
+    ///   若按下后跟了 Shift 组合键（大写），挂起已被取消，这里走 NoToggle 不切。
+    ///   无 TestKeyUp 的宿主（多数应用）收不到本回调，由 handle_key 的
+    ///   "挂起结算"（下一个非 Shift 键）兜底，两种宿主行为一致。
     /// - 长按路径**不**调 ToggleAscii、**不**改组合：仅设 caps_visual + 触发候选窗重绘。
     fn handle_shift_release(&mut self, sink: &ITfCompositionSink, context: &ITfContext) -> bool {
         let Some(down_at) = self.shift_down_at_ms.take() else {
@@ -453,8 +514,10 @@ impl Inner {
         };
         let held = unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
             .saturating_sub(down_at);
-        match decide_shift_release(held, self.caps_visual) {
+        match decide_shift_release(held, self.caps_visual, self.shift_toggle_pending) {
             ShiftReleaseAction::LongPressVisualCaps => {
+                // 长按：视觉大写提示，不切引擎；挂起一并取消（长按不是切换意图）
+                self.shift_toggle_pending = false;
                 crate::debug_log(&format!(
                     "Shift 长按 {}ms ≥ {}ms：设大写视觉提示",
                     held, SHIFT_LONG_PRESS_MS
@@ -466,6 +529,7 @@ impl Inner {
                 true
             }
             ShiftReleaseAction::ClearVisualCaps => {
+                self.shift_toggle_pending = false;
                 crate::debug_log("Shift 短按：清除大写视觉提示");
                 self.caps_visual = false;
                 if crate::candidate_window::set_caps_visual(false) {
@@ -475,12 +539,23 @@ impl Inner {
                 let _ = context;
                 true
             }
-            ShiftReleaseAction::ShortKeepToggle => {
-                // 常规短按：切换已在按下时完成（防双触发），这里仅记录——
-                // 若需要"长按可取消切换"，在此恢复（当前不做，保持按下即切）。
+            ShiftReleaseAction::FireToggle => {
+                // Shift 单独按下并松开（短按，中间无其它键）：此刻结算中/英切换。
+                // 按下时已收尾残留组合，这里只切换引擎态。
+                self.shift_toggle_pending = false;
                 crate::debug_log(&format!(
-                    "Shift 短按 release（切换已在按下时执行，不重复）held={held}ms"
+                    "Shift 短按松开：结算中英文切换（held={held}ms）"
                 ));
+                if let Some(is_ascii) = self.client.toggle_ascii() {
+                    crate::debug_log(&format!("  ascii={is_ascii}"));
+                }
+                let _ = sink;
+                let _ = context;
+                true
+            }
+            ShiftReleaseAction::NoToggle => {
+                // 短按 + 非挂起（如已随 Shift+字母 取消）：不动作
+                crate::debug_log(&format!("Shift 短按松开（无挂起切换）held={held}ms"));
                 let _ = sink;
                 let _ = context;
                 true
@@ -647,6 +722,18 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         if wparam.0 as u32 == KeyboardAndMouse::VK_SHIFT.0 as u32 {
             return Ok(self.inner.borrow().opts.shift_switch_cn_en.into());
         }
+        // Ctrl+.（中/英标点）：is_ime_key 对带 Ctrl 的键一律放行（直通），但
+        // handle_key 里的标点切换分支需要先收到 OnKeyDown —— 必须在此主动接管，
+        // 否则该功能永远不可达（"Ctrl+. 切换标点"选项是摆设，2026-08-14 发现）。
+        if wparam.0 as u32 == 0xBE {
+            let mods = keys::current_modifiers();
+            if mods & keys::MASK_CONTROL != 0
+                && mods & keys::MASK_ALT == 0
+                && self.inner.borrow().opts.ctrl_period_ascii_punct
+            {
+                return Ok(true.into());
+            }
+        }
         Ok(keys::is_ime_key(wparam.0 as u32, keys::current_modifiers(), caps_managed).into())
     }
 
@@ -760,31 +847,37 @@ mod tests {
         assert!(is_long_press(60_000));
     }
 
-    /// caps_visual 状态机：decide_shift_release 三分支全覆盖。
-    /// - 长按 → 进入视觉提示（无论此前是否已激活，幂等）
-    /// - 短按 + 已激活 → 清除（不进 toggle_ascii 路径）
-    /// - 短按 + 未激活 → 走 toggle_ascii 旧路径
+    /// caps_visual/pending 状态机：decide_shift_release 四分支全覆盖。
+    /// - 长按 → 进入视觉提示（无论此前状态，幂等），挂起由调用方清除
+    /// - 短按 + 已激活 → 清除提示（不切中英）
+    /// - 短按 + 未激活 + 挂起 → 结算中/英切换
+    /// - 短按 + 未激活 + 无挂起 → 不动作
     #[test]
-    fn caps_visual_state_machine_three_branches() {
+    fn caps_visual_state_machine_branches() {
         assert_eq!(
-            decide_shift_release(SHIFT_LONG_PRESS_MS, false),
+            decide_shift_release(SHIFT_LONG_PRESS_MS, false, true),
             ShiftReleaseAction::LongPressVisualCaps,
             "长按 + 未激活 → 进入视觉提示"
         );
         assert_eq!(
-            decide_shift_release(SHIFT_LONG_PRESS_MS, true),
+            decide_shift_release(SHIFT_LONG_PRESS_MS, true, false),
             ShiftReleaseAction::LongPressVisualCaps,
             "长按 + 已激活 → 视觉提示幂等保持"
         );
         assert_eq!(
-            decide_shift_release(SHIFT_LONG_PRESS_MS - 1, true),
+            decide_shift_release(SHIFT_LONG_PRESS_MS - 1, true, true),
             ShiftReleaseAction::ClearVisualCaps,
             "短按 + 已激活 → 清除提示，不切中英"
         );
         assert_eq!(
-            decide_shift_release(SHIFT_LONG_PRESS_MS - 1, false),
-            ShiftReleaseAction::ShortKeepToggle,
-            "短按 + 未激活 → 常规 toggle 路径"
+            decide_shift_release(SHIFT_LONG_PRESS_MS - 1, false, true),
+            ShiftReleaseAction::FireToggle,
+            "短按 + 挂起 → 结算中英切换"
+        );
+        assert_eq!(
+            decide_shift_release(SHIFT_LONG_PRESS_MS - 1, false, false),
+            ShiftReleaseAction::NoToggle,
+            "短按 + 无挂起 → 不动作（切换已随组合键取消/结算）"
         );
     }
 

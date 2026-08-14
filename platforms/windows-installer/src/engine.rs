@@ -224,13 +224,51 @@ fn write_uninstall_registry(install_dir: &str, exe: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// 以普通用户身份启动一个程序（经 schtasks 一次性任务 + 交互用户受限令牌）。
+///
+/// **绝不能从提权进程直接 spawn**：安装器以管理员运行，直接 spawn 会让子进程
+/// 继承提权。宿主链提权 → 算法服务以 High 完整性创建 IPC 管道，普通应用连接
+/// 被完整性策略拒绝（err=5）输入法整体失效；控制中心提权 → 悬浮条以管理员
+/// 窗口运行（跨提权层级无法被普通应用托举/交互）。两者都是 2026-08-14 实机
+/// 复现的 bug 类。schtasks 任务默认"仅当用户登录时运行、受限权限"（交互用户
+/// 的非提权令牌），跑完立即删任务。
+fn launch_as_user(target: &Path, args: &[&str]) -> Result<(), String> {
+    let tn = "FOXUserLaunch";
+    let mut quoted = format!("\"{}\"", target.display());
+    for a in args {
+        quoted.push(' ');
+        quoted.push_str(&format!("\"{a}\""));
+    }
+    // /SC ONCE + /ST 过去时刻仅为满足 /Create 必填项；实际触发靠 /Run。
+    // /RL LIMITED 显式声明受限权限（默认即如此，写清避免未来误改）。
+    run_cmd(
+        "schtasks.exe",
+        &[
+            "/Create",
+            "/TN",
+            tn,
+            "/TR",
+            &quoted,
+            "/SC",
+            "ONCE",
+            "/ST",
+            "00:00",
+            "/RL",
+            "LIMITED",
+            "/F",
+        ],
+    )
+    .map_err(|e| format!("创建用户启动任务失败：{e}"))?;
+    let run_result = run_cmd("schtasks.exe", &["/Run", "/TN", tn]);
+    let _ = run_cmd("schtasks.exe", &["/Delete", "/TN", tn, "/F"]);
+    run_result
+        .map(|_| ())
+        .map_err(|e| format!("启动 {} 失败：{e}", target.display()))
+}
+
 fn start_host(target: &Path) -> Result<(), String> {
     let host = target.join("shurufa-host.exe");
-    Command::new(&host)
-        .arg("supervise")
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| format!("启动后台服务失败：{e}"))?;
+    launch_as_user(&host, &["supervise"])?;
     let _ = Command::new("ctfmon.exe").creation_flags(CREATE_NO_WINDOW).spawn();
     Ok(())
 }
@@ -511,10 +549,10 @@ pub fn run_finish_actions(
         log_append(target, &format!("✓ 桌面快捷方式已创建：{}", desktop.join(SHORTCUT_NAME).display()));
     }
     if run_fox {
-        log_append(target, "→ 启动控制中心");
-        let _ = Command::new(target.join("Shurufa.exe"))
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn();
+        log_append(target, "→ 启动控制中心（普通用户，勿提权）");
+        // 与 start_host 同款降权：提权进程直接 spawn 会让悬浮条以管理员窗口
+        // 运行（2026-08-14 实机复现）。经 schtasks 以交互用户受限令牌拉起。
+        let _ = launch_as_user(&target.join("Shurufa.exe"), &[]);
     }
     Ok(())
 }
