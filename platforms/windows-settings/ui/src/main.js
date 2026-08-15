@@ -148,7 +148,7 @@ let schemeCurrent = "pinyin";
 let schemeBanner = null;
 
 // ---------------------------------------------------------------------------
-// 悬浮外壳：bar（悬浮条）/ menu（菜单面板）/ page（页面子视图）三态。
+// 悬浮外壳：bar（悬浮球）/ menu（菜单面板）/ page（页面子视图）三态。
 // 窗口尺寸由后端 set_window_size 控制；位置由 onMoved 记忆、启动时恢复。
 // ---------------------------------------------------------------------------
 
@@ -174,9 +174,9 @@ const PAGE_SIZES = {
 
 function windowSizeFor(mode) {
   let panel;
-  // bar 尺寸按 pics/4.png 比例（logo 32 方块 + 中/英 30 + 4 个 30px 图标）；
-  // menu 宽 = 主菜单 320 + 间距 4 + 二级面板 236，高含底部悬浮条 38+6
-  if (mode === "bar") panel = { width: 172, height: 38 };
+  // bar 态 = 悬浮球（48×48 圆形）；menu 宽 = 主菜单 320 + 间距 4 +
+  // 二级面板 236，高含底部悬浮球 48+6
+  if (mode === "bar") panel = { width: 48, height: 48 };
   else if (mode === "menu") panel = { width: 560, height: 560 };
   else panel = PAGE_SIZES[activePage] || { width: 520, height: 640 };
   return {
@@ -208,7 +208,7 @@ async function applyMode(mode) {
   if (key !== appliedSizeKey) {
     appliedSizeKey = key;
     try {
-      // anchor_bottom：窗口底边不动向上生长——菜单/页面弹在悬浮条上方
+      // anchor_bottom：窗口底边不动向上生长——菜单/页面弹在悬浮球上方
       await invoke("set_window_size", { size: { ...windowSizeFor(mode), anchor_bottom: true } });
     } catch (error) {
       console.error("[shurufa] set_window_size", error);
@@ -338,12 +338,10 @@ const TOOLBOX_ITEMS = [
 // 全局中/英状态（算法服务全局语义）：null=未知；true=英文直输；false=中文
 let imeAscii = null;
 
-// 条上「中/En」指示（搜狗悬浮条同款元素）：显示全局中英态，点击切换
-function modeGlyph(ascii) {
-  return ascii
-    ? `<svg viewBox="0 0 24 24" aria-hidden="true"><text x="12" y="17.2" text-anchor="middle"
-        font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="10.5" font-weight="700" fill="currentColor">En</text></svg>`
-    : glyphIcon("中");
+// 悬浮球右下角「中/En」徽标文本（显示全局中英态，点击切换）。
+// 徽标只有 18px，SVG 字形缩太小看不清，直接用文本。
+function ballModeText(ascii) {
+  return ascii === null ? "…" : ascii ? "En" : "中";
 }
 
 async function refreshImeMode() {
@@ -369,23 +367,17 @@ async function cycleImeMode() {
   }
 }
 
-function barTemplate() {
-  // 「拼/双」显示当前输入方案，点击在全拼⇄双拼间切换（全局热生效）
-  const schemeGlyph = schemeCurrent === "double_pinyin" ? "双" : "拼";
-  const schemeTitle = schemeCurrent === "double_pinyin"
-    ? "当前：双拼（小鹤）· 点击切换到全拼"
-    : "当前：全拼 · 点击切换到双拼（小鹤）";
+// 悬浮球：白色圆形 + F logo；点球体展开设置中心（菜单态），右下角小徽标
+// 显示并切换中/英。剪贴板、语音、方案切换等快捷入口移入菜单/工具箱——
+// 悬浮球只保留一个入口，点开即设置中心（2026-08-15 用户改版）。
+function ballTemplate() {
   const modeTitle = imeAscii === null
     ? "中英状态读取中…"
     : imeAscii ? "当前：英文直输 · 点击切换中文" : "当前：中文 · 点击切换英文";
   return `
-    <div id="bar" class="floating-bar" data-tauri-drag-region>
-      <button class="bar-logo" data-mode-toggle="menu" title="FOX 菜单" aria-label="展开菜单">${logoMark(32, 7)}</button>
-      <span class="bar-divider" data-tauri-drag-region></span>
-      <button class="bar-icon bar-mode" data-bar-mode title="${modeTitle}" aria-label="切换中英文">${modeGlyph(imeAscii)}</button>
-      <button class="bar-icon" data-bar-scheme title="${schemeTitle}">${glyphIcon(schemeGlyph)}</button>
-      <button class="bar-icon" data-page="history" title="剪贴板历史（面板热键 Ctrl+Shift+V）">${BAR_ICONS.clip}</button>
-      <button class="bar-icon" data-menu-act="speech" title="语音转写（Ctrl+Shift+S）">${BAR_ICONS.mic}</button>
+    <div id="ball" class="floating-ball" data-tauri-drag-region>
+      <button class="ball-main" data-mode-toggle="menu" title="FOX 设置中心" aria-label="打开设置中心">${logoMark(30, 15)}</button>
+      <button class="bar-mode ball-mode-badge" data-bar-mode title="${modeTitle}" aria-label="切换中英文"><span class="ball-mode-text">${ballModeText(imeAscii)}</span></button>
     </div>`;
 }
 
@@ -394,7 +386,8 @@ function barTemplate() {
 function updateBarModeButton() {
   const btn = app.querySelector(".bar-mode");
   if (!btn) return;
-  btn.innerHTML = modeGlyph(imeAscii);
+  const text = btn.querySelector(".ball-mode-text");
+  if (text) text.textContent = ballModeText(imeAscii);
   btn.title = imeAscii === null
     ? "中英状态读取中…"
     : imeAscii ? "当前：英文直输 · 点击切换中文" : "当前：中文 · 点击切换英文";
@@ -419,7 +412,7 @@ function menuShellTemplate() {
         ${menuTemplate()}
         <div id="submenu" class="floating-submenu" role="menu"></div>
       </div>
-      ${barTemplate()}
+      ${ballTemplate()}
     </div>`;
 }
 
@@ -563,7 +556,7 @@ function pageShellTemplate() {
         <button class="page-back icon-action" data-mode-toggle="menu" title="返回菜单"><i data-lucide="arrow-left"></i></button>
         <span class="page-topbar-title">${meta.label}</span>
         <span class="page-topbar-grow"></span>
-        <button class="page-collapse icon-action" data-mode-toggle="bar" title="收起为悬浮条"><i data-lucide="chevron-up"></i></button>
+        <button class="page-collapse icon-action" data-mode-toggle="bar" title="收起为悬浮球"><i data-lucide="chevron-up"></i></button>
       </header>
       <div class="page-content">${pageTemplate()}</div>
     </div>`;
@@ -584,9 +577,9 @@ function bindShell() {
   bindBarDrag();
 }
 
-// 悬浮条整条可拖（搜狗行为）：按下后位移超过阈值才开始拖窗口，
-// 原地松开仍触发按钮点击。监听挂 window 级——条只有 38px 高，
-// 挂在条上鼠标稍一移出就收不到 mousemove，拖动会时灵时不灵。
+// 悬浮球整体可拖（搜狗行为）：按下后位移超过阈值才开始拖窗口，
+// 原地松开仍触发按钮点击。监听挂 window 级——球只有 48px 大，
+// 挂在球上鼠标稍一移出就收不到 mousemove，拖动会时灵时不灵。
 let barDragCtx = null;
 window.addEventListener("mousemove", (event) => {
   if (!barDragCtx || barDragCtx.moved) return;
@@ -621,9 +614,9 @@ window.addEventListener("mousedown", () => {
 }, true);
 
 function bindBarDrag() {
-  const bar = app.querySelector("#bar");
-  if (!bar) return;
-  bar.addEventListener("mousedown", (event) => {
+  const ball = app.querySelector("#ball");
+  if (!ball) return;
+  ball.addEventListener("mousedown", (event) => {
     if (event.button !== 0) return;
     // 阻止 SVG 文本选择与原生元素拖拽干扰窗口拖动
     event.preventDefault();
@@ -643,7 +636,7 @@ app.addEventListener("click", (event) => {
   const el = target instanceof Element ? target : null;
   const button = el ? el.closest("button") : null;
   // 菜单态点击窗口透明区/面板外空白 → 收起菜单（等价"点外部关闭"）
-  if (!button && uiMode === "menu" && el && !el.closest(".floating-menu, .floating-submenu, .floating-bar")) {
+  if (!button && uiMode === "menu" && el && !el.closest(".floating-menu, .floating-submenu, .floating-ball")) {
     void applyMode("bar");
     return;
   }
@@ -685,7 +678,7 @@ app.addEventListener("click", (event) => {
   }
 });
 
-// Esc：菜单态收起为悬浮条；页面态返回菜单（搜狗式层级返回）。
+// Esc：菜单态收起为悬浮球；页面态返回菜单（搜狗式层级返回）。
 // 仅在本窗口获得键盘焦点时生效；不干扰其它应用里的 Esc。
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
@@ -1027,7 +1020,7 @@ function settingsPage() {
         <div class="panel-heading"><div class="row-icon teal"><i data-lucide="layout-grid"></i></div><div><h3>悬浮条</h3><p>控制中心以悬浮条常驻桌面，点 logo 或 ⊞ 展开菜单</p></div></div>
         <div class="setting-row">
           <div class="row-icon"><i data-lucide="play"></i></div>
-          <label class="setting-toggle"><div><h3>开机自启常驻</h3><p>登录时自动显示悬浮条（HKCU Run · FOXSettings）</p></div></label>
+          <label class="setting-toggle"><div><h3>开机自启常驻</h3><p>登录时自动显示悬浮球（HKCU Run · FOXSettings）</p></div></label>
           <label class="switch"><input type="checkbox" data-settings-field="autostart" ${autostartOn ? "checked" : ""} ${autostartInfo ? "" : "disabled"} /><span></span></label>
         </div>
       </article>
@@ -1723,7 +1716,7 @@ function bindSkinForm() {
 
 function render() {
   const shell = uiMode === "bar"
-    ? barTemplate()
+    ? ballTemplate()
     : uiMode === "menu"
       ? menuShellTemplate()
       : pageShellTemplate();

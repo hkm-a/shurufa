@@ -53,6 +53,11 @@ translator:
   max_sentence_length: 8
   # 完整输入较长拼音时直接提供完整词条，减少逐字选词。
   enable_word_completion: true
+  # 拼音纠错（2026-08-15 实装）：librime 1.17 的编辑距离纠错（EditDistance
+  # Corrector）在官方构建里被 #if 0 禁用，仅剩 NearSearchCorrector 生效——
+  # 可纠正键盘相邻键错误（如 nohao→你好：i/o 相邻），转位类错误
+  # （zhogn→zhong）无法纠正（属 librime 上游限制，不做装饰层 hack）。
+  enable_correction: true
   initial_quality: 1.2
   preedit_format:
     - xform/([nl])v/$1ü/

@@ -16,7 +16,7 @@
                                     "label":  "main",
                                     "width":  380,
                                     "height":  64,
-                                    "minWidth":  120,
+                                    "minWidth":  40,
                                     "minHeight":  40,
                                     "resizable":  false,
                                     "decorations":  false,
