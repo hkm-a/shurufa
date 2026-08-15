@@ -569,10 +569,12 @@ impl CandidateUi {
         let height = scale(BASE_PREEDIT_HEIGHT, dpi) + scale(BASE_ROW_HEIGHT, dpi) + padding * 2;
 
         crate::debug_log(&format!(
-            "cand show: win_dpi={} sys_dpi={} used_dpi={} w={} h={} preedit={:?} cands={}",
+            "cand show: win_dpi={} sys_dpi={} used_dpi={} screen_w={} max_w={} w={} h={} preedit={:?} cands={}",
             unsafe { GetDpiForWindow(hwnd) },
             unsafe { GetDpiForSystem() },
             dpi,
+            screen_w,
+            max_width,
             width,
             height,
             ctx.preedit,

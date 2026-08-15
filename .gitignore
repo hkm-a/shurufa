@@ -40,3 +40,4 @@
 # 本地 DSH 会话工具工作区（非项目代码，不入库）
 /dsh-session-fix/
 /dsh-web-ui/
+/dsh-desktop-src/

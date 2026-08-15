@@ -90,14 +90,16 @@ if ($Schemas) {
   $copyLines += "robocopy '$repo\schemas' '$dst\schemas' /MIR /XD build /NFL /NDL /NJH /NJS /NP | Out-Null"
 }
 if ($Tsf) {
-  # TSF DLL 版本化 rename-trick：旧 DLL 被 explorer 锁定时先改名再复制
-  $copyLines += @'
-$ver = Get-ChildItem "$dst" -Filter 'shurufa_tsf-*.dll' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-$name = if ($ver) { $ver.Name } else { 'shurufa_tsf-0.4.1.dll' }
-$tsfOld = "$dst\$name"
-if (Test-Path $tsfOld) { Rename-Item $tsfOld "$name.old-$(Get-Date -Format HHmmss)" -Force -ErrorAction SilentlyContinue }
-Copy-Item "$repo\target\debug\shurufa_tsf.dll" $tsfOld -Force -ErrorAction Stop
-'@
+  # TSF DLL 版本化 rename-trick：旧 DLL 被 explorer 锁定时先改名再复制。
+  # 注意：这里是双引号 here-string——$dst/$repo 在父进程展开（提权脚本里
+  # 没有这两个变量），而 $ver/$name/$tsfOld 用反引号转义留给提权进程运行时求值。
+  $copyLines += @"
+`$ver = Get-ChildItem "$dst" -Filter 'shurufa_tsf-*.dll' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+`$name = if (`$ver) { `$ver.Name } else { 'shurufa_tsf-0.4.1.dll' }
+`$tsfOld = "$dst\`$name"
+if (Test-Path `$tsfOld) { Rename-Item `$tsfOld "`$name.old-`$(Get-Date -Format HHmmss)" -Force -ErrorAction SilentlyContinue }
+Copy-Item "$repo\target\debug\shurufa_tsf.dll" `$tsfOld -Force -ErrorAction Stop
+"@
 }
 
 if ($copyLines.Count -eq 0) {
