@@ -570,7 +570,7 @@ function bindShell() {
 }
 
 // 悬浮球整体可拖（搜狗行为）：按下后位移超过阈值才开始拖窗口，
-// 原地松开仍触发按钮点击。监听挂 window 级——球只有 44px 大，
+// 原地松开仍触发按钮点击。监听挂 window 级——球只有 38px 大，
 // 挂在球上鼠标稍一移出就收不到 mousemove，拖动会时灵时不灵。
 let barDragCtx = null;
 window.addEventListener("mousemove", (event) => {
