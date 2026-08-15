@@ -238,21 +238,16 @@ pub struct RimeApi {
 
     // config init / load
     pub config_init: unsafe extern "C" fn(config: *mut RimeConfig) -> Bool,
-    pub config_load_string: unsafe extern "C" fn(config: *mut RimeConfig, yaml: *const c_char) -> Bool,
+    pub config_load_string:
+        unsafe extern "C" fn(config: *mut RimeConfig, yaml: *const c_char) -> Bool,
 
     // config value setters
     pub config_set_bool:
         unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char, value: Bool) -> Bool,
-    pub config_set_int: unsafe extern "C" fn(
-        config: *mut RimeConfig,
-        key: *const c_char,
-        value: c_int,
-    ) -> Bool,
-    pub config_set_double: unsafe extern "C" fn(
-        config: *mut RimeConfig,
-        key: *const c_char,
-        value: c_double,
-    ) -> Bool,
+    pub config_set_int:
+        unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char, value: c_int) -> Bool,
+    pub config_set_double:
+        unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char, value: c_double) -> Bool,
     pub config_set_string: unsafe extern "C" fn(
         config: *mut RimeConfig,
         key: *const c_char,
@@ -260,14 +255,23 @@ pub struct RimeApi {
     ) -> Bool,
 
     // config complex structures
-    pub config_get_item:
-        unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char, value: *mut RimeConfig) -> Bool,
-    pub config_set_item:
-        unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char, value: *mut RimeConfig) -> Bool,
+    pub config_get_item: unsafe extern "C" fn(
+        config: *mut RimeConfig,
+        key: *const c_char,
+        value: *mut RimeConfig,
+    ) -> Bool,
+    pub config_set_item: unsafe extern "C" fn(
+        config: *mut RimeConfig,
+        key: *const c_char,
+        value: *mut RimeConfig,
+    ) -> Bool,
     pub config_clear: unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char) -> Bool,
-    pub config_create_list: unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char) -> Bool,
-    pub config_create_map: unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char) -> Bool,
-    pub config_list_size: unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char) -> usize,
+    pub config_create_list:
+        unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char) -> Bool,
+    pub config_create_map:
+        unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char) -> Bool,
+    pub config_list_size:
+        unsafe extern "C" fn(config: *mut RimeConfig, key: *const c_char) -> usize,
     pub config_begin_list: unsafe extern "C" fn(
         iterator: *mut RimeConfigIterator,
         config: *mut RimeConfig,
@@ -277,8 +281,7 @@ pub struct RimeApi {
     // raw input
     pub get_input: unsafe extern "C" fn(session_id: RimeSessionId) -> *const c_char,
     pub get_caret_pos: unsafe extern "C" fn(session_id: RimeSessionId) -> usize,
-    pub select_candidate:
-        unsafe extern "C" fn(session_id: RimeSessionId, index: usize) -> Bool,
+    pub select_candidate: unsafe extern "C" fn(session_id: RimeSessionId, index: usize) -> Bool,
     pub get_version: unsafe extern "C" fn() -> *const c_char,
     pub set_caret_pos: unsafe extern "C" fn(session_id: RimeSessionId, caret_pos: usize),
     pub select_candidate_on_current_page:
@@ -289,11 +292,11 @@ pub struct RimeApi {
         session_id: RimeSessionId,
         iterator: *mut RimeCandidateListIterator,
     ) -> Bool,
-    pub candidate_list_next:
-        unsafe extern "C" fn(iterator: *mut RimeCandidateListIterator) -> Bool,
+    pub candidate_list_next: unsafe extern "C" fn(iterator: *mut RimeCandidateListIterator) -> Bool,
     pub candidate_list_end: unsafe extern "C" fn(iterator: *mut RimeCandidateListIterator),
 
-    pub user_config_open: unsafe extern "C" fn(config_id: *const c_char, config: *mut RimeConfig) -> Bool,
+    pub user_config_open:
+        unsafe extern "C" fn(config_id: *const c_char, config: *mut RimeConfig) -> Bool,
     pub candidate_list_from_index: unsafe extern "C" fn(
         session_id: RimeSessionId,
         iterator: *mut RimeCandidateListIterator,
@@ -305,18 +308,10 @@ pub struct RimeApi {
     pub get_staging_dir: unsafe extern "C" fn() -> *const c_char,
 
     // capnproto (deprecated)
-    pub commit_proto: unsafe extern "C" fn(
-        session_id: RimeSessionId,
-        commit_builder: *mut c_void,
-    ),
-    pub context_proto: unsafe extern "C" fn(
-        session_id: RimeSessionId,
-        context_builder: *mut c_void,
-    ),
-    pub status_proto: unsafe extern "C" fn(
-        session_id: RimeSessionId,
-        status_builder: *mut c_void,
-    ),
+    pub commit_proto: unsafe extern "C" fn(session_id: RimeSessionId, commit_builder: *mut c_void),
+    pub context_proto:
+        unsafe extern "C" fn(session_id: RimeSessionId, context_builder: *mut c_void),
+    pub status_proto: unsafe extern "C" fn(session_id: RimeSessionId, status_builder: *mut c_void),
 
     pub get_state_label: unsafe extern "C" fn(
         session_id: RimeSessionId,

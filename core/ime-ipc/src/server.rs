@@ -1,9 +1,19 @@
 //! 算法服务的会话处理：把命名管道上的 [Request] 映射到 ime_bridge 会话。
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use ime_bridge::Session;
 
 use crate::pipe::PipeServer;
 use crate::{decode_request, encode_response, Request, Response};
+
+/// 全局中/英状态（模拟搜狗"全局中英"语义，悬浮条可显示/切换）：
+/// - 任一会话 ToggleAscii / SetOption("ascii_mode") 都会更新它；
+/// - ProcessKey 喂键前把本会话同步到全局值——所有应用下一个按键自动跟上；
+/// - GetOption("ascii_mode") 返回全局值，供悬浮条/控制中心查询。
+///
+/// 内存态即可：中英切换属于会话运行时状态，无需持久化。
+static GLOBAL_ASCII: AtomicBool = AtomicBool::new(false);
 
 /// 处理一个客户端连接：循环读取请求、基于会话执行、写回应答。
 /// `create_session` 可在会话丢失时重建（引擎由调用方持有）。
@@ -56,12 +66,9 @@ fn handle_request(
     create_session: &mut impl FnMut() -> Result<Session<'static>, String>,
 ) -> Response {
     // 先处理与生命周期无关的分支
-    match &req {
-        Request::DestroySession => {
-            *session = None; // 关闭后由连接循环结束时 drop
-            return Response::Ok;
-        }
-        _ => {}
+    if let Request::DestroySession = &req {
+        *session = None; // 关闭后由连接循环结束时 drop
+        return Response::Ok;
     }
     if session.is_none() {
         match create_session() {
@@ -76,6 +83,12 @@ fn handle_request(
         Request::ProcessKey { keysym, mask } => {
             // 打字统计埋点：按键必计一次；上屏非空时计字符数（失败静默）
             shurufa_options::stats::note_keys(1);
+            // 全局中/英同步：喂键前让本会话跟上全局态（任一处切换，全部
+            // 应用下一个按键即生效——搜狗全局中英语义；悬浮条切换依赖此）
+            let global_ascii = GLOBAL_ASCII.load(Ordering::Relaxed);
+            if s.get_option("ascii_mode") != global_ascii {
+                s.set_option("ascii_mode", global_ascii);
+            }
             let eaten = s.process_key(keysym, mask);
             let mut context = crate::context_from_bridge(&s.context());
             let (is_ascii, is_full_shape, _) = s.status_bits();
@@ -96,14 +109,27 @@ fn handle_request(
         Request::Commit => Response::Commit(s.commit()),
         Request::Context => Response::Context(crate::context_from_bridge(&s.context())),
         Request::Simulate(keys) => Response::Simulate(s.simulate(&keys)),
-        Request::GetOption(name) => Response::Option(s.get_option(&name)),
+        Request::GetOption(name) => {
+            // ascii_mode 是全局态：返回全局值（会话值可能滞后未同步）
+            if name == "ascii_mode" {
+                Response::Option(GLOBAL_ASCII.load(Ordering::Relaxed))
+            } else {
+                Response::Option(s.get_option(&name))
+            }
+        }
         Request::SetOption { name, value } => {
+            if name == "ascii_mode" {
+                GLOBAL_ASCII.store(value, Ordering::Relaxed);
+            }
             s.set_option(&name, value);
             Response::Ok
         }
         Request::ToggleAscii => {
-            let now = s.toggle_ascii();
-            Response::Ascii(now)
+            // 全局优先翻转：保证任意来源的切换都落在全局态上
+            let next = !GLOBAL_ASCII.load(Ordering::Relaxed);
+            GLOBAL_ASCII.store(next, Ordering::Relaxed);
+            s.set_option("ascii_mode", next);
+            Response::Ascii(next)
         }
     }
 }

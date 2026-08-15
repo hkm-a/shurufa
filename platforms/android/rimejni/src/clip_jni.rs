@@ -241,9 +241,7 @@ pub extern "system" fn Java_com_shurufa_ime_ClipStore_nativeSetPinned(
                 return 0;
             };
             match store.lock() {
-                Ok(guard) => guard
-                    .set_pinned(id as i64, pinned != 0)
-                    .unwrap_or(false) as jboolean,
+                Ok(guard) => guard.set_pinned(id as i64, pinned != 0).unwrap_or(false) as jboolean,
                 Err(_) => 0,
             }
         },

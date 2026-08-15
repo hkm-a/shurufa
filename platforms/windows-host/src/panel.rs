@@ -447,9 +447,7 @@ fn on_key(hwnd: HWND, vk: VIRTUAL_KEY) {
     // Ctrl+F：切换"⭐ 收藏"过滤；与 spec 一致，不引入其他键盘快捷键。
     if vk == VIRTUAL_KEY(0x46) && is_ctrl_down() {
         let next_mode = PANEL.with_borrow_mut(|slot| {
-            let Some(state) = slot.as_mut() else {
-                return None;
-            };
+            let state = slot.as_mut()?;
             state.favorites_only = !state.favorites_only;
             // 切换时重置选择并重拉列表（收藏视图从收藏项回源剪贴板历史）
             let all = entries_for_query(&state.query);
@@ -475,9 +473,7 @@ fn on_key(hwnd: HWND, vk: VIRTUAL_KEY) {
         return;
     }
     let handled = PANEL.with_borrow_mut(|slot| {
-        let Some(state) = slot.as_mut() else {
-            return None;
-        };
+        let state = slot.as_mut()?;
         let count = state.entries.len();
         match vk {
             VK_ESCAPE => Some(Action::Close),
@@ -529,6 +525,7 @@ fn is_ctrl_down() -> bool {
 ///   - 收藏 ★ / 取消收藏 ☆（当前条目的 pinned_at_ms 符号翻转）
 ///   - 以文件形式转发（仅图片/文件条目可用）
 ///   - ⭐ 收藏过滤 = 收藏夹视图（等价于 Ctrl+F）
+///
 /// 注意：菜单 id ${id..} 仅为本面板内部使用，不与系统菜单冲突。
 const CTX_TOGGLE_FAVORITE: u16 = 1;
 const CTX_FORWARD_AS_FILE: u16 = 2;
@@ -666,9 +663,9 @@ fn filter_by_favorites(entries: Vec<ClipEntry>) -> Vec<ClipEntry> {
 }
 
 fn is_favorited(favs: &shurufa_options::ClipFavorites, entry: &ClipEntry) -> bool {
-    favs.entries.iter().any(|fav| {
-        fav.pinned_at_ms > 0 && favorite_matches_entry(fav, entry)
-    })
+    favs.entries
+        .iter()
+        .any(|fav| fav.pinned_at_ms > 0 && favorite_matches_entry(fav, entry))
 }
 
 /// 匹配规则：以 kind + 内容指纹近似。文本用 content_text 完全相等；图片/文件
@@ -724,11 +721,7 @@ fn toggle_favorite_on_selected() -> Option<bool> {
     }
     // 未收藏 → 追加新条目
     let (kind, content_text, path) = match entry.kind {
-        ClipKind::Text => (
-            ClipFavoriteKind::Text,
-            Some(entry.text.clone()),
-            None,
-        ),
+        ClipKind::Text => (ClipFavoriteKind::Text, Some(entry.text.clone()), None),
         ClipKind::Image => (ClipFavoriteKind::Image, None, Some(entry.text.clone())),
         ClipKind::Files => (ClipFavoriteKind::File, None, Some(entry.text.clone())),
     };
@@ -975,20 +968,6 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
     });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::append_filter_character;
-
-    #[test]
-    fn 筛选条件接受_unicode_并忽略控制字符() {
-        let mut query = "会议".to_owned();
-        assert!(append_filter_character(&mut query, '纪'));
-        assert!(append_filter_character(&mut query, '要'));
-        assert!(!append_filter_character(&mut query, '\u{8}'));
-        assert_eq!(query, "会议纪要");
-    }
-}
-
 unsafe fn draw_line(hdc: HDC, text: &str, x: i32, y: i32, w: i32, h: i32) {
     // 空串必须跳过：空 Vec 的悬垂指针传入 DrawTextW 会在 user32
     // 内触发访问违例（0xc0000005），整个进程随之崩溃
@@ -1008,4 +987,18 @@ unsafe fn draw_line(hdc: HDC, text: &str, x: i32, y: i32, w: i32, h: i32) {
         &mut rect,
         DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_filter_character;
+
+    #[test]
+    fn 筛选条件接受_unicode_并忽略控制字符() {
+        let mut query = "会议".to_owned();
+        assert!(append_filter_character(&mut query, '纪'));
+        assert!(append_filter_character(&mut query, '要'));
+        assert!(!append_filter_character(&mut query, '\u{8}'));
+        assert_eq!(query, "会议纪要");
+    }
 }

@@ -520,6 +520,7 @@ pub fn is_immersive_color_change(lparam: windows::Win32::Foundation::LPARAM) -> 
 #[cfg(windows)]
 mod dwm_impl {
     use super::{Shadow, Skin};
+    use windows::core::{w, PCWSTR};
     use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
     use windows::Win32::Graphics::Gdi::{
@@ -534,7 +535,6 @@ mod dwm_impl {
         WM_NCHITTEST, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
         WS_EX_TOPMOST, WS_POPUP,
     };
-    use windows::core::{w, PCWSTR};
 
     // DWM 属性裸值（DWMWA_WINDOW_CORNER_PREFERENCE / DWMWA_USE_IMMERSIVE_DARK_MODE），
     // 用数值构造避开 windows crate 版本间符号出现/改名差异。
@@ -575,7 +575,10 @@ mod dwm_impl {
         }
         let alpha = (opacity.clamp(0.05, 1.0) * 255.0).round() as u8;
         unsafe {
-            let style = GetWindowLongPtrW(hwnd, windows::Win32::UI::WindowsAndMessaging::WINDOW_LONG_PTR_INDEX(GWL_EXSTYLE_INDEX));
+            let style = GetWindowLongPtrW(
+                hwnd,
+                windows::Win32::UI::WindowsAndMessaging::WINDOW_LONG_PTR_INDEX(GWL_EXSTYLE_INDEX),
+            );
             SetWindowLongPtrW(
                 hwnd,
                 windows::Win32::UI::WindowsAndMessaging::WINDOW_LONG_PTR_INDEX(GWL_EXSTYLE_INDEX),
@@ -730,13 +733,18 @@ pub use dwm_impl::{apply_appearance, ShadowShell};
 // ---------------------------------------------------------------------------
 // 候选窗翻页滚动条（metrics.scrollbar；GDI/D2D 两路径共用的纯计算）
 // ---------------------------------------------------------------------------
+// 本段由 TSF（candidate_window GDI/D2D 路径）消费；host 以 #[path] 复用
+// 同一份 skin.rs 但只用到候选/面板配色——宿主构建里这些项是死代码，
+// 统一豁免，避免两处编译配置漂移。
 
 /// 滚动条轨道宽度（96 DPI 基准像素），绘制时按 dpi 缩放。
+#[allow(dead_code)]
 pub const SCROLLBAR_BASE_WIDTH: i32 = 4;
 
 /// 一页的滚动条几何：thumb 呼吸一个 item 槽位；进度 = page_no / max(total-1,1)。
 /// total_pages <= 1 时调用方应跳过绘制。坐标全为客户区像素。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct ScrollbarGeo {
     pub track: [i32; 4],
     pub thumb: [i32; 4],
@@ -745,6 +753,7 @@ pub struct ScrollbarGeo {
 /// 由深色 RGB 明度推一个"略深一档"的轨道色（COLORREF 输入输出）。
 /// 输入 <0x20 视为近黑（暗色皮肤），改为把三色各 +24 提亮；
 /// 避免暗色皮肤的轨道算成死黑导致隐没。
+#[allow(dead_code)]
 fn darkened_colorref(c: u32) -> u32 {
     let r = c & 0xff;
     let g = (c >> 8) & 0xff;
@@ -762,6 +771,7 @@ fn darkened_colorref(c: u32) -> u32 {
 
 /// 滚动条几何（track 右缘贴边、上下各留 v_pad；thumb 高度 = 一个 item 槽位）。
 /// `width/height` 客户区像素，`item_w` 当前页最宽槽位，`v_pad` 上下内边距。
+#[allow(dead_code)]
 pub fn scrollbar_geo(
     width: i32,
     height: i32,
@@ -790,6 +800,7 @@ pub fn scrollbar_geo(
 }
 
 /// 皮肤派色的滚动条配色（COLORREF BGR）：track = 背景略深色，thumb = 高亮色。
+#[allow(dead_code)]
 pub fn scrollbar_colors(skin: &Skin) -> (u32, u32) {
     (
         darkened_colorref(skin.candidate.background),
@@ -816,9 +827,7 @@ pub fn load_candidate_colors() -> CandidateColors {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_skin, candidate_colors_from_json, CandidateColors, Metrics, Shadow, Skin,
-    };
+    use super::{build_skin, candidate_colors_from_json, CandidateColors, Metrics, Shadow, Skin};
 
     const V1_JSON: &str = r##"{
         "version": 1,
@@ -911,7 +920,14 @@ mod tests {
             skin.metrics.icon.map(|s| s.as_str().to_owned()).as_deref(),
             Some("asset://icons/cand")
         );
-        assert_eq!(skin.shadow, Shadow { enabled: true, radius: 18, alpha: 64 });
+        assert_eq!(
+            skin.shadow,
+            Shadow {
+                enabled: true,
+                radius: 18,
+                alpha: 64
+            }
+        );
     }
 
     #[test]

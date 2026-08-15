@@ -35,11 +35,7 @@ fn fresh_user_dir(tag: &str) -> PathBuf {
 }
 
 /// 喂键序并断言候选里出现预期词（翻页搜索最多 3 页）。
-fn assert_candidate_contains(
-    session: &ime_bridge::Session<'_>,
-    keys: &str,
-    expected: &str,
-) {
+fn assert_candidate_contains(session: &ime_bridge::Session<'_>, keys: &str, expected: &str) {
     assert!(session.simulate(keys), "键序列 {keys:?} 未被引擎接受");
     let mut ctx = session.context();
     println!(
@@ -81,28 +77,46 @@ fn 双拼方案_真实可用_五例串行() {
 
     // 1) 你好 候选 + 上屏
     let s1 = engine.create_session().expect("创建会话失败");
-    assert!(s1.select_schema("shurufa_double_pinyin"), "select_schema 失败");
+    assert!(
+        s1.select_schema("shurufa_double_pinyin"),
+        "select_schema 失败"
+    );
     assert_candidate_contains(&s1, "nihc", "你好");
     // 新会话验证上屏（旧会话可能残留组合）
     let s1b = engine.create_session().expect("创建会话失败");
-    assert!(s1b.select_schema("shurufa_double_pinyin"), "select_schema 失败");
+    assert!(
+        s1b.select_schema("shurufa_double_pinyin"),
+        "select_schema 失败"
+    );
     assert_commit(&s1b, "nihc", "你好");
 
     // 2) 上海 候选
     let s2 = engine.create_session().expect("创建会话失败");
-    assert!(s2.select_schema("shurufa_double_pinyin"), "select_schema 失败");
+    assert!(
+        s2.select_schema("shurufa_double_pinyin"),
+        "select_schema 失败"
+    );
     assert_candidate_contains(&s2, "ukhl", "上海");
 
     // 3) 世界 候选
     let s3 = engine.create_session().expect("创建会话失败");
-    assert!(s3.select_schema("shurufa_double_pinyin"), "select_schema 失败");
+    assert!(
+        s3.select_schema("shurufa_double_pinyin"),
+        "select_schema 失败"
+    );
     assert_candidate_contains(&s3, "uijp", "世界");
 
     // 4) 同一 session 运行时切回 rime_ice：拼音键序立即按全拼解析
     //    （librime select_schema 是运行时切换，验证方案间不互害）。
     let s4 = engine.create_session().expect("创建会话失败");
-    assert!(s4.select_schema("shurufa_double_pinyin"), "select_schema 双拼失败");
-    assert!(s4.select_schema("rime_ice"), "select_schema 切回 rime_ice 失败");
+    assert!(
+        s4.select_schema("shurufa_double_pinyin"),
+        "select_schema 双拼失败"
+    );
+    assert!(
+        s4.select_schema("rime_ice"),
+        "select_schema 切回 rime_ice 失败"
+    );
     assert!(s4.simulate("nihao"), "拼音键序未被引擎接受");
     let ctx4 = s4.context();
     assert!(

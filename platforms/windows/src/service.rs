@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use windows::core::{implement, Interface, Ref, Result, BOOL, GUID};
 use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse;
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
     ITfInsertAtSelection, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr,
@@ -16,7 +17,6 @@ use windows::Win32::UI::TextServices::{
     ITfThreadMgr, TfAnchor, INSERT_TEXT_AT_SELECTION_FLAGS, TF_AE_NONE, TF_ANCHOR_END,
     TF_IAS_QUERYONLY, TF_SELECTION, TF_SELECTIONSTYLE, TF_ST_CORRECTION,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse;
 use windows_core::IUnknownImpl;
 
 use shurufa_options::ImeOptions;
@@ -230,11 +230,9 @@ impl Inner {
     fn end_pending_composition(&mut self, context: &ITfContext) {
         if let Some(comp) = self.composition.take() {
             let client_id = self.client_id;
-            if let Err(e) = edit_session(client_id, context, |ec| {
-                unsafe {
-                    set_composition_text(&comp, ec, "", 0)?;
-                    comp.EndComposition(ec)
-                }
+            if let Err(e) = edit_session(client_id, context, |ec| unsafe {
+                set_composition_text(&comp, ec, "", 0)?;
+                comp.EndComposition(ec)
             }) {
                 crate::debug_log(&format!("结束残留组合失败：{e:?}"));
             }
@@ -267,9 +265,8 @@ impl Inner {
             if !self.opts.shift_switch_cn_en {
                 return false;
             }
-            self.shift_down_at_ms = Some(unsafe {
-                windows::Win32::System::SystemInformation::GetTickCount64()
-            });
+            self.shift_down_at_ms =
+                Some(unsafe { windows::Win32::System::SystemInformation::GetTickCount64() });
             self.shift_toggle_pending = true;
             // 收尾残留组合（主流输入法一致：Shift 提交拼音）
             self.end_pending_composition(context);
@@ -317,7 +314,9 @@ impl Inner {
             let current = self.client.get_option("full_shape").unwrap_or(false);
             let next = !current;
             let ok = self.client.set_option("full_shape", next);
-            crate::debug_log(&format!("Shift+Space 切换全/半角：full_shape={next} ok={ok}"));
+            crate::debug_log(&format!(
+                "Shift+Space 切换全/半角：full_shape={next} ok={ok}"
+            ));
             return true;
         }
         // Ctrl+.：切换中/英标点（ascii_punct）。必须放在 Ctrl/Alt 直通判断之前。
@@ -363,20 +362,17 @@ impl Inner {
         //
         // 关键：**不能依赖渲染快照**（PAINT_DATA 是上一帧 show() 的快照，按键时
         // 可能已过期）。这里实时向引擎查一次 context 取 preedit 的分隔符。
-        let tab_remap_candidates = if vk == KeyboardAndMouse::VK_TAB.0 as u32
-            && self.composition.is_some()
-        {
-            let live_breaks = self
-                .client
-                .context()
-                .map(|ctx| {
-                    !crate::candidate_window::syllable_breaks(&ctx.preedit).is_empty()
-                })
-                .unwrap_or(false);
-            remap_tab_key(0xff09, shift, live_breaks)
-        } else {
-            None
-        };
+        let tab_remap_candidates =
+            if vk == KeyboardAndMouse::VK_TAB.0 as u32 && self.composition.is_some() {
+                let live_breaks = self
+                    .client
+                    .context()
+                    .map(|ctx| !crate::candidate_window::syllable_breaks(&ctx.preedit).is_empty())
+                    .unwrap_or(false);
+                remap_tab_key(0xff09, shift, live_breaks)
+            } else {
+                None
+            };
         let Some(keysym) = tab_remap_candidates.or_else(|| keys::vk_to_keysym(vk, shift)) else {
             // 引擎连接失败：把当前按键作为原字符落入文档（中文兜底），
             // 避免“只能输入英文”。
@@ -388,7 +384,7 @@ impl Inner {
         let probe_q0 = if std::env::var_os("SHURUFA_LATENCY_LOG").is_some() {
             let mut q = 0i64;
             unsafe {
-                windows::Win32::System::Performance::QueryPerformanceCounter(&mut q);
+                let _ = windows::Win32::System::Performance::QueryPerformanceCounter(&mut q);
             }
             Some(q as u64)
         } else {
@@ -430,17 +426,12 @@ impl Inner {
                     // sender 时间对应）
                     if let Some(q0) = probe_q0 {
                         let mut q1: i64 = 0;
-                        unsafe {
-                            windows::Win32::System::Performance::QueryPerformanceCounter(
-                                &mut q1,
-                            );
-                        }
+                        let _ =
+                            windows::Win32::System::Performance::QueryPerformanceCounter(&mut q1);
                         let mut freq: i64 = 0;
-                        unsafe {
-                            windows::Win32::System::Performance::QueryPerformanceFrequency(
-                                &mut freq,
-                            );
-                        }
+                        let _ = windows::Win32::System::Performance::QueryPerformanceFrequency(
+                            &mut freq,
+                        );
                         let elapsed_us = if freq > 0 {
                             (q1 - q0 as i64) * 1_000_000 / freq
                         } else {
@@ -543,9 +534,7 @@ impl Inner {
                 // Shift 单独按下并松开（短按，中间无其它键）：此刻结算中/英切换。
                 // 按下时已收尾残留组合，这里只切换引擎态。
                 self.shift_toggle_pending = false;
-                crate::debug_log(&format!(
-                    "Shift 短按松开：结算中英文切换（held={held}ms）"
-                ));
+                crate::debug_log(&format!("Shift 短按松开：结算中英文切换（held={held}ms）"));
                 if let Some(is_ascii) = self.client.toggle_ascii() {
                     crate::debug_log(&format!("  ascii={is_ascii}"));
                 }
@@ -573,7 +562,9 @@ impl Inner {
         };
         let text = ch.to_string();
         let client_id = self.client_id;
-        edit_session(client_id, context, |ec| unsafe { insert_text(context, ec, &text) })
+        edit_session(client_id, context, |ec| unsafe {
+            insert_text(context, ec, &text)
+        })
     }
 }
 
@@ -634,7 +625,7 @@ unsafe fn set_selection(
             fInterimChar: false.into(),
         },
     };
-    let result = context.SetSelection(ec, &[selection.clone()]);
+    let result = context.SetSelection(ec, std::slice::from_ref(&selection));
     let mut selection = selection;
     std::mem::ManuallyDrop::drop(&mut selection.range);
     result
@@ -900,4 +891,3 @@ mod tests {
         assert_eq!(remap_tab_key(XK_TAB, true, true), Some(XK_LEFT));
     }
 }
-

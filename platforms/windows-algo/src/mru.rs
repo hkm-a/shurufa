@@ -142,9 +142,9 @@ mod tests {
         for i in 0..10 {
             s.record("key", &format!("词{i}"));
         }
-        let List = s.boost_list("key");
-        assert_eq!(List.len(), PER_KEY_CAP, "应只保留最近 8 条");
-        assert_eq!(List[0], "词9", "最新一条应在头");
+        let list = s.boost_list("key");
+        assert_eq!(list.len(), PER_KEY_CAP, "应只保留最近 8 条");
+        assert_eq!(list[0], "词9", "最新一条应在头");
     }
 
     #[test]
@@ -158,8 +158,14 @@ mod tests {
         // 可接受（不影响业务）。若 APPDATA 未设则走 tempdir。
         s.save().expect("MRU 保存失败");
         let loaded = MruStore::load();
-        assert_eq!(loaded.boost_list("shang'hai").first(), Some(&"上海".to_owned()));
-        assert_eq!(loaded.boost_list("ce'lue").first(), Some(&"策略".to_owned()));
+        assert_eq!(
+            loaded.boost_list("shang'hai").first(),
+            Some(&"上海".to_owned())
+        );
+        assert_eq!(
+            loaded.boost_list("ce'lue").first(),
+            Some(&"策略".to_owned())
+        );
     }
 
     #[test]
@@ -175,7 +181,12 @@ mod tests {
         let mut s = temp_store();
         s.record("nihao", "嗬"); // 老
         s.record("nihao", "你好"); // 较近
-        let candidates = vec!["x".to_owned(), "你好".to_owned(), "y".to_owned(), "嗬".to_owned()];
+        let candidates = vec![
+            "x".to_owned(),
+            "你好".to_owned(),
+            "y".to_owned(),
+            "嗬".to_owned(),
+        ];
         let out = s.boost("nihao", candidates);
         assert_eq!(out[0], "你好", "最近选应居首");
         assert_eq!(out[1], "嗬", "次所选应次首");

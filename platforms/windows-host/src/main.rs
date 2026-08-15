@@ -150,7 +150,10 @@ fn main() {
                 eprintln!("用法：shurufa-host chat <提示词>  （走 Agnes，AI 帮写同款通道）");
                 std::process::exit(2);
             };
-            let key = std::env::var("AGNES_API_KEY").unwrap_or_default().trim().to_owned();
+            let key = std::env::var("AGNES_API_KEY")
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
             if key.is_empty() {
                 eprintln!("缺少 AGNES_API_KEY（系统环境变量）。key 不落盘、不入日志。");
                 std::process::exit(1);
@@ -255,7 +258,9 @@ fn main() {
                 match args[i].as_str() {
                     "--revision" => {
                         let Some(value) = args.get(i + 1) else {
-                            eprintln!("用法：shurufa-host dict-rollback [--revision <版本号|内置>]");
+                            eprintln!(
+                                "用法：shurufa-host dict-rollback [--revision <版本号|内置>]"
+                            );
                             std::process::exit(2);
                         };
                         revision = Some(value.as_str());
@@ -377,18 +382,6 @@ fn should_hide_console(process_count: u32) -> bool {
     process_count == 1
 }
 
-#[cfg(test)]
-mod tests {
-    use super::should_hide_console;
-
-    #[test]
-    fn 只有进程独占控制台时才隐藏() {
-        assert!(should_hide_console(1));
-        assert!(!should_hide_console(0));
-        assert!(!should_hide_console(2));
-    }
-}
-
 fn parse_arg(args: &[String], idx: usize) -> Option<u32> {
     args.get(idx)?.parse().ok()
 }
@@ -448,5 +441,17 @@ fn age(ts_millis: i64) -> String {
         60..=3599 => format!("{}分钟前", secs / 60),
         3600..=86399 => format!("{}小时前", secs / 3600),
         _ => format!("{}天前", secs / 86400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_hide_console;
+
+    #[test]
+    fn 只有进程独占控制台时才隐藏() {
+        assert!(should_hide_console(1));
+        assert!(!should_hide_console(0));
+        assert!(!should_hide_console(2));
     }
 }

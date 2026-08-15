@@ -266,6 +266,7 @@ pub fn mode_badge_width(view: &PaintView) -> i32 {
 /// 单独成函数让 GDI / D2D / DComp 三条渲染路径共用同一套规则书：
 /// - caps_visual 优先级最高（长按 Shift 触发），只显示 "⇪大写"。
 /// - 否则按引擎 ascii_mode 输出 "En" / "中"。
+///
 /// `is_full_shape` 不参与角标：候选行已经反映全/半角字符形态，角标保持最简。
 fn mode_badge_text(data: &PaintData) -> Option<&'static str> {
     if data.caps_visual {
@@ -301,6 +302,8 @@ pub fn caps_visual_active() -> bool {
 
 /// 当前 PAINT_DATA 中 preedit 的 syllable_breaks 快照；service.rs 的 Tab
 /// 音节导航用它判断是否需要把 Tab 重映射为 Left/Right。None = 还未 show 过。
+/// 目前 Tab 导航改由引擎实时 context 驱动，本函数保留为调试/回归查询口。
+#[allow(dead_code)]
 pub fn current_preedit_breaks() -> Vec<u16> {
     PAINT_DATA.with_borrow(|data| syllable_breaks(&data.preedit))
 }
@@ -481,7 +484,7 @@ impl CandidateUi {
                 .take(9)
                 .map(|(i, c)| {
                     // TSF 端候选域固定 9 列；label 为 1..=9（超过 9 的索引不进此分支）
-            let label = format!("{}.", i + 1);
+                    let label = format!("{}.", i + 1);
                     let label_w = text_width(hdc, &label);
                     let text_w = text_width(hdc, &c.text);
                     // 副标（词库附注）；只在文本不重复时展示——同字符的
@@ -732,7 +735,8 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
             let track_w = scale(skin::SCROLLBAR_BASE_WIDTH, dpi);
             let win_right = PAINT_WIN_W.with(|w| w.get());
             if win_right > 0 && x >= win_right - track_w {
-                let mid = scale(BASE_PADDING, dpi) + scale(BASE_PREEDIT_HEIGHT, dpi)
+                let mid = scale(BASE_PADDING, dpi)
+                    + scale(BASE_PREEDIT_HEIGHT, dpi)
                     + scale(BASE_ROW_HEIGHT, dpi) / 2;
                 send_virtual_key(if y < mid { 0x21 } else { 0x22 });
             }
@@ -788,10 +792,22 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 data.page.total_pages(),
             ) {
                 let (track_c, thumb_c) = skin::scrollbar_colors(&data.skin);
-                let (track_b, thumb_b) =
-                    (CreateSolidBrush(COLORREF(track_c)), CreateSolidBrush(COLORREF(thumb_c)));
-                let track_r = RECT { left: geo.track[0], top: geo.track[1], right: geo.track[2], bottom: geo.track[3] };
-                let thumb_r = RECT { left: geo.thumb[0], top: geo.thumb[1], right: geo.thumb[2], bottom: geo.thumb[3] };
+                let (track_b, thumb_b) = (
+                    CreateSolidBrush(COLORREF(track_c)),
+                    CreateSolidBrush(COLORREF(thumb_c)),
+                );
+                let track_r = RECT {
+                    left: geo.track[0],
+                    top: geo.track[1],
+                    right: geo.track[2],
+                    bottom: geo.track[3],
+                };
+                let thumb_r = RECT {
+                    left: geo.thumb[0],
+                    top: geo.thumb[1],
+                    right: geo.thumb[2],
+                    bottom: geo.thumb[3],
+                };
                 FillRect(hdc, &track_r, track_b);
                 FillRect(hdc, &thumb_r, thumb_b);
                 let _ = DeleteObject(HGDIOBJ(track_b.0));
@@ -814,14 +830,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let preedit_w = (rc.right - padding * 2 - mode_badge_w).max(scale(BASE_MIN_WIDTH, dpi));
         let breaks = syllable_breaks(&data.preedit);
         if breaks.is_empty() {
-            draw_line(
-                hdc,
-                &data.preedit,
-                padding,
-                padding,
-                preedit_w,
-                preedit_h,
-            );
+            draw_line(hdc, &data.preedit, padding, padding, preedit_w, preedit_h);
         } else {
             // 含音节分隔符：跳过分隔符本体、逐段交替色 + 1px 竖线占位。
             let preedit_font_h = font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale);
@@ -850,14 +859,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
             FillRect(hdc, &badge_rect, hl_bg);
             let _ = DeleteObject(HGDIOBJ(hl_bg.0));
             SetTextColor(hdc, COLORREF(colors.background));
-            draw_line(
-                hdc,
-                mode_badge,
-                badge_left,
-                padding,
-                badge_right,
-                preedit_h,
-            );
+            draw_line(hdc, mode_badge, badge_left, padding, badge_right, preedit_h);
         }
 
         // 候选行（第二行横排）
@@ -944,6 +946,7 @@ pub fn blend_colorref(fg: u32, bg: u32, permille: u32) -> u32 {
 /// - 偶数段 = preedit 本色；
 /// - 奇数段 = preedit 向 text 过渡 28%（可读，不扎眼）；
 /// - 分隔竖线 = preedit 本色，与偶数段合并为同色系。
+///
 /// 返回 [seg_even, seg_odd, separator_line]。
 pub fn syllable_segment_colors(colors: &crate::skin::CandidateColors) -> [u32; 3] {
     [
@@ -1011,7 +1014,11 @@ unsafe fn draw_preedit_segmented(
     if seg_start < n {
         let seg = &wide[seg_start..];
         let w = utf16_width(hdc, seg);
-        let seg_c = if breaks.len() % 2 == 0 { even_c } else { odd_c };
+        let seg_c = if breaks.len().is_multiple_of(2) {
+            even_c
+        } else {
+            odd_c
+        };
         SetTextColor(hdc, COLORREF(seg_c));
         draw_line_utf16(hdc, seg, x, padding, x + w, preedit_h);
     }

@@ -142,9 +142,9 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                         let received_dir = received_dir.clone();
                         tokio::task::spawn_blocking(move || {
                             let item = match inc {
-                                Incoming::Clip { from_name, text, .. } => {
-                                    ("text".to_string(), from_name, text)
-                                }
+                                Incoming::Clip {
+                                    from_name, text, ..
+                                } => ("text".to_string(), from_name, text),
                                 Incoming::Image { from_name, png } => {
                                     // 图片直接存入历史库，队列只带条目 id
                                     match crate::clip_jni::store_image(
@@ -481,6 +481,7 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativePairRespond(
 ///    false = "立即拒绝"。
 /// 2) 若 Kotlin 返回 true，则阻塞在本工作线程上收 `nativeConfirmOffer`
 ///    的布尔结果，最长等 `OFFER_DECISION_TIMEOUT`，超时按拒绝处理。
+///
 /// 回调运行在 sync-core 的 spawn_blocking worker 上，可安全阻塞。
 fn make_file_confirm(jvm: JavaVM, callback: GlobalRef) -> FileConfirmFn {
     Arc::new(move |prompt: FileOfferPrompt| {
@@ -631,4 +632,3 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeConfirmOffer(
         (),
     )
 }
-

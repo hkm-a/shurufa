@@ -71,7 +71,8 @@ impl ImeClient {
     fn circuit_open(&self) -> bool {
         match self.last_failure {
             Some(at) => {
-                let cooldown_ms = if self.consecutive_failures >= CIRCUIT_BREAKER_BACKOFF_THRESHOLD {
+                let cooldown_ms = if self.consecutive_failures >= CIRCUIT_BREAKER_BACKOFF_THRESHOLD
+                {
                     CIRCUIT_BREAKER_COOLDOWN_LONG_MS
                 } else {
                     CIRCUIT_BREAKER_COOLDOWN_MS
@@ -128,9 +129,7 @@ impl ImeClient {
     /// 超时返回 None → 调用方走降级（按键直通），绝不让宿主 UI 线程无限
     /// 阻塞（曾造成"应用无响应 + 其他输入法失效"，见 2026-08-12）。
     fn roundtrip(&mut self, req: &Request) -> Option<Response> {
-        if self.ensure().is_none() {
-            return None;
-        }
+        self.ensure()?;
         let data = encode_request(req).ok()?;
         if !self.try_send(&data) {
             // 连接断开：丢弃并重连一次

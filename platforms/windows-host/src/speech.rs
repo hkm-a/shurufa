@@ -37,8 +37,8 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
     FillRect, InvalidateRect, RoundRect, SelectObject, SetBkMode, SetTextColor, DT_LEFT,
-    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_BOLD, HBRUSH, HDC, HFONT, HGDIOBJ,
-    HPEN, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_BOLD, HBRUSH, HGDIOBJ, HPEN,
+    PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
@@ -47,10 +47,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, KillTimer, LoadCursorW, MoveWindow, PostMessageW,
-    RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow, SystemParametersInfoW,
-    CS_HREDRAW, CS_VREDRAW, IDC_ARROW, SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP, WM_APP, WM_PAINT, WM_SETTINGCHANGE, WM_TIMER,
+    RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow, SystemParametersInfoW, CS_HREDRAW,
+    CS_VREDRAW, IDC_ARROW, SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_APP, WM_PAINT, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::panel::skin::{self, Skin};
@@ -87,6 +87,9 @@ pub(crate) enum Phase {
     Idle,
     Listening,
     Processing,
+    /// 预留：wave 6 真实引擎（sherpa-onnx 等）事件契约里的失败态；
+    /// dev-stub 没有失败路径，真实引擎接入后由 spawn_engine 构造。
+    #[allow(dead_code)]
     Failed,
 }
 
@@ -122,9 +125,17 @@ static SPEECH_HWND: AtomicIsize = AtomicIsize::new(0);
 
 #[derive(Debug)]
 pub(crate) enum SpeechEvent {
-    Partial { text: String, replace: bool },
+    Partial {
+        text: String,
+        replace: bool,
+    },
+    /// 预留：wave 6 真实引擎在静音/停顿时的 flush 事件（dev-stub 用
+    /// auto_commit_threshold_secs 定时器代替，不构造本变体）。
+    #[allow(dead_code)]
     Flush,
-    Final { raw_text: String },
+    Final {
+        raw_text: String,
+    },
     PolishDone {
         polished: Option<String>,
         reason: Option<String>,
@@ -238,13 +249,18 @@ fn spawn_engine(session_id: u64) {
             acc.push_str(chunk);
             post_event(
                 session_id,
-                SpeechEvent::Partial { text: acc.clone(), replace: true },
+                SpeechEvent::Partial {
+                    text: acc.clone(),
+                    replace: true,
+                },
             );
         }
         std::thread::sleep(Duration::from_millis(STUB_FINAL_DELAY_MS));
         post_event(
             session_id,
-            SpeechEvent::Final { raw_text: STUB_FINAL_TEXT.to_owned() },
+            SpeechEvent::Final {
+                raw_text: STUB_FINAL_TEXT.to_owned(),
+            },
         );
     });
 }
@@ -357,9 +373,7 @@ fn on_event(session_id: u64, ev: SpeechEvent) {
                 }
                 None => {
                     let r = reason.unwrap_or_else(|| "未知错误".to_owned());
-                    crate::log_line(&format!(
-                        "语音：会话 {sid} polish 失败（{r}），回退 raw"
-                    ));
+                    crate::log_line(&format!("语音：会话 {sid} polish 失败（{r}），回退 raw"));
                     commit_and_hide(sid, raw_payload, Some(r));
                 }
             }
@@ -395,13 +409,19 @@ fn spawn_polish(session_id: u64, raw: String) {
                 let trimmed = p.trim().to_owned();
                 post_event(
                     session_id,
-                    SpeechEvent::PolishDone { polished: Some(trimmed), reason: None },
+                    SpeechEvent::PolishDone {
+                        polished: Some(trimmed),
+                        reason: None,
+                    },
                 );
             }
             Err(e) => {
                 post_event(
                     session_id,
-                    SpeechEvent::PolishDone { polished: None, reason: Some(e) },
+                    SpeechEvent::PolishDone {
+                        polished: None,
+                        reason: Some(e),
+                    },
                 );
             }
         }
@@ -517,7 +537,12 @@ fn scale_px(px: i32, dpi: u32) -> i32 {
     (px as i64 * dpi as i64 / 96) as i32
 }
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_PAINT => {
             paint(hwnd);
@@ -583,9 +608,13 @@ fn paint(hwnd: HWND) {
         };
         let title_font = CreateFontW(
             -scale_px(BASE_TITLE_FONT, dpi),
-            0, 0, 0,
+            0,
+            0,
+            0,
             FW_BOLD.0 as i32,
-            0, 0, 0,
+            0,
+            0,
+            0,
             windows::Win32::Graphics::Gdi::FONT_CHARSET(1), // DEFAULT_CHARSET
             Default::default(),
             Default::default(),
@@ -623,9 +652,13 @@ fn paint(hwnd: HWND) {
         };
         let body_font = CreateFontW(
             -scale_px(BASE_BODY_FONT, dpi),
-            0, 0, 0,
+            0,
+            0,
+            0,
             400, // FW_NORMAL
-            0, 0, 0,
+            0,
+            0,
+            0,
             windows::Win32::Graphics::Gdi::FONT_CHARSET(1),
             Default::default(),
             Default::default(),
@@ -653,7 +686,7 @@ fn paint(hwnd: HWND) {
 
         // 1px 圆角边框（skin 高亮背景色；候选皮肤没有 highlight 字段，
         // 只有 highlight_background，panel.rs 里高亮底色就是它）
-        let radius = metrics.radius.max(2).min(16) as i32;
+        let radius = metrics.radius.clamp(2, 16);
         let border_pen: HPEN = CreatePen(PS_SOLID, 1, COLORREF(cand.highlight_background));
         let border_brush: HBRUSH = CreateSolidBrush(COLORREF(cand.highlight_background));
         let old_pen = SelectObject(hdc, HGDIOBJ(border_pen.0));
@@ -672,7 +705,7 @@ fn paint(hwnd: HWND) {
         let _ = DeleteObject(HGDIOBJ(border_pen.0));
         let _ = DeleteObject(HGDIOBJ(border_brush.0));
 
-        EndPaint(hwnd, &ps);
+        let _ = EndPaint(hwnd, &ps);
     }
 }
 
@@ -742,7 +775,10 @@ mod tests {
         // 总耗时≈250+750+750 + final 750 = 2.5s，与 "speech.auto_commit_threshold_secs"
         // 默认 5s 留有充足余量，真实 stub 不会在自动提交前就被超时切断
         let total: u64 = STUB_STAGES.iter().map(|(_, ms)| *ms).sum::<u64>() + STUB_FINAL_DELAY_MS;
-        assert!(total > 0 && total < 10_000, "stub 总节奏应在毫秒级：{total}ms");
+        assert!(
+            total > 0 && total < 10_000,
+            "stub 总节奏应在毫秒级：{total}ms"
+        );
         assert!(!STUB_FINAL_TEXT.is_empty());
     }
 
@@ -756,7 +792,12 @@ mod tests {
 
     #[test]
     fn state_转换_只读_phase_枚举语义() {
-        for p in [Phase::Idle, Phase::Listening, Phase::Processing, Phase::Failed] {
+        for p in [
+            Phase::Idle,
+            Phase::Listening,
+            Phase::Processing,
+            Phase::Failed,
+        ] {
             let _ = format!("{p:?}");
         }
     }

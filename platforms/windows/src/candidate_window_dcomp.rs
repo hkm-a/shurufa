@@ -43,12 +43,13 @@ use windows::Win32::Graphics::Direct2D::Common::{
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
     ID2D1SolidColorBrush, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT,
+    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    D3D11_SDK_VERSION,
 };
 use windows::Win32::Graphics::DirectComposition::{
     DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
@@ -63,8 +64,8 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, IDXGIDevice, IDXGIFactory2, IDXGISurface, IDXGISwapChain1,
-    DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SCALING_STRETCH,
-    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+    DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
+    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 
 use crate::candidate_window::PaintView;
@@ -79,6 +80,10 @@ thread_local! {
     static BACKEND: RefCell<Backend> = const { RefCell::new(Backend::Pending) };
 }
 
+// GpuCore 是会话级 GPU 资源包（数百字节）；它始终在 thread_local 槽里，
+// 与零大小的 Pending/Failed 同枚举时按大变体分配。Box 会引入每帧解引用
+// 与额外堆分配，对渲染热路径无益——保留直存并显式豁免该 lint。
+#[allow(clippy::large_enum_variant)]
 enum Backend {
     /// 尚未尝试初始化
     Pending,
@@ -119,7 +124,10 @@ pub fn choose_backend_with(dcomp_ok: bool, d2d_ok: bool) -> BackendKind {
 /// 一拍（那边同样走 try_init 后的状态，不重复探测硬件）。
 #[allow(dead_code)] // 由 choose_backend_for_window 消费；测试也直接调
 pub fn choose_backend() -> BackendKind {
-    choose_backend_with(probe_dcomp_available(), crate::candidate_window_d2d::is_enabled())
+    choose_backend_with(
+        probe_dcomp_available(),
+        crate::candidate_window_d2d::is_enabled(),
+    )
 }
 
 #[allow(dead_code)] // 若干部件仅 RAII 持有随 FrameState 一并释放
@@ -289,8 +297,9 @@ unsafe fn init_gpu_core() -> Option<GpuCore> {
         D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).ok()?;
     let d2d_dev: ID2D1Device = d2d_factory.CreateDevice(&dxgi_dev).ok()?;
     // 建一次 viz device context 即验证整链通；帧级每窗口再新建议便于随 DPI 换。
-    let _probe_ctx: ID2D1DeviceContext =
-        d2d_dev.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE).ok()?;
+    let _probe_ctx: ID2D1DeviceContext = d2d_dev
+        .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
+        .ok()?;
     let dcomp: IDCompositionDevice = DCompositionCreateDevice(&dxgi_dev).ok()?;
     let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()?;
 
@@ -343,7 +352,10 @@ impl GpuCore {
             return false;
         }
         // 窗口隐藏时 GetClientRect 尺寸可能还在；由调用处保证只在可见时 paint。
-        let size = D2D_SIZE_U { width: w, height: h };
+        let size = D2D_SIZE_U {
+            width: w,
+            height: h,
+        };
         if let Some(f) = &self.frame {
             if f.hwnd == hwnd && f.size == size && f.dpi == dpi {
                 return true;
@@ -361,7 +373,10 @@ impl GpuCore {
             Height: size.height,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
             Stereo: false.into(),
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
             Scaling: DXGI_SCALING_STRETCH,
@@ -383,8 +398,9 @@ impl GpuCore {
         // ---- dcomp-viz D2D device context + 包一层 backbuffer 当 bitmap target ----
         let dxgi_dev: IDXGIDevice = self.d3d.cast().ok()?;
         let d2d_dev: ID2D1Device = self.d2d_factory.CreateDevice(&dxgi_dev).ok()?;
-        let dc: ID2D1DeviceContext =
-            d2d_dev.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE).ok()?;
+        let dc: ID2D1DeviceContext = d2d_dev
+            .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
+            .ok()?;
         dc.SetDpi(dpi as f32, dpi as f32);
 
         let backbuffer: IDXGISurface = swap.GetBuffer(0).ok()?;
@@ -442,21 +458,43 @@ unsafe fn ensure_brushes(frame: &mut FrameState, skin: Skin) -> bool {
     }
     let t = &frame.viz_target;
     let mk = |c: u32| color_from_colorref(c, 1.0);
-    let background = t.CreateSolidColorBrush(&mk(skin.candidate.background), None).ok();
+    let background = t
+        .CreateSolidColorBrush(&mk(skin.candidate.background), None)
+        .ok();
     let highlight = t
         .CreateSolidColorBrush(&mk(skin.candidate.highlight_background), None)
         .ok();
     let text = t.CreateSolidColorBrush(&mk(skin.candidate.text), None).ok();
-    let preedit = t.CreateSolidColorBrush(&mk(skin.candidate.preedit), None).ok();
+    let preedit = t
+        .CreateSolidColorBrush(&mk(skin.candidate.preedit), None)
+        .ok();
     // 音节分段交替色（=candidate_window::syllable_segment_colors[1]），派生色不动 skin。
     let preedit_alt_c =
         crate::candidate_window::blend_colorref(skin.candidate.preedit, skin.candidate.text, 280);
     let preedit_alt = t.CreateSolidColorBrush(&mk(preedit_alt_c), None).ok();
-    let label = t.CreateSolidColorBrush(&mk(skin.candidate.label), None).ok();
+    let label = t
+        .CreateSolidColorBrush(&mk(skin.candidate.label), None)
+        .ok();
     let sb_track_c = crate::skin::scrollbar_colors(&skin).0;
     let sb_track = t.CreateSolidColorBrush(&mk(sb_track_c), None).ok();
-    match (background, highlight, text, preedit, preedit_alt, label, sb_track) {
-        (Some(background), Some(highlight), Some(text), Some(preedit), Some(preedit_alt), Some(label), Some(sb_track)) => {
+    match (
+        background,
+        highlight,
+        text,
+        preedit,
+        preedit_alt,
+        label,
+        sb_track,
+    ) {
+        (
+            Some(background),
+            Some(highlight),
+            Some(text),
+            Some(preedit),
+            Some(preedit_alt),
+            Some(label),
+            Some(sb_track),
+        ) => {
             frame.brushes = Some(Brushes {
                 background,
                 highlight,
@@ -674,11 +712,8 @@ unsafe fn draw_body(
         );
 
         if !it.comment.is_empty() {
-            let cx = it.x as f32
-                + it.label_w as f32
-                + label_gap
-                + it.pure_text_w as f32
-                + comment_gap;
+            let cx =
+                it.x as f32 + it.label_w as f32 + label_gap + it.pure_text_w as f32 + comment_gap;
             draw_text(
                 dc,
                 fmt_s,
@@ -827,7 +862,11 @@ unsafe fn draw_preedit_segmented_dcomp(
         if bp > seg_start {
             let seg = &wide[seg_start..bp];
             let w = measure_utf16_dcomp(factory, fmt_s, seg, preedit_h);
-            let brush = if idx % 2 == 0 { &br.preedit } else { &br.preedit_alt };
+            let brush = if idx % 2 == 0 {
+                &br.preedit
+            } else {
+                &br.preedit_alt
+            };
             if !seg.is_empty() {
                 dc.DrawText(
                     seg,
@@ -866,7 +905,7 @@ unsafe fn draw_preedit_segmented_dcomp(
     if seg_start < n {
         let seg = &wide[seg_start..];
         let w = measure_utf16_dcomp(factory, fmt_s, seg, preedit_h);
-        let brush = if v.syllable_breaks.len() % 2 == 0 {
+        let brush = if v.syllable_breaks.len().is_multiple_of(2) {
             &br.preedit
         } else {
             &br.preedit_alt

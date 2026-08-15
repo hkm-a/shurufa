@@ -16,7 +16,11 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let root = manifest_dir.parent().expect("仓库根").parent().expect("仓库根");
+    let root = manifest_dir
+        .parent()
+        .expect("仓库根")
+        .parent()
+        .expect("仓库根");
 
     let embed = env::var("PROFILE").unwrap_or_default() == "release"
         || env::var("FOX_EMBED_PAYLOAD").as_deref() == Ok("1");
@@ -56,7 +60,10 @@ fn main() {
         "third_party/librime/dist/bin/rime_deployer.exe",
         "rime_deployer.exe",
     );
-    add("installer/activate-default-ime.ps1", "activate-default-ime.ps1");
+    add(
+        "installer/activate-default-ime.ps1",
+        "activate-default-ime.ps1",
+    );
     add(
         "installer/register-host-startup.ps1",
         "register-host-startup.ps1",
@@ -70,7 +77,8 @@ fn main() {
     let mut blob: Vec<u8> = Vec::new();
     let mut manifest_lines = Vec::new();
     for (src, dest) in &files {
-        let bytes = fs::read(src).unwrap_or_else(|e| panic!("读取 payload {} 失败：{e}", src.display()));
+        let bytes =
+            fs::read(src).unwrap_or_else(|e| panic!("读取 payload {} 失败：{e}", src.display()));
         let offset = blob.len();
         let len = bytes.len();
         blob.extend_from_slice(&bytes);
@@ -89,7 +97,11 @@ fn main() {
         manifest_lines.join("\n")
     );
     fs::write(out_dir.join("payload_manifest.rs"), manifest).expect("写 payload_manifest.rs");
-    println!("cargo:warning=已嵌入 {} 个 payload 文件（{} 字节）", files.len(), blob.len());
+    println!(
+        "cargo:warning=已嵌入 {} 个 payload 文件（{} 字节）",
+        files.len(),
+        blob.len()
+    );
 }
 
 fn collect_schemas(dir: &Path, prefix: &str, out: &mut Vec<(PathBuf, String)>) {

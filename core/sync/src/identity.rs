@@ -103,11 +103,10 @@ fn restrict_private_key(path: &Path) {
         ..Default::default()
     };
     let access = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: GENERIC_ALL as u32,
+        grfAccessPermissions: GENERIC_ALL,
         grfAccessMode: SET_ACCESS,
         grfInheritance: 0, // NO_INHERITANCE：不继承父目录 ACL
         Trustee: trustee,
-        ..Default::default()
     };
     let mut new_dacl: *mut ACL = std::ptr::null_mut();
     // ERROR_SUCCESS 才继续；失败时静默返回，ACL 维持默认。

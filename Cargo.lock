@@ -4735,6 +4735,7 @@ name = "shurufa-settings"
 version = "0.1.0"
 dependencies = [
  "clipboard-store",
+ "ime-ipc",
  "serde",
  "serde_json",
  "shurufa-options",

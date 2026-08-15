@@ -5,7 +5,7 @@
 [![许可证](https://img.shields.io/badge/许可证-GPL--3.0-blue.svg)](LICENSE)
 [![平台](https://img.shields.io/badge/平台-Windows%20%7C%20Android-2ea44f.svg)](#平台支持)
 [![CI](https://github.com/hkm-a/shurufa/actions/workflows/ci.yml/badge.svg)](https://github.com/hkm-a/shurufa/actions/workflows/ci.yml)
-[![状态](https://img.shields.io/badge/状态-M6%20增强-2da44e.svg)](docs/M4-验收报告.md)
+[![状态](https://img.shields.io/badge/状态-v0.5.6-2da44e.svg)](CHANGELOG.md)
 
 Shurufa 把中文输入和设备剪贴板放在同一条工作流里：输入法负责稳定输入，剪贴板负责设备间同步。截图、标注与录屏由 PixPin 等专业工具负责，Shurufa 不再重复提供这类桌面能力。
 
@@ -76,7 +76,18 @@ version.json   版本号单一事实源（由 set-version.ps1 同步四处派生
 
 ## 当前状态
 
-当前实现已完成 M6 增强目标。最近一次本地验收覆盖 Android lint 与单元测试、Windows 宿主回归、同步核心协议测试、JNI 构建，以及 Android 模拟器后台双向图片同步。详细评分和证据保存在 [验证报告](.claude/verification-report.md) 中。
+当前版本 **v0.5.6（2026-08-14）**，已完成 M6 增强目标并进入功能收尾阶段：
+
+- **输入**：librime 雾凇拼音 + 小鹤双拼（独立双拼词典与引擎热切换）、MRU 最近使用提频、
+  拼音音节分词视图、Shift/CapsLock/Ctrl+. 切换、全局中/英语义（悬浮条可查可切）、五笔/仓颉入口预留。
+- **桌面**：FOX 悬浮条（中/En 指示、拼/双切换、剪贴板历史、语音转写、AI 帮写、划词润色入口）、
+  皮肤系统（5 套预设 + JSON 编辑器 + 热生效）、候选窗 DComp/D2D/GDI 瀑布渲染、Tauri 自研安装器。
+- **跨设备**：剪贴板文本/图片/文件双向同步（协议 v3：分块校验 + 回执）、文件接收审批通知、
+  剪贴板收藏、自托管中继、云词库多代回滚。
+- **工程**：全工作区 cargo clippy（-D warnings）与 cargo fmt --check 零告警、约 145 项测试全绿、
+  版本单一事实源 0.5.6/17、CI 双平台（Windows/Android）流水线。
+
+详细验收证据与评分见 [验证报告](.claude/verification-report.md)，演进过程见 [CHANGELOG](CHANGELOG.md)。
 
 ## 许可证
 

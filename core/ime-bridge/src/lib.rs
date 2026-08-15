@@ -150,7 +150,9 @@ impl Engine {
 
     /// 串行进入 librime：所有 FFI 调用必须经这把锁，防止并发破坏 composer/context。
     fn lock(&self) -> MutexGuard<'_, ()> {
-        self.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn api(&self) -> &ffi::RimeApi {
@@ -312,9 +314,7 @@ impl Session<'_> {
     /// 选择当前页第 `index` 个候选；成功返回 true。
     pub fn select_candidate_on_current_page(&self, index: usize) -> bool {
         let _guard = self.engine.lock();
-        unsafe {
-            (self.engine.api().select_candidate_on_current_page)(self.id, index) != 0
-        }
+        unsafe { (self.engine.api().select_candidate_on_current_page)(self.id, index) != 0 }
     }
 
     /// 翻一页候选；`backward` 为 true 是上一页。

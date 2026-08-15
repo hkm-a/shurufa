@@ -134,10 +134,7 @@ pub enum Incoming {
         msg_id: Option<String>,
     },
     /// 图片（PNG 字节）
-    Image {
-        from_name: String,
-        png: Vec<u8>,
-    },
+    Image { from_name: String, png: Vec<u8> },
     /// 文件（文件名、MIME 类型与原始字节）。
     File {
         from_name: String,
@@ -166,10 +163,7 @@ pub enum Incoming {
         chunk_bytes: u32,
     },
     /// 文件传输进度（对端→本端）：已收字节数。
-    FileProgress {
-        msg_id: String,
-        received_bytes: u64,
-    },
+    FileProgress { msg_id: String, received_bytes: u64 },
     /// 本端发起的文件传输被对端确认/拒绝/出错后的终态。
     FileTransferDone {
         msg_id: String,
@@ -197,7 +191,10 @@ enum Outbound {
         data: Vec<u8>,
     },
     /// 跨设备剪贴板搜索请求；由所有协商了 search-v1 的连接各自写出。
-    SearchRequest { query: String, req_id: String },
+    SearchRequest {
+        query: String,
+        req_id: String,
+    },
     /// 文件 v3 控制/数据面消息；仅在协商了 file-v1 的连接上写出。
     FileWire(Box<Message>),
 }
@@ -345,7 +342,10 @@ impl Shared {
 
     /// 该指纹当前是否允许发起重连（未在退避期内）。
     fn allow_retry(&self, fp: &str) -> bool {
-        let map = self.backoff.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let map = self
+            .backoff
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match map.get(fp) {
             Some((_, until)) => *until <= Instant::now(),
             None => true,
@@ -354,11 +354,14 @@ impl Shared {
 
     /// 记录一次连接失败，按指数策略延后下一次重试。
     fn mark_failure(&self, fp: &str) {
-        let mut map = self.backoff.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut map = self
+            .backoff
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (tries, _) = map.get(fp).copied().unwrap_or((0, Instant::now()));
         let tries = tries + 1;
         // 10s → 20s → 40s → … ，封顶 300s
-        let factor = 2u64.saturating_pow(tries.saturating_sub(1) as u32);
+        let factor = 2u64.saturating_pow(tries.saturating_sub(1));
         let secs = BACKOFF_BASE
             .as_secs()
             .saturating_mul(factor)
@@ -371,7 +374,10 @@ impl Shared {
 
     /// 连接成功后清除该指纹的退避记录。
     fn clear_backoff(&self, fp: &str) {
-        self.backoff.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(fp);
+        self.backoff
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(fp);
     }
 
     /// 把 msg_id 对应的传输切到指定状态；保留既有终态不动。
@@ -428,10 +434,7 @@ impl Shared {
                         .stream_progress_at
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
-                    let transfers = shared
-                        .transfers
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
+                    let transfers = shared.transfers.lock().unwrap_or_else(|p| p.into_inner());
                     for (msg_id, sent_at) in send_map.iter() {
                         if let Some(FileSendState::OfferSent { .. }) = transfers.get(msg_id) {
                             if now.duration_since(*sent_at) > Duration::from_secs(30) {
@@ -457,17 +460,17 @@ impl Shared {
                     });
                     prog_map.retain(|mid, _| {
                         !to_fail.iter().any(|(o_mid, _)| o_mid == mid)
-                            && matches!(
-                                transfers.get(mid),
-                                Some(FileSendState::Streaming { .. })
-                            )
+                            && matches!(transfers.get(mid), Some(FileSendState::Streaming { .. }))
                     });
                 }
                 for (msg_id, reason) in to_fail {
-                    shared.set_transfer(&msg_id, FileSendState::Failed {
-                        msg_id: msg_id.clone(),
-                        error: reason.into(),
-                    });
+                    shared.set_transfer(
+                        &msg_id,
+                        FileSendState::Failed {
+                            msg_id: msg_id.clone(),
+                            error: reason.into(),
+                        },
+                    );
                     let _ = shared
                         .incoming
                         .send(Incoming::FileTransferDone {
@@ -696,7 +699,8 @@ impl SyncService {
     pub fn connected_fingerprints(&self) -> Vec<String> {
         self.shared
             .connected
-            .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .cloned()
             .collect()
@@ -1079,7 +1083,8 @@ fn start_mdns(shared: &Arc<Shared>, port: u16) -> Result<mdns_sd::ServiceDaemon,
                     let addr = SocketAddr::new(ip.to_ip_addr(), info.get_port());
                     browse_shared
                         .addr_cache
-                        .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .insert(fp.to_string(), addr);
                     browse_shared.reconnect_now.notify_one();
                 }
@@ -1119,7 +1124,8 @@ async fn connect_missing_peers(shared: &Arc<Shared>, connector: &TlsConnector) {
         }
         let already = shared
             .connected
-            .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains(&peer.fingerprint);
         if already {
             continue;
@@ -1129,7 +1135,8 @@ async fn connect_missing_peers(shared: &Arc<Shared>, connector: &TlsConnector) {
         }
         let cached = shared
             .addr_cache
-            .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&peer.fingerprint)
             .copied();
         let direct_addr = match (cached, &peer.last_addr) {
@@ -1245,12 +1252,7 @@ async fn connect_peer_stream(
         },
     )
     .await?;
-    let (
-        Message::Hello {
-            name, features, ..
-        },
-        format,
-    ) = read_msg_with_format(&mut tls).await?
+    let (Message::Hello { name, features, .. }, format) = read_msg_with_format(&mut tls).await?
     else {
         return Err("对端未按协议发送 Hello".into());
     };
@@ -1440,7 +1442,10 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     {
-        let mut connected = shared.connected.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut connected = shared
+            .connected
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !connected.insert(fp.clone()) {
             // 双向同时建连的竞态：保留已有连接
             return Ok(());
@@ -1649,6 +1654,7 @@ where
                         let _ = fs::OpenOptions::new()
                             .create(true)
                             .write(true)
+                            .truncate(false)
                             .open(&part_path);
                         {
                             let mut recv = shared.file_recv.lock().unwrap_or_else(|p| p.into_inner());
@@ -2015,7 +2021,8 @@ where
 
     shared
         .connected
-        .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(&fp);
     shared.log(&format!("连接 {peer_name} 已断开"));
     result
@@ -2190,7 +2197,10 @@ mod tests {
         wait_connected(&first, &second).await;
 
         first.send_clip("仅经中继的同步文本");
-        match tokio::time::timeout(Duration::from_secs(5), second_rx.recv()).await.unwrap() {
+        match tokio::time::timeout(Duration::from_secs(5), second_rx.recv())
+            .await
+            .unwrap()
+        {
             Some(Incoming::Clip {
                 from_name,
                 text,
@@ -2205,7 +2215,10 @@ mod tests {
             other => panic!("期待 Clip 消息，实际 {other:?}"),
         }
         second.send_clip("中继回传文本");
-        match tokio::time::timeout(Duration::from_secs(5), first_rx.recv()).await.unwrap() {
+        match tokio::time::timeout(Duration::from_secs(5), first_rx.recv())
+            .await
+            .unwrap()
+        {
             Some(Incoming::Clip {
                 from_name,
                 text,

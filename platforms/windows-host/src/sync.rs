@@ -178,18 +178,6 @@ fn png_to_bmp(png: &[u8]) -> Option<Vec<u8>> {
     Some(out.into_inner())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::next_sync_dimensions;
-
-    #[test]
-    fn 同步缩放按比例递减且不会归零() {
-        assert_eq!(next_sync_dimensions(2560, 1600), Some((1920, 1200)));
-        assert_eq!(next_sync_dimensions(2, 2), Some((1, 1)));
-        assert_eq!(next_sync_dimensions(1, 2), None);
-    }
-}
-
 /// 在独立线程启动同步服务（run 模式调用一次）。
 pub fn start_daemon() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Broadcast>();
@@ -517,13 +505,15 @@ pub fn cli_remote_search(query: &str) {
 
         let mut hits_total = 0usize;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        while let Ok(Some(incoming)) = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline),
-            in_rx.recv(),
-        )
-        .await
+        while let Ok(Some(incoming)) =
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), in_rx.recv()).await
         {
-            if let Incoming::SearchResults { from_name, req_id: rid, hits } = incoming {
+            if let Incoming::SearchResults {
+                from_name,
+                req_id: rid,
+                hits,
+            } = incoming
+            {
                 if rid.as_deref() != Some(req_id.as_str()) {
                     continue;
                 }
@@ -570,5 +560,17 @@ pub fn cli_unpair(fp_prefix: &str) {
         Ok(true) => println!("已解除配对"),
         Ok(false) => println!("未找到匹配设备（用 devices 查看指纹前缀）"),
         Err(e) => eprintln!("操作失败：{e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_sync_dimensions;
+
+    #[test]
+    fn 同步缩放按比例递减且不会归零() {
+        assert_eq!(next_sync_dimensions(2560, 1600), Some((1920, 1200)));
+        assert_eq!(next_sync_dimensions(2, 2), Some((1, 1)));
+        assert_eq!(next_sync_dimensions(1, 2), None);
     }
 }

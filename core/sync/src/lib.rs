@@ -46,8 +46,7 @@ pub fn pairing_code(fp_a: &str, fp_b: &str) -> String {
     };
     let hash = Sha256::digest(format!("shurufa-pair:{lo}:{hi}").as_bytes());
     let n = u64::from_be_bytes([
-        hash[0], hash[1], hash[2], hash[3],
-        hash[4], hash[5], hash[6], hash[7],
+        hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
     ]) % 100_000_000;
     format!("{n:08}")
 }

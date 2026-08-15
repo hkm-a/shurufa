@@ -241,7 +241,8 @@ fn push_snapshot(
         let legacy_slot = "0001-legacy".to_string();
         let legacy_dir = backup_dir.join(&legacy_slot);
         fs::create_dir_all(&legacy_dir).map_err(|e| format!("迁移旧回滚备份失败: {e}"))?;
-        for entry in fs::read_dir(&backup_dir).map_err(|e| format!("读取回滚备份失败: {e}"))? {
+        for entry in fs::read_dir(&backup_dir).map_err(|e| format!("读取回滚备份失败: {e}"))?
+        {
             let entry = entry.map_err(|e| format!("读取回滚备份失败: {e}"))?;
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
@@ -827,7 +828,8 @@ mod tests {
 
     #[test]
     fn 回滚快照记录旧文件与新增清单() {
-        let root = std::env::temp_dir().join(format!("shurufa-dict-snap-test-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("shurufa-dict-snap-test-{}", std::process::id()));
         let schema_dir = root.join("schemas");
         let stage = root.join("stage");
         fs::create_dir_all(schema_dir.join("cn_dicts")).unwrap();
@@ -888,7 +890,10 @@ mod tests {
         assert_eq!(stack[0].revision, "");
         assert_eq!(stack[1].revision, "r1");
         let top_dir = backup.join(&stack[1].slot);
-        assert_eq!(fs::read(top_dir.join("cn_dicts/existing.yaml")).unwrap(), b"new");
+        assert_eq!(
+            fs::read(top_dir.join("cn_dicts/existing.yaml")).unwrap(),
+            b"new"
+        );
         assert_eq!(fs::read_to_string(top_dir.join(".added")).unwrap(), "");
         fs::remove_dir_all(root).unwrap();
     }
@@ -906,7 +911,11 @@ mod tests {
 
     /// 构造一个只含 applied 元数据（不真实复制）的 AppliedFile 列表，
     /// 供 persist_revision_snapshot 测试用。
-    fn fake_applied(schema_dir: &Path, existed_rel: &[&str], added_rel: &[&str]) -> Vec<AppliedFile> {
+    fn fake_applied(
+        schema_dir: &Path,
+        existed_rel: &[&str],
+        added_rel: &[&str],
+    ) -> Vec<AppliedFile> {
         let mut applied = Vec::new();
         for rel in existed_rel {
             let target = schema_dir.join(rel);
@@ -1043,8 +1052,7 @@ mod tests {
 
     #[test]
     fn 快照栈_fifo_压缩到五代() {
-        let root =
-            std::env::temp_dir().join(format!("shurufa-dict-fifo-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("shurufa-dict-fifo-{}", std::process::id()));
         let schema_dir = root.join("schemas");
         fs::create_dir_all(&schema_dir).unwrap();
         fs::write(schema_dir.join("a.yaml"), b"v0").unwrap();
@@ -1064,8 +1072,7 @@ mod tests {
     #[test]
     fn v1布局备份自动迁移后可继续回滚() {
         // v1 布局：.backup 根目录直接放替换前的文件 + .added + .previous-revision
-        let root =
-            std::env::temp_dir().join(format!("shurufa-dict-v1-mig-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("shurufa-dict-v1-mig-{}", std::process::id()));
         let schema_dir = root.join("schemas");
         let backup = root.join("schemas/.backup");
         fs::create_dir_all(backup.join("cn_dicts")).unwrap();
@@ -1087,8 +1094,7 @@ mod tests {
     fn 回滚后可继续向更高版本update() {
         // 回滚只动 .current-revision 与快照栈；update_from_url 的新 revision 只来自
         // manifest，不做层级比较，因此回滚到旧版后再 update 更高版不会死锁。
-        let root =
-            std::env::temp_dir().join(format!("shurufa-dict-rb-fwd-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("shurufa-dict-rb-fwd-{}", std::process::id()));
         let schema_dir = root.join("schemas");
         fs::create_dir_all(&schema_dir).unwrap();
         fs::write(schema_dir.join("a.yaml"), b"v0").unwrap();

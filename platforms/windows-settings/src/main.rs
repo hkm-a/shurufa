@@ -12,7 +12,9 @@ use std::process::Command;
 
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore};
 use serde::{Deserialize, Serialize};
-use shurufa_options::{validate_input_scheme, GeneralSettings, ImeOptions, LogLevel, SpeechSettings};
+use shurufa_options::{
+    validate_input_scheme, GeneralSettings, ImeOptions, LogLevel, SpeechSettings,
+};
 use tauri::Manager;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -240,7 +242,8 @@ fn save_relay(relay: String) -> Result<(), String> {
     } else {
         // 白名单格式：仅允许 host:port（域名/IPv4字面量/[IPv6]:port）。
         // 拒绝其他字符避免 CRLF/路径/协议头注入到下层持久化与 TLS 连接。
-        let (host, port_str) = relay.rsplit_once(':')
+        let (host, port_str) = relay
+            .rsplit_once(':')
             .ok_or_else(|| "中继地址格式无效：应为 host:port".to_owned())?;
         if host.is_empty() {
             return Err("主机不能为空".to_owned());
@@ -256,7 +259,10 @@ fn save_relay(relay: String) -> Result<(), String> {
             return Err("主机名含非法字符：仅允许字母数字 . - :".to_owned());
         }
         // 端口 1..=65535
-        if port_str.is_empty() || port_str.len() > 5 || !port_str.chars().all(|c| c.is_ascii_digit()) {
+        if port_str.is_empty()
+            || port_str.len() > 5
+            || !port_str.chars().all(|c| c.is_ascii_digit())
+        {
             return Err("端口必须是 1-5 位数字".to_owned());
         }
         let port: u32 = port_str.parse().map_err(|_| "端口必须是数字".to_owned())?;
@@ -673,7 +679,11 @@ async fn run_host_capture(args: &[&str]) -> Result<String, String> {
 async fn dictionary_info() -> Result<DictionaryInfo, String> {
     let revision = run_host_capture(&["dict-current"]).await?;
     Ok(DictionaryInfo {
-        revision: if revision.is_empty() { "内置".to_owned() } else { revision },
+        revision: if revision.is_empty() {
+            "内置".to_owned()
+        } else {
+            revision
+        },
     })
 }
 
@@ -871,6 +881,73 @@ async fn set_input_scheme(scheme: String) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// 全局中/英状态（悬浮条「中/En」指示）：直连算法服务管道查询/切换。
+// 算法服务把 ascii_mode 视为全局态（搜狗语义），这里只做轻量客户端。
+// ---------------------------------------------------------------------------
+
+/// 直连算法服务发一个请求并取回应答；失败返回 None（服务未启动等）。
+fn algo_rpc(request: &ime_ipc::Request) -> Option<ime_ipc::Response> {
+    use ime_ipc::pipe::PipeClient;
+    let client = PipeClient::connect().ok()?;
+    let frame = ime_ipc::encode_request(request).ok()?;
+    client.write_frame(&frame).ok()?;
+    let reply = client
+        .read_frame_timeout(std::time::Duration::from_millis(800))
+        .ok()?;
+    ime_ipc::decode_response(&reply).ok()
+}
+
+/// 查询全局中/英状态：true = 英文直输。算法服务未启动时回退 false（中文）。
+#[tauri::command]
+fn ime_mode_status() -> bool {
+    match algo_rpc(&ime_ipc::Request::GetOption("ascii_mode".to_owned())) {
+        Some(ime_ipc::Response::Option(v)) => v,
+        _ => false,
+    }
+}
+
+/// 切换全局中/英；返回切换后是否英文直输。
+#[tauri::command]
+fn ime_mode_toggle() -> Result<bool, String> {
+    match algo_rpc(&ime_ipc::Request::ToggleAscii) {
+        Some(ime_ipc::Response::Ascii(v)) => Ok(v),
+        _ => Err("算法服务未响应，无法切换中英文".to_owned()),
+    }
+}
+
+/// 悬浮条麦克风按钮：触发后台宿主的语音转写面板。
+/// 经 WM_APP 消息发给 host 的监听窗口（与 Ctrl+Shift+S 热键同一入口），
+/// 不做全局按键注入，避免误触发其它应用的同款快捷键。
+#[tauri::command]
+fn trigger_speech() -> Result<String, String> {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+    // 语音功能需在设置中开启（与热键共用同一开关）
+    let opts = shurufa_options::load();
+    if !opts.speech.enabled || !opts.speech.hotkey_enabled {
+        return Err("语音输入未开启：请到 通用设置 → 语音转写 开启后再试".to_owned());
+    }
+    unsafe {
+        let hwnd = FindWindowW(
+            windows::core::w!("ShurufaClipboardListener"),
+            windows::core::PCWSTR::null(),
+        )
+        .map_err(|error| format!("查找后台宿主窗口失败：{error}"))?;
+        if hwnd.0.is_null() {
+            return Err("后台宿主未运行，无法启动语音输入".to_owned());
+        }
+        let _ = PostMessageW(
+            Some(hwnd),
+            // 与 shurufa-host listener.rs 的 WM_APP_SPEECH_TOGGLE 一致
+            windows::Win32::UI::WindowsAndMessaging::WM_APP + 44,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    }
+    Ok("语音转写已启动（再次点击麦克风可结束）".to_owned())
+}
+
+// ---------------------------------------------------------------------------
 // 预设皮肤包（skins/ 目录 + schemas/skins-index.json 本地清单）
 // ---------------------------------------------------------------------------
 
@@ -909,8 +986,7 @@ fn resolve_skins_meta_path(name: &str) -> Option<PathBuf> {
 fn list_skins() -> Result<Vec<SkinMeta>, String> {
     let path = resolve_skins_meta_path("skins-index.json")
         .ok_or_else(|| "未找到 skins-index.json".to_owned())?;
-    let text = std::fs::read_to_string(&path)
-        .map_err(|error| format!("读取清单失败：{error}"))?;
+    let text = std::fs::read_to_string(&path).map_err(|error| format!("读取清单失败：{error}"))?;
     serde_json::from_str::<Vec<SkinMeta>>(&text).map_err(|error| format!("清单 JSON 无效：{error}"))
 }
 
@@ -924,10 +1000,10 @@ fn apply_skin(id: String) -> Result<(), String> {
     }
     let index_path = resolve_skins_meta_path("skins-index.json")
         .ok_or_else(|| "未找到 skins-index.json".to_owned())?;
-    let index_text = std::fs::read_to_string(&index_path)
-        .map_err(|error| format!("读取清单失败：{error}"))?;
-    let metas: Vec<SkinMeta> = serde_json::from_str(&index_text)
-        .map_err(|error| format!("清单 JSON 无效：{error}"))?;
+    let index_text =
+        std::fs::read_to_string(&index_path).map_err(|error| format!("读取清单失败：{error}"))?;
+    let metas: Vec<SkinMeta> =
+        serde_json::from_str(&index_text).map_err(|error| format!("清单 JSON 无效：{error}"))?;
     let meta = metas
         .iter()
         .find(|m| m.id == id)
@@ -942,19 +1018,31 @@ fn apply_skin(id: String) -> Result<(), String> {
         .clone()
         .and_then(|d| {
             let p = d.join("..").join("skins").join(&meta.file);
-            if p.is_file() { Some(p) } else { None }
+            if p.is_file() {
+                Some(p)
+            } else {
+                None
+            }
         })
         .or_else(|| {
             index_dir.and_then(|d| {
                 let p = d.join("skins").join(&meta.file);
-                if p.is_file() { Some(p) } else { None }
+                if p.is_file() {
+                    Some(p)
+                } else {
+                    None
+                }
             })
         })
         .or_else(|| {
             std::env::current_exe().ok().and_then(|exe| {
                 exe.parent().and_then(|d| {
                     let p = d.join("skins").join(&meta.file);
-                    if p.is_file() { Some(p) } else { None }
+                    if p.is_file() {
+                        Some(p)
+                    } else {
+                        None
+                    }
                 })
             })
         })
@@ -1000,11 +1088,14 @@ fn set_window_size(window: tauri::Window, size: WindowSize) -> Result<(), String
         current.y
     };
     // 超出工作区（上/下/右）则整体回收进可视范围
-    let x = current
-        .x
-        .clamp(work.position.x + 8, work.position.x + work.size.width as i32 - target_w - 8);
-    let y = raw_y
-        .clamp(work.position.y + 8, work.position.y + work.size.height as i32 - target_h - 8);
+    let x = current.x.clamp(
+        work.position.x + 8,
+        work.position.x + work.size.width as i32 - target_w - 8,
+    );
+    let y = raw_y.clamp(
+        work.position.y + 8,
+        work.position.y + work.size.height as i32 - target_h - 8,
+    );
     window
         .set_position(tauri::PhysicalPosition::new(x, y))
         .map_err(|error| error.to_string())?;
@@ -1070,8 +1161,14 @@ fn restore_window_position(window: tauri::Window, x: i32, y: i32) -> Result<(), 
         .ok_or_else(|| "无可用显示器".to_owned())?;
     let work = monitor.work_area();
     let size = window.outer_size().map_err(|error| error.to_string())?;
-    let cx = x.clamp(work.position.x + 8, work.position.x + work.size.width as i32 - size.width as i32 - 8);
-    let cy = y.clamp(work.position.y + 8, work.position.y + work.size.height as i32 - size.height as i32 - 8);
+    let cx = x.clamp(
+        work.position.x + 8,
+        work.position.x + work.size.width as i32 - size.width as i32 - 8,
+    );
+    let cy = y.clamp(
+        work.position.y + 8,
+        work.position.y + work.size.height as i32 - size.height as i32 - 8,
+    );
     window
         .set_position(tauri::PhysicalPosition::new(cx, cy))
         .map_err(|error| error.to_string())
@@ -1125,7 +1222,7 @@ fn settings_autostart_set(enabled: bool) -> Result<(), String> {
         let key = windows_registry::CURRENT_USER
             .create(SETTINGS_RUN_KEY)
             .map_err(|error| format!("打开 Run 键失败：{error}"))?;
-        key.set_string(SETTINGS_RUN_VALUE, &settings_run_command())
+        key.set_string(SETTINGS_RUN_VALUE, settings_run_command())
             .map_err(|error| format!("写入 Run 键失败：{error}"))?;
     } else if let Ok(key) = windows_registry::CURRENT_USER.open(SETTINGS_RUN_KEY) {
         let _ = key.remove_value(SETTINGS_RUN_VALUE);
@@ -1142,7 +1239,8 @@ fn settings_autostart_set(enabled: bool) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// 与 installer/Deploy-Shurufa.ps1 的 $script:ShurufaInputTip 保持一致（SSOT）。
-const SHURUFA_INPUT_TIP: &str = "0804:{8A5C1B49-3D2E-4F7A-9C61-0B7E2D5A9F13}{C4E9D2A7-6B31-4A58-8F0D-1E9A7C3B5D26}";
+const SHURUFA_INPUT_TIP: &str =
+    "0804:{8A5C1B49-3D2E-4F7A-9C61-0B7E2D5A9F13}{C4E9D2A7-6B31-4A58-8F0D-1E9A7C3B5D26}";
 
 #[derive(Serialize)]
 struct DefaultImeStatus {
@@ -1183,7 +1281,11 @@ async fn default_ime_status() -> Result<DefaultImeStatus, String> {
 fn resolve_activate_ime_script() -> Result<std::path::PathBuf, String> {
     let candidates: Vec<std::path::PathBuf> = vec![
         std::env::var_os("SHURUFA_ACTIVATE_IME_PS1").map(PathBuf::from),
-        std::env::var_os("ProgramData").map(|dir| PathBuf::from(dir).join("shurufa").join("activate-default-ime.ps1")),
+        std::env::var_os("ProgramData").map(|dir| {
+            PathBuf::from(dir)
+                .join("shurufa")
+                .join("activate-default-ime.ps1")
+        }),
         std::env::current_exe().ok().and_then(|exe| {
             let root = exe.parent()?.parent()?.parent()?.to_path_buf();
             Some(root.join("installer").join("activate-default-ime.ps1"))
@@ -1212,7 +1314,14 @@ async fn run_activate_ime_elevated(extra_args: &[&str]) -> Result<String, String
     );
     run_blocking(move || {
         let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &command])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &command,
+            ])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(|error| format!("无法启动提权进程：{error}"))?;
@@ -1249,14 +1358,14 @@ fn exit_app(app: tauri::AppHandle) {
 /// 控制中心单实例：命名 Mutex 保证一台机器只有一个悬浮条进程。
 /// 返回 false 表示已存在另一个实例，调用方应直接退出。
 fn is_single_instance() -> bool {
+    use windows::core::HSTRING;
     use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
     use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
-    use windows::core::HSTRING;
-    let mutex = match unsafe { CreateMutexW(None, true, &HSTRING::from("Global\\FOXControlCenter")) }
-    {
-        Ok(m) => m,
-        Err(_) => return true, // 创建失败时放行，避免误伤
-    };
+    let mutex =
+        match unsafe { CreateMutexW(None, true, &HSTRING::from("Global\\FOXControlCenter")) } {
+            Ok(m) => m,
+            Err(_) => return true, // 创建失败时放行，避免误伤
+        };
     // 句柄不释放：进程生命周期内保持所有权，进程退出时系统自动释放
     let r = unsafe { WaitForSingleObject(mutex, 0) };
     r == WAIT_OBJECT_0 || r == WAIT_ABANDONED
@@ -1279,49 +1388,52 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-        dashboard_state,
-        e2e_ping,
-        save_relay,
-        start_service,
-        stop_service,
-        update_dictionary,
-        open_system_settings,
-        open_data_directory,
-        history_entries,
-        copy_history,
-        set_history_pinned,
-        delete_history,
-        clear_unpinned_history,
-        ime_options,
-        save_ime_options,
-        get_general_settings,
-        save_general_settings,
-        get_speech_settings,
-        save_speech_settings,
-        set_autostart,
-        typing_stats,
-        dictionary_info,
-        dictionary_history,
-        rollback_dictionary,
-        rollback_dictionary_to,
-        skin_payload,
-        save_skin,
-        reset_skin,
-        list_skins,
-        apply_skin,
-        list_input_schemes,
-        set_input_scheme,
-        set_window_size,
-        place_window_bottom_right,
-        restore_window_position,
-        clamp_window_to_work_area,
-        settings_autostart_info,
-        settings_autostart_set,
-        default_ime_status,
-        set_default_ime,
-        clear_default_ime,
-        exit_app
-    ]);
+            dashboard_state,
+            e2e_ping,
+            save_relay,
+            start_service,
+            stop_service,
+            update_dictionary,
+            open_system_settings,
+            open_data_directory,
+            history_entries,
+            copy_history,
+            set_history_pinned,
+            delete_history,
+            clear_unpinned_history,
+            ime_options,
+            save_ime_options,
+            get_general_settings,
+            save_general_settings,
+            get_speech_settings,
+            save_speech_settings,
+            set_autostart,
+            typing_stats,
+            dictionary_info,
+            dictionary_history,
+            rollback_dictionary,
+            rollback_dictionary_to,
+            skin_payload,
+            save_skin,
+            reset_skin,
+            list_skins,
+            apply_skin,
+            list_input_schemes,
+            set_input_scheme,
+            ime_mode_status,
+            ime_mode_toggle,
+            trigger_speech,
+            set_window_size,
+            place_window_bottom_right,
+            restore_window_position,
+            clamp_window_to_work_area,
+            settings_autostart_info,
+            settings_autostart_set,
+            default_ime_status,
+            set_default_ime,
+            clear_default_ime,
+            exit_app
+        ]);
     #[cfg(feature = "ui-e2e")]
     let builder = builder.on_page_load(|webview, payload| {
         e2e_trace("页面加载回调已触发");
@@ -1395,7 +1507,8 @@ mod tests {
     fn 预设清单结构可反序列化() {
         // 与 schemas/skins-index.json 保持一致的字段形态；防后续手改清单破坏编译期固化的字段名
         let text = r##"[{"id":"mist","name_zh":"雾灰蓝","name_en":"Mist","file":"mist.json","author":"FOX","tags":["light"],"preview_hint":"#F7FAFC"}]"##;
-        let metas: Vec<super::SkinMeta> = serde_json::from_str(text).expect("skins-index 行可反序列化");
+        let metas: Vec<super::SkinMeta> =
+            serde_json::from_str(text).expect("skins-index 行可反序列化");
         assert_eq!(metas.len(), 1);
         assert_eq!(metas[0].id, "mist");
         assert_eq!(metas[0].tags, vec!["light".to_owned()]);
@@ -1409,7 +1522,8 @@ mod tests {
         let root = here.parent().and_then(|p| p.parent()).expect("repo root");
         let index_path = root.join("schemas").join("skins-index.json");
         let text = std::fs::read_to_string(&index_path).expect("skins-index.json 存在");
-        let metas: Vec<super::SkinMeta> = serde_json::from_str(&text).expect("skins-index.json 合法");
+        let metas: Vec<super::SkinMeta> =
+            serde_json::from_str(&text).expect("skins-index.json 合法");
         assert_eq!(metas.len(), 5, "本期上线 5 套预设");
         for meta in &metas {
             let file = root.join("skins").join(&meta.file);
@@ -1421,8 +1535,15 @@ mod tests {
                 .get("version")
                 .and_then(serde_json::Value::as_u64)
                 .expect("version 存在");
-            assert!(version == 2, "皮肤 {} version 应为 2（实际 {version}）", meta.file);
-            assert!(meta.preview_hint.starts_with('#'), "preview_hint 应为 #RRGGBB");
+            assert!(
+                version == 2,
+                "皮肤 {} version 应为 2（实际 {version}）",
+                meta.file
+            );
+            assert!(
+                meta.preview_hint.starts_with('#'),
+                "preview_hint 应为 #RRGGBB"
+            );
         }
     }
 
@@ -1462,10 +1583,7 @@ mod tests {
             enable_ai_hotkey: true,
             input_scheme: "pinyin".to_owned(),
         };
-        let mapped = match bad.log_level.as_str() {
-            "info" | "debug" | "trace" => true,
-            _ => false,
-        };
+        let mapped = matches!(bad.log_level.as_str(), "info" | "debug" | "trace");
         assert!(!mapped, "未知级别应被 save 路径拒绝");
         // clamped 对超大值上限 2000，对超小值下限 50
         let c1 = shurufa_options::GeneralSettings {

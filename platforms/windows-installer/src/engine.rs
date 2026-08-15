@@ -96,12 +96,20 @@ fn emit_step(app: &tauri::AppHandle, percent: u8, text: &str) {
 /// 追加一行到安装日志（UTF-8 + BOM，notepad 可读）。目标目录不可写时回退 $TEMP。
 fn log_append(dir: &Path, msg: &str) {
     let primary = dir.join("install.log");
-    let fallback = PathBuf::from(std::env::var("TEMP").unwrap_or_else(|_| ".".into()))
-        .join("FOX-install.log");
+    let fallback =
+        PathBuf::from(std::env::var("TEMP").unwrap_or_else(|_| ".".into())).join("FOX-install.log");
     let mut opened = None;
-    if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&primary) {
+    if let Ok(f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&primary)
+    {
         opened = Some(f);
-    } else if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&fallback) {
+    } else if let Ok(f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&fallback)
+    {
         opened = Some(f);
     }
     let Some(mut file) = opened else { return };
@@ -111,7 +119,12 @@ fn log_append(dir: &Path, msg: &str) {
 }
 
 /// 关键步骤包装：记录命令与结果到安装日志。
-fn run_cmd_logged(log_dir: &Path, label: &str, program: &str, args: &[&str]) -> Result<String, String> {
+fn run_cmd_logged(
+    log_dir: &Path,
+    label: &str,
+    program: &str,
+    args: &[&str],
+) -> Result<String, String> {
     log_append(log_dir, &format!("▶ {label}: {program} {}", args.join(" ")));
     match run_cmd(program, args) {
         Ok(out) => {
@@ -172,14 +185,23 @@ fn create_shortcut(lnk: &Path, target: &Path) -> Result<(), String> {
     );
     run_cmd(
         POWERSHELL,
-        &["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps],
+        &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &ps,
+        ],
     )
     .map(|_| ())
 }
 
 fn start_menu_path() -> Result<PathBuf, String> {
     let pd = std::env::var("ProgramData").map_err(|_| "缺少 ProgramData 环境变量")?;
-    Ok(PathBuf::from(pd).join("Microsoft\\Windows\\Start Menu\\Programs").join(START_MENU_FOLDER))
+    Ok(PathBuf::from(pd)
+        .join("Microsoft\\Windows\\Start Menu\\Programs")
+        .join(START_MENU_FOLDER))
 }
 
 fn desktop_path() -> Result<PathBuf, String> {
@@ -218,7 +240,11 @@ fn write_uninstall_registry(install_dir: &str, exe: &str) -> Result<(), String> 
     reg("DisplayVersion", PAYLOAD_VERSION, "REG_SZ")?;
     reg("Publisher", "FOX", "REG_SZ")?;
     reg("InstallLocation", install_dir, "REG_SZ")?;
-    reg("UninstallString", &format!("\"{exe}\" /uninstall"), "REG_SZ")?;
+    reg(
+        "UninstallString",
+        &format!("\"{exe}\" /uninstall"),
+        "REG_SZ",
+    )?;
     reg("NoModify", "1", "REG_DWORD")?;
     reg("NoRepair", "1", "REG_DWORD")?;
     Ok(())
@@ -244,17 +270,7 @@ fn launch_as_user(target: &Path, args: &[&str]) -> Result<(), String> {
     run_cmd(
         "schtasks.exe",
         &[
-            "/Create",
-            "/TN",
-            tn,
-            "/TR",
-            &quoted,
-            "/SC",
-            "ONCE",
-            "/ST",
-            "00:00",
-            "/RL",
-            "LIMITED",
+            "/Create", "/TN", tn, "/TR", &quoted, "/SC", "ONCE", "/ST", "00:00", "/RL", "LIMITED",
             "/F",
         ],
     )
@@ -269,18 +285,20 @@ fn launch_as_user(target: &Path, args: &[&str]) -> Result<(), String> {
 fn start_host(target: &Path) -> Result<(), String> {
     let host = target.join("shurufa-host.exe");
     launch_as_user(&host, &["supervise"])?;
-    let _ = Command::new("ctfmon.exe").creation_flags(CREATE_NO_WINDOW).spawn();
+    let _ = Command::new("ctfmon.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
     Ok(())
 }
 
 /// 清理旧安装（确保"一台机器只有一个版本"）：
 /// - 旧版默认目录 %ProgramData%\shurufa（SetShellVarContext all 时代的安装位置）
 /// - 卸载注册表里记录的其它安装位置（用户改过安装目录的旧版本）
+///
 /// 反注册其 TSF 并整目录删除；删除失败（占用）只记录告警，不阻断新装。
 fn clean_legacy_install(target: &Path) {
-    let mut legacy: Vec<PathBuf> = vec![
-        PathBuf::from(std::env::var("ProgramData").unwrap_or_default()).join("shurufa"),
-    ];
+    let mut legacy: Vec<PathBuf> =
+        vec![PathBuf::from(std::env::var("ProgramData").unwrap_or_default()).join("shurufa")];
     if let Some(loc) = read_install_location() {
         let p = PathBuf::from(&loc);
         if p != target && !legacy.contains(&p) {
@@ -291,7 +309,10 @@ fn clean_legacy_install(target: &Path) {
         if dir == target || !dir.exists() || !dir.join("shurufa-host.exe").exists() {
             continue; // 不是本产品的安装目录
         }
-        log_append(target, &format!("检测到旧安装目录 {}，正在清理…", dir.display()));
+        log_append(
+            target,
+            &format!("检测到旧安装目录 {}，正在清理…", dir.display()),
+        );
         unregister_tsf(&dir);
         match fs::remove_dir_all(&dir) {
             Ok(()) => log_append(target, &format!("✓ 旧安装目录已删除：{}", dir.display())),
@@ -304,9 +325,16 @@ fn clean_legacy_install(target: &Path) {
 }
 
 /// 真实安装（release 构建、payload 已嵌入时调用）。
-pub fn run_install(app: &tauri::AppHandle, dir: &str, create_start_menu: bool) -> Result<(), String> {
+pub fn run_install(
+    app: &tauri::AppHandle,
+    dir: &str,
+    create_start_menu: bool,
+) -> Result<(), String> {
     let target = Path::new(dir);
-    log_append(target, &format!("══ 开始安装 FOX 输入法 {PAYLOAD_VERSION} → {dir}"));
+    log_append(
+        target,
+        &format!("══ 开始安装 FOX 输入法 {PAYLOAD_VERSION} → {dir}"),
+    );
     emit_step(app, 3, "正在准备安装目录…");
 
     // 1. 停旧进程（控制中心 / 宿主 / 算法 / 输入法宿主），反注册旧 TSF。
@@ -329,7 +357,10 @@ pub fn run_install(app: &tauri::AppHandle, dir: &str, create_start_menu: bool) -
     // 2. 写入 payload（被占用文件允许重试；TSF DLL 会被已注册的旧版锁住——
     //    所有文本输入进程都会加载它，无法杀光。被锁时回退唯一文件名并注册新文件）
     emit_step(app, 15, "正在复制程序文件…");
-    log_append(target, &format!("步骤 2/10 写入 {} 个 payload 文件", PAYLOAD_FILES.len()));
+    log_append(
+        target,
+        &format!("步骤 2/10 写入 {} 个 payload 文件", PAYLOAD_FILES.len()),
+    );
     fs::create_dir_all(target).map_err(|e| {
         log_append(target, &format!("✗ 创建安装目录失败：{e}"));
         format!("创建安装目录失败：{e}")
@@ -362,7 +393,10 @@ pub fn run_install(app: &tauri::AppHandle, dir: &str, create_start_menu: bool) -
                     Err(e) if attempt < 5 => {
                         log_append(
                             target,
-                            &format!("  ⚠ 写入 {} 第 {attempt} 次失败（{e}），重试…", dest.display()),
+                            &format!(
+                                "  ⚠ 写入 {} 第 {attempt} 次失败（{e}），重试…",
+                                dest.display()
+                            ),
                         );
                         std::thread::sleep(std::time::Duration::from_millis(600 * attempt as u64));
                     }
@@ -379,7 +413,10 @@ pub fn run_install(app: &tauri::AppHandle, dir: &str, create_start_menu: bool) -
                 // TSF DLL 被锁 → 回退唯一文件名，注册新文件
                 tsf_fell_back = true;
                 tsf_dest = tsf_fallback.clone();
-                log_append(target, &format!("  ⚠ TSF DLL 被旧进程锁定，回退唯一文件名：{tsf_dest}"));
+                log_append(
+                    target,
+                    &format!("  ⚠ TSF DLL 被旧进程锁定，回退唯一文件名：{tsf_dest}"),
+                );
                 let dest = target.join(&tsf_dest);
                 fs::write(&dest, data).map_err(|e| {
                     log_append(target, &format!("✗ 写入 {} 失败：{e}", dest.display()));
@@ -417,8 +454,13 @@ pub fn run_install(app: &tauri::AppHandle, dir: &str, create_start_menu: bool) -
     // 5. 注册 TSF 输入法（用实际写入的文件名，可能已回退为唯一名）
     emit_step(app, 62, "正在注册输入法…");
     let tsf = target.join(&tsf_dest);
-    run_cmd_logged(target, "regsvr32 注册 TSF", "regsvr32.exe", &["/s", tsf.to_str().unwrap()])
-        .map_err(|e| format!("注册 TSF 输入法失败：{e}"))?;
+    run_cmd_logged(
+        target,
+        "regsvr32 注册 TSF",
+        "regsvr32.exe",
+        &["/s", tsf.to_str().unwrap()],
+    )
+    .map_err(|e| format!("注册 TSF 输入法失败：{e}"))?;
 
     // 5.5 清理孤儿 TSF DLL：只保留本次注册的那个文件，删掉历次安装累积的
     //     shurufa_tsf-*.dll / .old-* 残留（被占用时跳过，下次安装再清）
@@ -546,7 +588,13 @@ pub fn run_finish_actions(
         log_append(target, "→ 创建桌面快捷方式");
         let desktop = desktop_path()?;
         create_shortcut(&desktop.join(SHORTCUT_NAME), &target.join("Shurufa.exe"))?;
-        log_append(target, &format!("✓ 桌面快捷方式已创建：{}", desktop.join(SHORTCUT_NAME).display()));
+        log_append(
+            target,
+            &format!(
+                "✓ 桌面快捷方式已创建：{}",
+                desktop.join(SHORTCUT_NAME).display()
+            ),
+        );
     }
     if run_fox {
         log_append(target, "→ 启动控制中心（普通用户，勿提权）");
@@ -574,7 +622,13 @@ pub fn run_uninstall() -> Result<(), String> {
     // 清除默认输入法：直接删 InputMethodOverride（绕开可能挂起的 WinRT 命令）
     let _ = run_cmd(
         "reg.exe",
-        &["delete", DEFAULT_IME_REG_KEY, "/v", "InputMethodOverride", "/f"],
+        &[
+            "delete",
+            DEFAULT_IME_REG_KEY,
+            "/v",
+            "InputMethodOverride",
+            "/f",
+        ],
     );
 
     let _ = run_cmd(
@@ -583,8 +637,16 @@ pub fn run_uninstall() -> Result<(), String> {
     );
 
     // 快捷方式
-    let _ = fs::remove_file(start_menu_path().map(|p| p.join(SHORTCUT_NAME)).unwrap_or_default());
-    let _ = fs::remove_file(desktop_path().map(|p| p.join(SHORTCUT_NAME)).unwrap_or_default());
+    let _ = fs::remove_file(
+        start_menu_path()
+            .map(|p| p.join(SHORTCUT_NAME))
+            .unwrap_or_default(),
+    );
+    let _ = fs::remove_file(
+        desktop_path()
+            .map(|p| p.join(SHORTCUT_NAME))
+            .unwrap_or_default(),
+    );
     if let Ok(sm) = start_menu_path() {
         let _ = fs::remove_dir(&sm);
     }

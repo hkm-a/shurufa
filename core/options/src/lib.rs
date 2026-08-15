@@ -104,10 +104,10 @@ impl GeneralSettings {
     }
 }
 
-/// wave 4 预留：listener.rs 读取热键开关的统一入口。
-/// 当前 listener.rs 尚未接线，调用方先在 wave 4 接入 options 热重载
-/// （windows/src/service.rs 已有 2 秒 mtime 轮询的 refresh_options）
-/// 即可热生效；本函数放这里避免 listener 再次拼路径。
+/// AI 帮写 / 划词润色热键开关的统一入口（enable_polish_hotkey,
+/// enable_ai_hotkey）。windows-host 的 listener.rs 在启动时读取一次，
+/// 之后每 2 秒轮询（SetTimer + refresh_hotkey_gates）——设置中心开关
+/// 即改即存，约 2 秒内在宿主侧热生效，无需重启进程。
 pub fn hotkey_gates() -> (bool, bool) {
     let g = load().general;
     (g.enable_polish_hotkey, g.enable_ai_hotkey)
@@ -429,7 +429,7 @@ pub mod stats {
             Ok(guard) => guard.stats.clone(),
             Err(poisoned) => poisoned.into_inner().stats.clone(),
         };
-        last_days_of(&stats, n.min(31).max(1))
+        last_days_of(&stats, n.clamp(1, 31))
     }
 
     fn last_days_of(stats: &StatsFile, n: usize) -> Vec<(String, u64)> {
@@ -927,8 +927,7 @@ mod tests {
     #[test]
     fn 语音设置_老版本缺speech键走默认值() {
         // 老版本 JSON 完全没有 speech 段： serde 整体回退 SpeechSettings::default
-        let parsed: ImeOptions =
-            serde_json::from_str(r#"{"shift_switch_cn_en":false}"#).unwrap();
+        let parsed: ImeOptions = serde_json::from_str(r#"{"shift_switch_cn_en":false}"#).unwrap();
         assert_eq!(parsed.speech, SpeechSettings::default());
         assert!(!parsed.speech.enabled, "语音默认关闭");
         assert!(parsed.speech.hotkey_enabled);
@@ -943,7 +942,8 @@ mod tests {
     }
 
     #[test]
-    fn modify_并发串行化_两端增量不丢失() {        // 模拟设置中心与 TSF 并发"翻转两个不同开关"：不配锁时后写会覆盖先写；
+    fn modify_并发串行化_两端增量不丢失() {
+        // 模拟设置中心与 TSF 并发"翻转两个不同开关"：不配锁时后写会覆盖先写；
         // 走 modify_at 同一把 lib 文件锁，两次增量都应当保留。
         let dir = temp_dir("options-modify");
         let path = path_in(&dir);

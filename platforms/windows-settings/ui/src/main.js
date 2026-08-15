@@ -174,7 +174,7 @@ const PAGE_SIZES = {
 
 function windowSizeFor(mode) {
   let panel;
-  // bar 尺寸按 pics/4.png 比例（logo 32 方块 + 4 个 30px 图标）；
+  // bar 尺寸按 pics/4.png 比例（logo 32 方块 + 中/英 30 + 4 个 30px 图标）；
   // menu 宽 = 主菜单 320 + 间距 4 + 二级面板 236，高含底部悬浮条 38+6
   if (mode === "bar") panel = { width: 172, height: 38 };
   else if (mode === "menu") panel = { width: 560, height: 560 };
@@ -231,7 +231,8 @@ async function refreshMenuData() {
     refreshSchemes().catch(() => {}),
     refreshImeOptions().catch(() => { imeOptions = null; }),
     refreshHistory().catch(() => { historyEntries = []; }),
-    invoke("list_skins").then((v) => { skinPresets = v; }).catch(() => {})
+    invoke("list_skins").then((v) => { skinPresets = v; }).catch(() => {}),
+    refreshImeMode() // 条上中/英指示随菜单刷新
   ]);
   if (uiMode === "menu") render();
 }
@@ -334,21 +335,79 @@ const TOOLBOX_ITEMS = [
   { page: "general", label: "通用设置", key: "O", icon: "more" }
 ];
 
+// 全局中/英状态（算法服务全局语义）：null=未知；true=英文直输；false=中文
+let imeAscii = null;
+
+// 条上「中/En」指示（搜狗悬浮条同款元素）：显示全局中英态，点击切换
+function modeGlyph(ascii) {
+  return ascii
+    ? `<svg viewBox="0 0 24 24" aria-hidden="true"><text x="12" y="17.2" text-anchor="middle"
+        font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="10.5" font-weight="700" fill="currentColor">En</text></svg>`
+    : glyphIcon("中");
+}
+
+async function refreshImeMode() {
+  try {
+    imeAscii = await invoke("ime_mode_status");
+    updateBarModeButton();
+  } catch (_e) { /* 服务未就绪时保持未知态 */ }
+}
+
+async function cycleImeMode() {
+  const prev = imeAscii;
+  // 乐观更新：先翻按钮再等结果（点击切换要干脆利落）
+  imeAscii = !(imeAscii ?? false);
+  updateBarModeButton();
+  try {
+    imeAscii = await invoke("ime_mode_toggle");
+    updateBarModeButton();
+    showToast(imeAscii ? "已切换：英文直输（Shift 可切回中文）" : "已切换：中文输入");
+  } catch (error) {
+    imeAscii = prev;
+    updateBarModeButton();
+    showToast(String(error), true);
+  }
+}
+
 function barTemplate() {
   // 「拼/双」显示当前输入方案，点击在全拼⇄双拼间切换（全局热生效）
   const schemeGlyph = schemeCurrent === "double_pinyin" ? "双" : "拼";
   const schemeTitle = schemeCurrent === "double_pinyin"
     ? "当前：双拼（小鹤）· 点击切换到全拼"
     : "当前：全拼 · 点击切换到双拼（小鹤）";
+  const modeTitle = imeAscii === null
+    ? "中英状态读取中…"
+    : imeAscii ? "当前：英文直输 · 点击切换中文" : "当前：中文 · 点击切换英文";
   return `
     <div id="bar" class="floating-bar" data-tauri-drag-region>
       <button class="bar-logo" data-mode-toggle="menu" title="FOX 菜单" aria-label="展开菜单">${logoMark(32, 7)}</button>
       <span class="bar-divider" data-tauri-drag-region></span>
+      <button class="bar-icon bar-mode" data-bar-mode title="${modeTitle}" aria-label="切换中英文">${modeGlyph(imeAscii)}</button>
       <button class="bar-icon" data-bar-scheme title="${schemeTitle}">${glyphIcon(schemeGlyph)}</button>
       <button class="bar-icon" data-page="history" title="剪贴板历史（面板热键 Ctrl+Shift+V）">${BAR_ICONS.clip}</button>
-      <button class="bar-icon" data-page="general" title="语音转写设置（热键 Ctrl+Shift+S）">${BAR_ICONS.mic}</button>
-      <button class="bar-icon" data-mode-toggle="menu" title="菜单 / 工具箱" aria-label="展开菜单">${BAR_ICONS.grid}</button>
+      <button class="bar-icon" data-menu-act="speech" title="语音转写（Ctrl+Shift+S）">${BAR_ICONS.mic}</button>
     </div>`;
+}
+
+// 条上「中/En」/「拼/双」的乐观更新：切换点击要干脆利落，先翻按钮再等
+// 结果（失败回滚 + 报错），不做整窗 render()。
+function updateBarModeButton() {
+  const btn = app.querySelector(".bar-mode");
+  if (!btn) return;
+  btn.innerHTML = modeGlyph(imeAscii);
+  btn.title = imeAscii === null
+    ? "中英状态读取中…"
+    : imeAscii ? "当前：英文直输 · 点击切换中文" : "当前：中文 · 点击切换英文";
+}
+
+function updateBarSchemeButton() {
+  const btn = app.querySelector("[data-bar-scheme]");
+  if (!btn) return;
+  const glyph = schemeCurrent === "double_pinyin" ? "双" : "拼";
+  btn.innerHTML = glyphIcon(glyph);
+  btn.title = schemeCurrent === "double_pinyin"
+    ? "当前：双拼（小鹤）· 点击切换到全拼"
+    : "当前：全拼 · 点击切换到双拼（小鹤）";
 }
 
 // 菜单态外壳：菜单面板悬浮在条上方（窗口底边锚定，条保持原位可见），
@@ -597,6 +656,10 @@ app.addEventListener("click", (event) => {
     void navigateTo(button.dataset.page);
     return;
   }
+  if (button.dataset.barMode !== undefined) {
+    void cycleImeMode();
+    return;
+  }
   if (button.dataset.barScheme !== undefined) {
     void cycleScheme();
     return;
@@ -641,13 +704,18 @@ window.addEventListener("keydown", (event) => {
 
 // 条上「拼/双」：全拼 ⇄ 双拼（写 options.json，输入侧热生效）
 async function cycleScheme() {
+  const prev = schemeCurrent;
   const next = schemeCurrent === "double_pinyin" ? "pinyin" : "double_pinyin";
+  // 乐观更新：先翻图标再等结果（点击切换要干脆利落）
+  schemeCurrent = next;
+  updateBarSchemeButton();
   try {
     await invoke("set_input_scheme", { scheme: next });
-    schemeCurrent = next;
-    render();
+    updateBarSchemeButton();
     showToast(next === "double_pinyin" ? "已切换：双拼（小鹤）· 请输入双拼码" : "已切换：全拼");
   } catch (error) {
+    schemeCurrent = prev;
+    updateBarSchemeButton();
     showToast(String(error), true);
   }
 }
@@ -706,6 +774,17 @@ async function menuCopyHistory(id) {
 }
 
 async function menuHelpAction(act) {
+  // 麦克风：触发语音转写（命令返回实际结果消息）
+  if (act === "speech") {
+    try {
+      const msg = await invoke("trigger_speech");
+      await applyMode("bar");
+      showToast(msg);
+    } catch (error) {
+      showToast(String(error), true);
+    }
+    return;
+  }
   const map = {
     "data-dir": ["open_data_directory", "已打开本地数据目录"],
     "system-ime": ["open_system_settings", "已打开 Windows 输入法设置"],
@@ -2177,6 +2256,8 @@ async function bootShell() {
       autostartInfo = { ...info, enabled: true };
     }
   } catch (_e) { /* 忽略 */ }
+  // 条上「中/En」指示：启动时读一次全局中英态
+  void refreshImeMode();
 }
 
 refreshDashboard()

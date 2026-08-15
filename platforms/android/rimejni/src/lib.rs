@@ -81,7 +81,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeInit(
                 return 0;
             };
             // 锁被 panic 污染时经 into_inner 直接恢复其内部值继续使用
-            let mut session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if session.is_none() {
                 match engine.create_session() {
                     Ok(s) => *session = Some(s),
@@ -106,7 +108,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeProcessKey(
         || {
             // 打字统计埋点：每次按键计一次（进程内缓存 + 定期落盘，开销可忽略）
             shurufa_options::stats::note_keys(1);
-            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             match session.as_ref() {
                 Some(s) => s.process_key(keysym, mask) as jboolean,
                 None => 0,
@@ -125,7 +129,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeCommit(
     let default = to_jstring(&env, "");
     jni_catch(
         || {
-            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let text = session
                 .as_ref()
                 .and_then(|s| s.commit())
@@ -148,7 +154,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeContext(
     let default = to_jstring(&env, "");
     jni_catch(
         || {
-            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let Some(s) = session.as_ref() else {
                 return to_jstring(&env, "");
             };
@@ -184,7 +192,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeSetCursor(
 ) {
     jni_catch(
         || {
-            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let Some(session) = session.as_ref() else {
                 return;
             };
@@ -211,13 +221,12 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeSetCursor(
 
 /// 清空当前组合（切换输入框、收起键盘时调用）。
 #[no_mangle]
-pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeReset(
-    _env: JNIEnv,
-    _class: JClass,
-) {
+pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeReset(_env: JNIEnv, _class: JClass) {
     jni_catch(
         || {
-            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(s) = session.as_ref() {
                 s.simulate("{Escape}");
             }
@@ -234,7 +243,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeToggleAscii(
 ) -> jboolean {
     jni_catch(
         || {
-            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             match session.as_ref() {
                 Some(s) => s.toggle_ascii() as jboolean,
                 None => 0,
@@ -252,7 +263,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeIsAscii(
 ) -> jboolean {
     jni_catch(
         || {
-            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             match session.as_ref() {
                 Some(s) => s.get_option("ascii_mode") as jboolean,
                 None => 0,
@@ -271,7 +284,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeStatus(
     let default = to_jstring(&env, "");
     jni_catch(
         || {
-            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let Some(s) = session.as_ref() else {
                 return to_jstring(&env, "");
             };
@@ -295,7 +310,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeForgetOnCurrentPage
 ) -> jboolean {
     jni_catch(
         || {
-            let session = SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             match session.as_ref() {
                 Some(s) => s.forget_on_current_page(index.max(0) as usize) as jboolean,
                 None => 0,

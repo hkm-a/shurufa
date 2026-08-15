@@ -14,6 +14,7 @@
 //! - 新增 `on_theme_changed()`：由 panel.rs 的主题监听窗口统一触发重设+重绘。
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
@@ -27,9 +28,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_ESCAPE,
-    VK_RETURN, VK_SHIFT,
+    RegisterHotKey, SendInput, SetFocus, UnregisterHotKey, INPUT, INPUT_0, INPUT_KEYBOARD,
+    KEYBDINPUT, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, VIRTUAL_KEY, VK_BACK, VK_CONTROL,
+    VK_ESCAPE, VK_RETURN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
@@ -124,15 +125,10 @@ struct PanelState {
     template: usize,
 }
 
-impl Default for Status {
-    fn default() -> Self {
-        Status::Editing
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 enum Status {
     /// 正在输入提示词；query 是要发送给 Agnes 的 user 消息原文。
+    #[default]
     Editing,
     /// 已发出请求；done_started 用于"已等待 X 秒"；partial 累积 SSE delta。
     Pending { started: Instant, partial: String },
@@ -150,19 +146,30 @@ struct EditingState {
 
 thread_local! {
     static PANEL: RefCell<Option<PanelState>> = const { RefCell::new(None) };
-    static EDITING: RefCell<EditingState> = RefCell::new(EditingState { query: String::new() });
+    static EDITING: RefCell<EditingState> = const { RefCell::new(EditingState { query: String::new() }) };
     static SHADOW: RefCell<ShadowShell> = RefCell::new(ShadowShell::new());
     /// 面板窗口句柄：主题切换回调靠它找到并重绘面板。
     static PANEL_HWND: RefCell<Option<HWND>> = const { RefCell::new(None) };
 }
 
+/// 最近一次生效的热键门控位图：bit0 = enable_polish_hotkey，bit1 = enable_ai_hotkey。
+/// u8::MAX 哨兵表示"尚未同步"，首次 refresh_hotkey_gates 必然重注册一次。
+static LAST_HOTKEY_GATES: AtomicU8 = AtomicU8::new(u8::MAX);
+
 /// 注册全局热键；首选 Ctrl+Shift+W（与"输入法"的 Writer 思路呼应），失败
-/// 尝试 Alt+W。线程级注册，由 `listener.rs` 消息循环分发。
+/// 尝试 Alt+W。线程级注册，由 listener.rs 消息循环分发。
 /// 划词润色注册 Ctrl+Shift+R；被占用时静默降级，AI 帮写主入口不受影响。
 /// 面板不常驻，进程退出即失效，不做反注册。
+///
+/// 受设置中心「通用」页 enable_ai_hotkey / enable_polish_hotkey 开关门控
+/// （shurufa_options::hotkey_gates()，默认均开启）：关掉的入口不注册，
+/// 开关热更新由 refresh_hotkey_gates 按 2 秒轮询接管。
 pub fn register_hotkey() -> &'static str {
+    let (enable_polish, enable_ai) = shurufa_options::hotkey_gates();
     unsafe {
-        let which = if RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x57).is_ok() {
+        let which = if !enable_ai {
+            "（设置中已关闭 AI 帮写热键）"
+        } else if RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x57).is_ok() {
             "Ctrl+Shift+W"
         } else if RegisterHotKey(None, HOTKEY_ID, MOD_ALT, 0x57).is_ok() {
             "Alt+W"
@@ -170,7 +177,9 @@ pub fn register_hotkey() -> &'static str {
             "（AI 热键注册失败）"
         };
         crate::log_line(&format!("AI 帮写热键注册结果：{which}"));
-        let polish = if RegisterHotKey(None, POLISH_HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x52).is_ok() {
+        let polish = if !enable_polish {
+            "（设置中已关闭划词润色热键）"
+        } else if RegisterHotKey(None, POLISH_HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x52).is_ok() {
             "Ctrl+Shift+R"
         } else {
             "（划词润色热键被占用）"
@@ -178,6 +187,37 @@ pub fn register_hotkey() -> &'static str {
         crate::log_line(&format!("划词润色热键：{polish}"));
         which
     }
+}
+
+/// 启动时把当前门控写入缓存，避免 2 秒后第一次轮询误判"变化"而重注册。
+/// 必须在 register_hotkey 之后调用（listener 主线程）。
+pub fn sync_hotkey_gate_cache() {
+    let (enable_polish, enable_ai) = shurufa_options::hotkey_gates();
+    let bits = (enable_polish as u8) | ((enable_ai as u8) << 1);
+    LAST_HOTKEY_GATES.store(bits, Ordering::Relaxed);
+}
+
+/// 热键门控热更新：设置中心开关即改即存，listener 每 2 秒调用本函数，
+/// 门控位图变化时反注册再按当前开关重注册。
+///
+/// 必须在消息循环所在线程调用：RegisterHotKey 把热键关联到调用线程的
+/// 消息队列，WM_HOTKEY 只投递给注册线程；跨线程注册会让 listener 的
+/// GetMessageW 循环永远收不到按键。
+pub fn refresh_hotkey_gates() {
+    let (enable_polish, enable_ai) = shurufa_options::hotkey_gates();
+    let bits = (enable_polish as u8) | ((enable_ai as u8) << 1);
+    let prev = LAST_HOTKEY_GATES.swap(bits, Ordering::Relaxed);
+    if prev == bits {
+        return; // 门控无变化：不打扰注册状态，也不刷日志
+    }
+    crate::log_line(&format!(
+        "热键门控变化：AI={enable_ai}，划词润色={enable_polish}，重注册"
+    ));
+    unsafe {
+        let _ = UnregisterHotKey(None, HOTKEY_ID);
+        let _ = UnregisterHotKey(None, POLISH_HOTKEY_ID);
+    }
+    let _ = register_hotkey();
 }
 
 /// 划词润色入口（Ctrl+Shift+R）：抓选区 → 面板预填进 Editing；无有效选区时
@@ -202,7 +242,11 @@ fn show_polish(target: HWND, selected: Option<String>) {
     let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
     let width = scale(BASE_WIDTH, dpi);
     let min_height = scale(
-        BASE_PADDING * 2 + BASE_TEMPLATE_ROW + BASE_PROMPT_ROW + BASE_HINT_HEIGHT + BASE_PREVIEW_MIN,
+        BASE_PADDING * 2
+            + BASE_TEMPLATE_ROW
+            + BASE_PROMPT_ROW
+            + BASE_HINT_HEIGHT
+            + BASE_PREVIEW_MIN,
         dpi,
     );
 
@@ -210,7 +254,11 @@ fn show_polish(target: HWND, selected: Option<String>) {
         .as_ref()
         .map(|s| s.chars().count() > 2_000)
         .unwrap_or(false);
-    let valid = selected.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) && !too_long;
+    let valid = selected
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+        && !too_long;
     let status = if valid {
         crate::log_line(&format!(
             "划词润色面板弹出，选区 {} 字符",
@@ -224,7 +272,11 @@ fn show_polish(target: HWND, selected: Option<String>) {
         }
     };
     EDITING.with_borrow_mut(|e| {
-        e.query = if valid { selected.unwrap_or_default() } else { String::new() };
+        e.query = if valid {
+            selected.unwrap_or_default()
+        } else {
+            String::new()
+        };
     });
     PANEL.with_borrow_mut(|slot| {
         *slot = Some(PanelState {
@@ -251,8 +303,8 @@ fn show_polish(target: HWND, selected: Option<String>) {
     }
 }
 
-/// 划词润色面板仍使用同一套 Agnes chat 通道；选区经由 user 消息原文进入，
-/// 系统提示仍走所选模板（默认"正式"）。这里不再有单独的 rewrite 提示。
+// 划词润色面板仍使用同一套 Agnes chat 通道；选区经由 user 消息原文进入，
+// 系统提示仍走所选模板（默认"正式"）。这里不再有单独的 rewrite 提示。
 
 /// 抓前台选中的纯文本：保存剪贴板 → Ctrl+C → 等 150ms 读回文本 → 立刻恢复
 /// 原剪贴板文本（恢复原内容失败时历史库里还能找到，静默掉）。
@@ -281,7 +333,11 @@ unsafe fn send_ctrl_c() {
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: vk,
-                    dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        Default::default()
+                    },
                     ..Default::default()
                 },
             },
@@ -299,10 +355,10 @@ unsafe fn send_ctrl_c() {
 
 fn read_clipboard_text() -> Option<String> {
     // 与 listener::read_open_clipboard 同款读取；此处独立实现避免循环依赖。
-    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
-    use windows::Win32::System::Ole::CF_UNICODETEXT;
-    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows::Win32::System::Ole::CF_UNICODETEXT;
 
     unsafe {
         OpenClipboard(None).ok()?;
@@ -338,7 +394,11 @@ pub fn show() {
     let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
     let width = scale(BASE_WIDTH, dpi);
     let min_height = scale(
-        BASE_PADDING * 2 + BASE_TEMPLATE_ROW + BASE_PROMPT_ROW + BASE_HINT_HEIGHT + BASE_PREVIEW_MIN,
+        BASE_PADDING * 2
+            + BASE_TEMPLATE_ROW
+            + BASE_PROMPT_ROW
+            + BASE_HINT_HEIGHT
+            + BASE_PREVIEW_MIN,
         dpi,
     );
 
@@ -405,7 +465,10 @@ fn start_request(query: String) {
     else {
         return;
     };
-    let system_prompt = TEMPLATES.get(template).map(|t| t.1).unwrap_or(SYSTEM_PROMPT);
+    let system_prompt = TEMPLATES
+        .get(template)
+        .map(|t| t.1)
+        .unwrap_or(SYSTEM_PROMPT);
     PANEL.with_borrow_mut(|slot| {
         if let Some(state) = slot.as_mut() {
             state.status = Status::Pending {
@@ -474,7 +537,7 @@ pub(crate) fn call_agnes(
         .set("Authorization", &format!("Bearer {api_key}"))
         .set("Content-Type", "application/json")
         .send_bytes(&body)
-        .map_err(|e| map_ureq_err(e))?;
+        .map_err(map_ureq_err)?;
     let text = resp
         .into_string()
         .map_err(|e| format!("读取响应失败: {e}"))?;
@@ -506,7 +569,7 @@ where
         .set("Content-Type", "application/json")
         .set("Accept", "text/event-stream")
         .send_bytes(&body)
-        .map_err(|e| map_ureq_err(e))?;
+        .map_err(map_ureq_err)?;
     let mut reader = std::io::BufReader::new(resp.into_reader());
     let mut acc = String::new();
     let mut first_chunk_at: Option<Duration> = None;
@@ -579,8 +642,14 @@ fn build_chat_body(user_prompt: &str, system_prompt: &str, stream: bool) -> Vec<
     let req = Req {
         model: "agnes-2.5-flash",
         messages: vec![
-            Msg { role: "system", content: system_prompt },
-            Msg { role: "user", content: user_prompt },
+            Msg {
+                role: "system",
+                content: system_prompt,
+            },
+            Msg {
+                role: "user",
+                content: user_prompt,
+            },
         ],
         temperature: 0.5,
         stream,
@@ -616,8 +685,12 @@ fn extract_chat_content(text: &str) -> Result<String, String> {
     struct ErrObj {
         message: Option<String>,
     }
-    let parsed: Resp = serde_json::from_str(text)
-        .map_err(|e| format!("解析响应失败: {e}; 片段: {}", crate::single_line_preview(text, 100)))?;
+    let parsed: Resp = serde_json::from_str(text).map_err(|e| {
+        format!(
+            "解析响应失败: {e}; 片段: {}",
+            crate::single_line_preview(text, 100)
+        )
+    })?;
     if let Some(err) = parsed.error {
         return Err(format!(
             "Agnes 错误: {}",
@@ -735,7 +808,11 @@ unsafe fn send_ctrl_v_impl_inner() {
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: vk,
-                    dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        Default::default()
+                    },
                     ..Default::default()
                 },
             },
@@ -1037,9 +1114,8 @@ fn on_char(_hwnd: HWND, code: u32) {
     let Some(character) = char::from_u32(code) else {
         return;
     };
-    let is_editing = PANEL.with_borrow(|slot| {
-        matches!(slot.as_ref().map(|s| &s.status), Some(Status::Editing))
-    });
+    let is_editing =
+        PANEL.with_borrow(|slot| matches!(slot.as_ref().map(|s| &s.status), Some(Status::Editing)));
     if !is_editing {
         return;
     }
@@ -1113,7 +1189,12 @@ fn draw_wrapped(hdc: HDC, text: &str, x: i32, y: i32, w: i32, h: i32) {
         bottom: y + h,
     };
     unsafe {
-        DrawTextW(hdc, &mut utf16, &mut rect, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+        DrawTextW(
+            hdc,
+            &mut utf16,
+            &mut rect,
+            DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS,
+        );
     }
 }
 
@@ -1446,10 +1527,7 @@ mod tests {
     fn sse_坏json_静默跳过() {
         let mut acc = String::new();
         // 不合法 JSON：不能让整个流挂掉，跳过这段
-        assert_eq!(
-            parse_sse_line("data: {not-json", &mut acc),
-            SseEvent::Skip
-        );
+        assert_eq!(parse_sse_line("data: {not-json", &mut acc), SseEvent::Skip);
         // 合法 JSON 但 choices 为空
         assert_eq!(
             parse_sse_line(r#"data: {"choices":[]}"#, &mut acc),

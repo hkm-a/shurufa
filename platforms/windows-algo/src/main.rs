@@ -32,25 +32,29 @@ fn log(msg: &str) {
 
 mod mru;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-static MRU_ENABLED: AtomicBool = AtomicBool::new(true);
-
 /// 供 service 调用：按会话的 raw composition 作 key 做 MRU boost。
 /// `pinyin` 由调用方提供；当前会话层由 ime-ipc 上游（TSF 宿主）记录，
 /// 本服务仅按上下文里"已选"回调『记录』。MRU 查询在候选返回后做。
 fn mru_store() -> &'static std::sync::Mutex<mru::MruStore> {
-    static INSTANCE: std::sync::OnceLock<std::sync::Mutex<mru::MruStore>> = std::sync::OnceLock::new();
+    static INSTANCE: std::sync::OnceLock<std::sync::Mutex<mru::MruStore>> =
+        std::sync::OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(mru::MruStore::load()))
 }
 
 /// 处理一个候选 list 并返回按 MRU 提升后的新列表（不改 librime 原序的剩余部分）。
 fn mru_boost_candidates(pinyin: &str, candidates: Vec<String>) -> Vec<String> {
-    mru_store().lock().unwrap_or_else(|p| p.into_inner()).boost(pinyin, candidates)
+    mru_store()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .boost(pinyin, candidates)
 }
 
 /// 处理一次提交：把选中的词记入 MRU。
 fn mru_record_commit(pinyin: &str, committed: &str) {
-    mru_store().lock().unwrap_or_else(|p| p.into_inner()).record(pinyin, committed);
+    mru_store()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .record(pinyin, committed);
     let _ = mru_store().lock().unwrap_or_else(|p| p.into_inner()).save();
 }
 
@@ -61,8 +65,17 @@ fn mru_record_commit(pinyin: &str, committed: &str) {
 /// 历史坑：此前 MRU 只在 main.rs 定义了 store/boost/record 却从未接线到
 /// 请求路径（死代码），用户"最近选过的词"永不前置（2026-08-14 发现）。
 /// 接入点选在服务端应答前统一装饰，避免在 TSF 客户端重复实现。
-fn decorate_process_key(raw_before: &str, raw_after: &str, resp: ime_ipc::Response) -> ime_ipc::Response {
-    let ime_ipc::Response::ProcessKey { eaten, commit, mut context } = resp else {
+fn decorate_process_key(
+    raw_before: &str,
+    raw_after: &str,
+    resp: ime_ipc::Response,
+) -> ime_ipc::Response {
+    let ime_ipc::Response::ProcessKey {
+        eaten,
+        commit,
+        mut context,
+    } = resp
+    else {
         return resp;
     };
     // 记录：commit 已取走、组合已被引擎清空，必须用提交前的 raw
@@ -74,10 +87,8 @@ fn decorate_process_key(raw_before: &str, raw_after: &str, resp: ime_ipc::Respon
     // 提频：候选按 MRU 重排，高亮跟随原高亮词的新位置
     if !context.candidates.is_empty() && !raw_after.is_empty() {
         let original = context.candidates.clone();
-        let boosted = mru_boost_candidates(
-            raw_after,
-            original.iter().map(|c| c.text.clone()).collect(),
-        );
+        let boosted =
+            mru_boost_candidates(raw_after, original.iter().map(|c| c.text.clone()).collect());
         if boosted.len() == original.len() {
             let hl_text = original.get(context.highlighted).map(|c| c.text.clone());
             context.candidates = boosted
@@ -100,7 +111,11 @@ fn decorate_process_key(raw_before: &str, raw_after: &str, resp: ime_ipc::Respon
             }
         }
     }
-    ime_ipc::Response::ProcessKey { eaten, commit, context }
+    ime_ipc::Response::ProcessKey {
+        eaten,
+        commit,
+        context,
+    }
 }
 
 /// 比对 options.json 前后两份快照的 input_scheme 是否不同。同一份判定逻辑
@@ -128,27 +143,25 @@ fn watch_input_scheme(
     last_known: std::sync::Arc<std::sync::Mutex<shurufa_options::ImeOptions>>,
     current_scheme: std::sync::Arc<std::sync::Mutex<String>>,
 ) {
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(2));
-            let current = shurufa_options::load();
-            let old = {
-                let mut guard = last_known.lock().unwrap_or_else(|p| p.into_inner());
-                let stale = guard.clone();
-                *guard = current.clone();
-                stale
-            };
-            if input_scheme_differs(&old, &current) {
-                let sid = schema_id_for(&current.input_scheme);
-                {
-                    let mut slot = current_scheme.lock().unwrap_or_else(|p| p.into_inner());
-                    *slot = sid.to_owned();
-                }
-                log(&format!(
-                    "input_scheme 变化：{} → {}（schema={}），新会话将热切换",
-                    old.input_scheme, current.input_scheme, sid
-                ));
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(2));
+        let current = shurufa_options::load();
+        let old = {
+            let mut guard = last_known.lock().unwrap_or_else(|p| p.into_inner());
+            let stale = guard.clone();
+            *guard = current.clone();
+            stale
+        };
+        if input_scheme_differs(&old, &current) {
+            let sid = schema_id_for(&current.input_scheme);
+            {
+                let mut slot = current_scheme.lock().unwrap_or_else(|p| p.into_inner());
+                *slot = sid.to_owned();
             }
+            log(&format!(
+                "input_scheme 变化：{} → {}（schema={}），新会话将热切换",
+                old.input_scheme, current.input_scheme, sid
+            ));
         }
     });
 }
@@ -159,7 +172,10 @@ fn create_session_with_scheme(
     current_scheme: &std::sync::Arc<std::sync::Mutex<String>>,
 ) -> Result<ime_bridge::Session<'static>, String> {
     let session = engine.create_session()?;
-    let scheme = current_scheme.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let scheme = current_scheme
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     if scheme != "rime_ice" {
         if !session.select_schema(&scheme) {
             log(&format!("select_schema({scheme}) 失败，回退 rime_ice"));
@@ -224,9 +240,12 @@ fn run_service() -> ! {
     // 输入方案热切换：2 秒轮询 options.json，把最新 schema_id 写入共享槽；
     // 每个新会话创建后 select_schema（见 create_session_with_scheme）。
     let shared_opts = std::sync::Arc::new(std::sync::Mutex::new(shurufa_options::load()));
-    let current_scheme = std::sync::Arc::new(std::sync::Mutex::new(String::from(
-        schema_id_for(&shared_opts.lock().unwrap_or_else(|p| p.into_inner()).input_scheme),
-    )));
+    let current_scheme = std::sync::Arc::new(std::sync::Mutex::new(String::from(schema_id_for(
+        &shared_opts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .input_scheme,
+    ))));
     watch_input_scheme(shared_opts, current_scheme.clone());
     log(&format!("监听 {} …", PIPE_NAME));
     loop {
@@ -350,4 +369,3 @@ fn attach_console_to_parent() {
 
 #[cfg(not(windows))]
 fn attach_console_to_parent() {}
-

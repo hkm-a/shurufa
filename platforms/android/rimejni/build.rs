@@ -23,7 +23,10 @@ fn main() {
         .unwrap()
         .parent()
         .unwrap();
-    let lib_dir = repo_root.join("third_party/librime-android").join(abi).join("lib");
+    let lib_dir = repo_root
+        .join("third_party/librime-android")
+        .join(abi)
+        .join("lib");
     if !lib_dir.join("librime.a").exists() {
         panic!(
             "缺少预编译 librime：{}，请先执行依赖下载（见 docs/m3-verification.md）",

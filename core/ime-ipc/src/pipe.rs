@@ -9,7 +9,7 @@ use std::io;
 use std::ffi::c_void;
 
 use windows::core::HSTRING;
-use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, LocalFree};
+use windows::Win32::Foundation::{CloseHandle, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE};
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
@@ -19,9 +19,9 @@ use windows::Win32::Storage::FileSystem::{
     PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe, SetNamedPipeHandleState,
-    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe,
+    SetNamedPipeHandleState, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES,
+    PIPE_WAIT,
 };
 
 pub const PIPE_NAME: &str = r"\\.\pipe\shurufa-algo";
@@ -32,7 +32,7 @@ const MAX_FRAME: u32 = crate::MAX_FRAME_BYTES as u32;
 type IoResult<T> = Result<T, io::Error>;
 
 fn win_err(e: windows::core::Error) -> io::Error {
-    io::Error::from_raw_os_error(e.code().0 as i32)
+    io::Error::from_raw_os_error(e.code().0)
 }
 
 /// 服务端：新建一个命名管道实例并进入监听态。
@@ -48,8 +48,7 @@ unsafe impl Send for PipeServer {}
 /// （如安装器以管理员启动服务），High 进程创建的管道默认隐式 High 标签会拒绝
 /// 普通（Medium）应用连接 → 输入法整体失效（2026-08-14 实机复现：安装后
 /// 普通应用 IPC 全拒，err=5）。显式 Medium 标签让普通应用在 DACL 允许时始终可达。
-const PIPE_SDDL: &str =
-    "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)S:(ML;;NW;;;ME)";
+const PIPE_SDDL: &str = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)S:(ML;;NW;;;ME)";
 
 impl PipeServer {
     /// 新建管道实例并允许客户端连接（FILE_FLAG_FIRST_PIPE_INSTANCE 仅首个实例）。
@@ -100,9 +99,7 @@ impl PipeServer {
                 Ok(()) => Ok(()),
                 Err(e) => {
                     // 客户端在服务端 ConnectNamedPipe 之前已连接：视为成功
-                    if e.code().0 as i32
-                        == windows::Win32::Foundation::ERROR_PIPE_CONNECTED.0 as i32
-                    {
+                    if e.code().0 == windows::Win32::Foundation::ERROR_PIPE_CONNECTED.0 as i32 {
                         return Ok(());
                     }
                     Err(win_err(e))

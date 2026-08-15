@@ -135,8 +135,7 @@ async fn 甲乙间一兆文件走通_v3_全链() {
     let config_dir_b = _keep.1.path().to_path_buf();
 
     // 乙：任何 Offer 直接接受（模拟白名单自动接受）。
-    let auto_accept: sync_core::FileConfirmFn =
-        Arc::new(|_prompt: FileOfferPrompt| true);
+    let auto_accept: sync_core::FileConfirmFn = Arc::new(|_prompt: FileOfferPrompt| true);
     b.set_file_confirm_handler(Some(auto_accept));
     let recv_dir = config_dir_b.join("received");
     b.set_file_recv_dir_override(Some(recv_dir.clone()));
@@ -214,8 +213,7 @@ async fn 接收方拒绝时发送端进入_declined() {
     let _keep = (dir_a, dir_b);
     let config_dir_b = _keep.1.path().to_path_buf();
 
-    let decline_all: sync_core::FileConfirmFn =
-        Arc::new(|_prompt: FileOfferPrompt| false);
+    let decline_all: sync_core::FileConfirmFn = Arc::new(|_prompt: FileOfferPrompt| false);
     b.set_file_confirm_handler(Some(decline_all));
     b.set_file_recv_dir_override(Some(config_dir_b.join("received")));
 
@@ -328,7 +326,9 @@ async fn 坏块导致_sha256_不匹配发送端失败() {
         matches!(inc, Incoming::FileTransferDone { ok: true, .. })
     })
     .await;
-    assert!(ok_sent.is_none() || !matches!(ok_sent, Some(Incoming::FileTransferDone { ok: true, .. })));
+    assert!(
+        ok_sent.is_none() || !matches!(ok_sent, Some(Incoming::FileTransferDone { ok: true, .. }))
+    );
 }
 
 /// 兼容性：把乙端的 Hello features 手动清空（模拟 v2 老端），甲端进 duplex

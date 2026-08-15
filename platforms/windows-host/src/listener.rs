@@ -23,8 +23,8 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowThreadProcessId,
-    RegisterClassW, TranslateMessage, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_CLIPBOARDUPDATE, WM_HOTKEY, WNDCLASSW,
+    RegisterClassW, SetTimer, TranslateMessage, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
+    WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_TIMER, WNDCLASSW,
 };
 
 /// 敏感来源进程名（小写）：其复制内容不入历史
@@ -43,6 +43,12 @@ pub const WM_TEST_SET_IMAGE: u32 = WM_APP + 41;
 const WM_WRITE_CLIPBOARD: u32 = WM_APP + 42;
 #[cfg(debug_assertions)]
 const WM_TEST_INSPECT_IMAGE: u32 = WM_APP + 43;
+/// 控制中心（悬浮条麦克风按钮）经 WM_APP 消息触发语音转写面板
+/// （与 Ctrl+Shift+S 热键同一入口 speech::toggle）。
+pub const WM_APP_SPEECH_TOGGLE: u32 = WM_APP + 44;
+/// 热键门控轮询定时器 id：每 2 秒按 options.json 重读
+/// enable_ai_hotkey / enable_polish_hotkey，变化即重注册（见 ai_panel.rs）。
+const HOTKEY_GATE_TIMER_ID: usize = 1;
 
 enum ClipboardWrite {
     Text(String),
@@ -115,8 +121,12 @@ pub fn run(store: ClipboardStore) -> Result<()> {
         let speech_hotkey = crate::speech::register_hotkey();
         println!("语音转写热键：{speech_hotkey}");
         crate::log_line(&format!("语音转写热键：{speech_hotkey}"));
+        // AI/划词润色热键门控：与设置中心开关联动（默认全开），每 2 秒轮询
+        // options.json，门控变化时反注册+重注册（必须在消息循环线程执行）。
+        crate::ai_panel::sync_hotkey_gate_cache();
+        let _ = SetTimer(Some(hwnd), HOTKEY_GATE_TIMER_ID, 2000, None);
 
-            let mut msg = MSG::default();
+        let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             // 线程级热键的 WM_HOTKEY 不属于任何窗口，须在循环内截获
             if msg.message == WM_HOTKEY {
@@ -193,6 +203,16 @@ unsafe extern "system" fn wnd_proc(
             .unwrap_or(false);
         return LRESULT(if ok { 1 } else { 0 });
     }
+    if msg == WM_APP_SPEECH_TOGGLE {
+        // 悬浮条麦克风 → 语音转写面板（同热键入口，仅换触发方）
+        crate::speech::toggle();
+        return LRESULT(1);
+    }
+    if msg == WM_TIMER && wparam.0 == HOTKEY_GATE_TIMER_ID {
+        // 热键门控热更新：设置中心开关即改即存，变化才重注册
+        crate::ai_panel::refresh_hotkey_gates();
+        return LRESULT(0);
+    }
     #[cfg(debug_assertions)]
     if msg == WM_TEST_INSPECT_IMAGE {
         return match crate::paste::inspect_test_clipboard_image_with_owner(Some(hwnd)) {
@@ -236,7 +256,7 @@ fn listener_window() -> Option<HWND> {
         } else {
             PCWSTR(title.as_ptr())
         };
-        return unsafe { FindWindowW(w!("ShurufaClipboardListener"), title).ok() };
+        unsafe { FindWindowW(w!("ShurufaClipboardListener"), title).ok() }
     }
 
     #[cfg(not(debug_assertions))]
@@ -248,9 +268,9 @@ fn listener_window() -> Option<HWND> {
 fn listener_window_title() -> HSTRING {
     #[cfg(any(debug_assertions, test))]
     {
-        return HSTRING::from(debug_listener_title(
+        HSTRING::from(debug_listener_title(
             std::env::var("SHURUFA_TEST_LISTENER_TITLE").ok(),
-        ));
+        ))
     }
 
     #[cfg(not(any(debug_assertions, test)))]
@@ -381,7 +401,7 @@ impl ListenerState {
                         self.last_insert = Some((id, normalized, std::time::Instant::now()));
                     }
                     self.captured += 1;
-                    if self.captured % RETENTION_INTERVAL == 0 {
+                    if self.captured.is_multiple_of(RETENTION_INTERVAL) {
                         let _ = self.store.apply_retention(&RetentionPolicy::default());
                     }
                 }
@@ -482,7 +502,7 @@ unsafe fn read_files() -> Option<Vec<String>> {
 unsafe fn read_dib_as_bmp() -> Option<Vec<u8>> {
     let handle = GetClipboardData(CF_DIB.0 as u32).ok()?;
     let (ptr, size) = lock_global(handle)?;
-    let dib = std::slice::from_raw_parts(ptr as *const u8, size);
+    let dib = std::slice::from_raw_parts(ptr, size);
     let bmp = wrap_dib_in_bmp(dib);
     unlock_global(handle);
     bmp
@@ -539,37 +559,6 @@ fn wrap_dib_in_bmp(dib: &[u8]) -> Option<Vec<u8>> {
     Some(bmp)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn 图片格式优先于文件和文本() {
-        assert_eq!(
-            preferred_format(true, true, true),
-            Some(PreferredFormat::Image)
-        );
-        assert_eq!(
-            preferred_format(false, true, true),
-            Some(PreferredFormat::Files)
-        );
-        assert_eq!(
-            preferred_format(false, false, true),
-            Some(PreferredFormat::Text)
-        );
-    }
-
-    #[test]
-    fn 调试监听窗口标题仅接受非空隔离标识() {
-        assert_eq!(debug_listener_title(None), "");
-        assert_eq!(debug_listener_title(Some("   ".to_owned())), "");
-        assert_eq!(
-            debug_listener_title(Some("background-sync-48634".to_owned())),
-            "background-sync-48634"
-        );
-    }
-}
-
 /// 剪贴板所有者的进程名（小写文件名）；取不到时返回空串。
 fn clipboard_source_app() -> String {
     unsafe {
@@ -604,5 +593,36 @@ fn clipboard_source_app() -> String {
         };
         let _ = windows::Win32::Foundation::CloseHandle(process);
         name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 图片格式优先于文件和文本() {
+        assert_eq!(
+            preferred_format(true, true, true),
+            Some(PreferredFormat::Image)
+        );
+        assert_eq!(
+            preferred_format(false, true, true),
+            Some(PreferredFormat::Files)
+        );
+        assert_eq!(
+            preferred_format(false, false, true),
+            Some(PreferredFormat::Text)
+        );
+    }
+
+    #[test]
+    fn 调试监听窗口标题仅接受非空隔离标识() {
+        assert_eq!(debug_listener_title(None), "");
+        assert_eq!(debug_listener_title(Some("   ".to_owned())), "");
+        assert_eq!(
+            debug_listener_title(Some("background-sync-48634".to_owned())),
+            "background-sync-48634"
+        );
     }
 }

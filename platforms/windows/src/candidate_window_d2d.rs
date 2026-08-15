@@ -61,6 +61,10 @@ thread_local! {
     static BACKEND: RefCell<Backend> = const { RefCell::new(Backend::Pending) };
 }
 
+// D2dCore 是会话级 GPU 资源包（数百字节）；它始终在 thread_local 槽里，
+// 与零大小的 Pending/Failed 同枚举时按大变体分配。Box 会引入每帧解引用
+// 与额外堆分配，对渲染热路径无益——保留直存并显式豁免该 lint。
+#[allow(clippy::large_enum_variant)]
 enum Backend {
     /// 尚未尝试初始化
     Pending,
@@ -148,7 +152,10 @@ pub fn paint(hwnd: HWND, rc: &RECT, view: &PaintView) -> bool {
 pub fn notify_resize() {
     BACKEND.with_borrow_mut(|b| {
         if let Backend::Ready(core) = &mut *b {
-            core.target_size = D2D_SIZE_U { width: 0, height: 0 };
+            core.target_size = D2D_SIZE_U {
+                width: 0,
+                height: 0,
+            };
         }
     });
 }
@@ -182,7 +189,10 @@ fn init_factories() -> Option<D2dCore> {
             factory,
             dwrite,
             target: None,
-            target_size: D2D_SIZE_U { width: 0, height: 0 },
+            target_size: D2D_SIZE_U {
+                width: 0,
+                height: 0,
+            },
             target_dpi: 0,
             fmt_cand: None,
             fmt_sub: None,
@@ -204,8 +214,14 @@ impl D2dCore {
         if !self.ensure_brushes(view.skin) {
             return false;
         }
-        let Some(target) = self.target.take() else { return false };
-        let (br, fmt_c, fmt_s) = match (self.brushes.take(), self.fmt_cand.take(), self.fmt_sub.take()) {
+        let Some(target) = self.target.take() else {
+            return false;
+        };
+        let (br, fmt_c, fmt_s) = match (
+            self.brushes.take(),
+            self.fmt_cand.take(),
+            self.fmt_sub.take(),
+        ) {
             (Some(b), Some(c), Some(s)) => (b, c, s),
             _ => return false,
         };
@@ -218,7 +234,10 @@ impl D2dCore {
             self.target = Some(target);
         } else {
             // target 已内部标记 dead by EndDraw D2DERR_RECREATE_TARGET
-            self.target_size = D2D_SIZE_U { width: 0, height: 0 };
+            self.target_size = D2D_SIZE_U {
+                width: 0,
+                height: 0,
+            };
         }
         ok
     }
@@ -273,13 +292,7 @@ impl D2dCore {
                     bottom: padding + preedit_h,
                 };
                 target.FillRectangle(&badge_rect, &br.highlight);
-                draw_text(
-                    target,
-                    fmt_s,
-                    &br.background,
-                    text,
-                    badge_rect,
-                );
+                draw_text(target, fmt_s, &br.background, text, badge_rect);
             }
 
             // ===== 候选行 =====
@@ -403,7 +416,10 @@ impl D2dCore {
             if w == 0 || h == 0 {
                 return false;
             }
-            let size = D2D_SIZE_U { width: w, height: h };
+            let size = D2D_SIZE_U {
+                width: w,
+                height: h,
+            };
 
             if self.target.is_some() && self.target_size == size {
                 if self.target_dpi != dpi {
@@ -446,7 +462,10 @@ impl D2dCore {
                 }
                 Err(_) => {
                     self.target = None;
-                    self.target_size = D2D_SIZE_U { width: 0, height: 0 };
+                    self.target_size = D2D_SIZE_U {
+                        width: 0,
+                        height: 0,
+                    };
                     false
                 }
             }
@@ -477,20 +496,37 @@ impl D2dCore {
         let Some(t) = &self.target else { return false };
         unsafe {
             let mk = |c: u32| color_from_colorref(c, 1.0);
-            let background = t.CreateSolidColorBrush(&mk(skin.candidate.background), None).ok();
+            let background = t
+                .CreateSolidColorBrush(&mk(skin.candidate.background), None)
+                .ok();
             let highlight = t
                 .CreateSolidColorBrush(&mk(skin.candidate.highlight_background), None)
                 .ok();
             let text = t.CreateSolidColorBrush(&mk(skin.candidate.text), None).ok();
-            let preedit = t.CreateSolidColorBrush(&mk(skin.candidate.preedit), None).ok();
+            let preedit = t
+                .CreateSolidColorBrush(&mk(skin.candidate.preedit), None)
+                .ok();
             // 音节分段交替色（=candidate_window::syllable_segment_colors[1]），派生色不动 skin。
-            let preedit_alt_c =
-                crate::candidate_window::blend_colorref(skin.candidate.preedit, skin.candidate.text, 280);
+            let preedit_alt_c = crate::candidate_window::blend_colorref(
+                skin.candidate.preedit,
+                skin.candidate.text,
+                280,
+            );
             let preedit_alt = t.CreateSolidColorBrush(&mk(preedit_alt_c), None).ok();
-            let label = t.CreateSolidColorBrush(&mk(skin.candidate.label), None).ok();
+            let label = t
+                .CreateSolidColorBrush(&mk(skin.candidate.label), None)
+                .ok();
             let sb_track_c = crate::skin::scrollbar_colors(&skin).0;
             let sb_track = t.CreateSolidColorBrush(&mk(sb_track_c), None).ok();
-            match (background, highlight, text, preedit, preedit_alt, label, sb_track) {
+            match (
+                background,
+                highlight,
+                text,
+                preedit,
+                preedit_alt,
+                label,
+                sb_track,
+            ) {
                 (
                     Some(background),
                     Some(highlight),
@@ -618,7 +654,11 @@ unsafe fn draw_preedit_segmented(
         if bp > seg_start {
             let seg = &wide[seg_start..bp];
             let w = measure_utf16(factory, fmt_s, seg, preedit_h);
-            let brush = if idx % 2 == 0 { &br.preedit } else { &br.preedit_alt };
+            let brush = if idx % 2 == 0 {
+                &br.preedit
+            } else {
+                &br.preedit_alt
+            };
             if !seg.is_empty() {
                 target.DrawText(
                     seg,
@@ -657,7 +697,7 @@ unsafe fn draw_preedit_segmented(
     if seg_start < n {
         let seg = &wide[seg_start..];
         let w = measure_utf16(factory, fmt_s, seg, preedit_h);
-        let brush = if v.syllable_breaks.len() % 2 == 0 {
+        let brush = if v.syllable_breaks.len().is_multiple_of(2) {
             &br.preedit
         } else {
             &br.preedit_alt

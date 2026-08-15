@@ -50,22 +50,38 @@ fn free_space(path: String) -> Result<DiskSpace, String> {
     } else {
         path.clone()
     };
-    let wide: Vec<u16> = Path::new(&root).as_os_str().encode_wide().chain(Some(0)).collect();
+    let wide: Vec<u16> = Path::new(&root)
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
     unsafe {
         let mut free_to_caller = 0u64;
         let mut total = 0u64;
         let mut total_free = 0u64;
-        let ok = GetDiskFreeSpaceExW(wide.as_ptr(), &mut free_to_caller, &mut total, &mut total_free);
+        let ok = GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_to_caller,
+            &mut total,
+            &mut total_free,
+        );
         if ok == 0 {
             return Err("查询磁盘空间失败".into());
         }
-        Ok(DiskSpace { free_bytes: total_free, total_bytes: total })
+        Ok(DiskSpace {
+            free_bytes: total_free,
+            total_bytes: total,
+        })
     }
 }
 
 /// 安装引擎：payload 已嵌入（release）→ 真实安装；否则（debug）→ 模拟进度供 UI 目验。
 #[tauri::command]
-fn start_install(app: tauri::AppHandle, dir: String, create_start_menu: bool) -> Result<(), String> {
+fn start_install(
+    app: tauri::AppHandle,
+    dir: String,
+    create_start_menu: bool,
+) -> Result<(), String> {
     if engine::PAYLOAD_FILES.is_empty() {
         simulate_progress(&app);
         return Ok(());
@@ -96,7 +112,12 @@ fn finish_install(
 
 /// debug 构建（未嵌入 payload）时的模拟进度，跑通 welcome → installing → finish。
 fn simulate_progress(app: &tauri::AppHandle) {
-    let steps = ["正在准备安装目录…", "正在复制程序文件…", "正在注册输入法…", "正在配置自启动…"];
+    let steps = [
+        "正在准备安装目录…",
+        "正在复制程序文件…",
+        "正在注册输入法…",
+        "正在配置自启动…",
+    ];
     for (i, step) in steps.iter().enumerate() {
         let _ = app.emit("install-step", step);
         let base = (i as u8) * 25;
@@ -150,7 +171,9 @@ fn acquire_single_instance() -> Option<SingletonGuard> {
 /// 注意：无参数时不能传 `-ArgumentList ''`（PowerShell 会拒绝空参数导致静默退出）。
 #[allow(dead_code)] // 仅在 release 使用
 fn relaunch_elevated() {
-    let Some(exe) = std::env::current_exe().ok() else { return };
+    let Some(exe) = std::env::current_exe().ok() else {
+        return;
+    };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut ps = format!("Start-Process -FilePath '{}'", exe.display());
     if !args.is_empty() {

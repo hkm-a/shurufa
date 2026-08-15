@@ -34,9 +34,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, LoadCursorW, MoveWindow, RegisterClassW, ShowWindow,
     SystemParametersInfoW, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, SPI_GETWORKAREA, SW_HIDE,
-    SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WNDCLASSW, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE, WM_APP, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_PAINT, WM_SETTINGCHANGE,
+    SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_APP, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_PAINT, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
 use crate::panel::skin::{self, ShadowShell, Skin};
@@ -84,59 +84,259 @@ enum KeyAction {
     Hide,
 }
 
-fn vk(c: u8) -> u16 {
-    c as u16
-}
-
 /// ASCII 字母直接映射到同名 VK 码（'A'=0x41 ... 'Z'=0x5A）。
 const LETTER_A: u16 = 0x41;
 
 /// 键位表：行 0 QWERTY，行 1 ASDF，行 2 Shift+ZXCV+Shift，行 3 Ctrl+Space+Enter+Bksp+Close+Ctrl。
 /// 全部静态常量，布局在 `layout_keys` 里按 width_units 顺序排开。
 const ROW0: &[Key] = &[
-    Key { label: "Q", vk: LETTER_A + 16, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "W", vk: 0x57, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "E", vk: 0x45, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "R", vk: 0x52, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "T", vk: 0x54, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "Y", vk: 0x59, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "U", vk: 0x55, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "I", vk: 0x49, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "O", vk: 0x4F, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "P", vk: 0x50, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
+    Key {
+        label: "Q",
+        vk: LETTER_A + 16,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "W",
+        vk: 0x57,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "E",
+        vk: 0x45,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "R",
+        vk: 0x52,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "T",
+        vk: 0x54,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "Y",
+        vk: 0x59,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "U",
+        vk: 0x55,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "I",
+        vk: 0x49,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "O",
+        vk: 0x4F,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "P",
+        vk: 0x50,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
 ];
 
 const ROW1: &[Key] = &[
-    Key { label: "A", vk: LETTER_A, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "S", vk: 0x53, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "D", vk: 0x44, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "F", vk: 0x46, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "G", vk: 0x47, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "H", vk: 0x48, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "J", vk: 0x4A, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "K", vk: 0x4B, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "L", vk: 0x4C, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
+    Key {
+        label: "A",
+        vk: LETTER_A,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "S",
+        vk: 0x53,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "D",
+        vk: 0x44,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "F",
+        vk: 0x46,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "G",
+        vk: 0x47,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "H",
+        vk: 0x48,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "J",
+        vk: 0x4A,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "K",
+        vk: 0x4B,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "L",
+        vk: 0x4C,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
 ];
 
 const ROW2: &[Key] = &[
-    Key { label: "Shift", vk: VK_LSHIFT.0, width_units: 1, modifier: Modifier::Shift, action: KeyAction::ToggleModifier },
-    Key { label: "Z", vk: 0x5A, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "X", vk: 0x58, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "C", vk: 0x43, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "V", vk: 0x56, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "B", vk: 0x42, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "N", vk: 0x4E, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "M", vk: 0x4D, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "Shift", vk: VK_LSHIFT.0, width_units: 1, modifier: Modifier::Shift, action: KeyAction::ToggleModifier },
+    Key {
+        label: "Shift",
+        vk: VK_LSHIFT.0,
+        width_units: 1,
+        modifier: Modifier::Shift,
+        action: KeyAction::ToggleModifier,
+    },
+    Key {
+        label: "Z",
+        vk: 0x5A,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "X",
+        vk: 0x58,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "C",
+        vk: 0x43,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "V",
+        vk: 0x56,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "B",
+        vk: 0x42,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "N",
+        vk: 0x4E,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "M",
+        vk: 0x4D,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "Shift",
+        vk: VK_LSHIFT.0,
+        width_units: 1,
+        modifier: Modifier::Shift,
+        action: KeyAction::ToggleModifier,
+    },
 ];
 
 const ROW3: &[Key] = &[
-    Key { label: "Ctrl", vk: VK_LCONTROL.0, width_units: 1, modifier: Modifier::Ctrl, action: KeyAction::ToggleModifier },
-    Key { label: "Space", vk: VK_SPACE.0, width_units: 5, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "Enter", vk: VK_RETURN.0, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "Bksp", vk: VK_BACK.0, width_units: 1, modifier: Modifier::None, action: KeyAction::Type },
-    Key { label: "✕", vk: 0, width_units: 1, modifier: Modifier::None, action: KeyAction::Hide },
-    Key { label: "Ctrl", vk: VK_LCONTROL.0, width_units: 1, modifier: Modifier::Ctrl, action: KeyAction::ToggleModifier },
+    Key {
+        label: "Ctrl",
+        vk: VK_LCONTROL.0,
+        width_units: 1,
+        modifier: Modifier::Ctrl,
+        action: KeyAction::ToggleModifier,
+    },
+    Key {
+        label: "Space",
+        vk: VK_SPACE.0,
+        width_units: 5,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "Enter",
+        vk: VK_RETURN.0,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "Bksp",
+        vk: VK_BACK.0,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Type,
+    },
+    Key {
+        label: "✕",
+        vk: 0,
+        width_units: 1,
+        modifier: Modifier::None,
+        action: KeyAction::Hide,
+    },
+    Key {
+        label: "Ctrl",
+        vk: VK_LCONTROL.0,
+        width_units: 1,
+        modifier: Modifier::Ctrl,
+        action: KeyAction::ToggleModifier,
+    },
 ];
 
 const ROWS: &[&[Key]] = &[ROW0, ROW1, ROW2, ROW3];
@@ -254,9 +454,9 @@ fn key_radius(skin: &Skin, dpi: u32) -> i32 {
 
 /// 命中检测：客户区坐标落在哪个键；返回扁平索引。
 fn hit_test(rects: &[RECT], pt: POINT) -> Option<usize> {
-    rects.iter().position(|r| {
-        pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom
-    })
+    rects
+        .iter()
+        .position(|r| pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom)
 }
 
 fn scale_font_height(base: i32, dpi: u32, font_scale: f32) -> i32 {
@@ -292,7 +492,11 @@ fn send_key(key: &Key, shift: bool, ctrl: bool) {
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: vk,
-                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    Default::default()
+                },
                 ..Default::default()
             },
         },
@@ -431,10 +635,15 @@ fn hide() {
     }
 }
 
-/// 主题切换由面板自身 wnd_proc 的 WM_SETTINGCHANGE 分支处理（与 ai_panel 相同路径），
-/// 这里不暴露 on_theme_changed 回调——主题监听集中在 panel.rs，无需再挂第二个钩子。
+// 主题切换由面板自身 wnd_proc 的 WM_SETTINGCHANGE 分支处理（与 ai_panel 相同路径），
+// 这里不暴露 on_theme_changed 回调——主题监听集中在 panel.rs，无需再挂第二个钩子。
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
@@ -489,7 +698,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            let _ = OSK.with_borrow_mut(|slot| {
+            OSK.with_borrow_mut(|slot| {
                 if let Some(state) = slot.as_mut() {
                     state.pressed = None;
                 }
@@ -612,9 +821,10 @@ mod tests {
             assert!(a.right > a.left, "rect {i} 宽度非正");
             assert!(a.bottom > a.top, "rect {i} 高度非正");
             for (j, b) in rects.iter().enumerate().skip(i + 1) {
-                let overlap_x = a.left.min(b.left).max(0).max(a.left.max(b.left))
-                    < a.right.min(b.right);
-                let overlap = a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+                let overlap_x =
+                    a.left.min(b.left).max(0).max(a.left.max(b.left)) < a.right.min(b.right);
+                let overlap =
+                    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
                 assert!(!overlap, "rect {i} 与 rect {j} 重叠：{a:?} vs {b:?}");
                 let _ = overlap_x;
             }

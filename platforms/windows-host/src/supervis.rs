@@ -103,7 +103,7 @@ pub fn acquire_singleton(name: &str) -> std::io::Result<Option<SingletonLock>> {
 pub fn worker_mutex_name() -> String {
     #[cfg(any(debug_assertions, test))]
     {
-        return debug_worker_mutex(std::env::var("SHURUFA_TEST_WORKER_MUTEX").ok());
+        debug_worker_mutex(std::env::var("SHURUFA_TEST_WORKER_MUTEX").ok())
     }
 
     #[cfg(not(any(debug_assertions, test)))]
@@ -468,31 +468,6 @@ fn backoff_secs(restarts: u32) -> u64 {
     (1u64 << restarts.min(BACKOFF_CAP).saturating_sub(1)).min(16)
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::atomic::AtomicU32;
-
-    use super::{debug_worker_mutex, tracked_pid, WORKER_MUTEX};
-
-    #[test]
-    fn 未登记的算法服务不写成零号进程() {
-        assert_eq!(tracked_pid(&AtomicU32::new(0)), None);
-        assert_eq!(tracked_pid(&AtomicU32::new(2468)), Some(2468));
-    }
-
-    #[test]
-    fn 调试隔离锁仅接受非空名称() {
-        assert_eq!(debug_worker_mutex(None), WORKER_MUTEX);
-        assert_eq!(debug_worker_mutex(Some(" ".to_owned())), WORKER_MUTEX);
-        assert_eq!(
-            debug_worker_mutex(Some(
-                "Global\\shurufa-background-sync-worker-48634".to_owned()
-            )),
-            "Global\\shurufa-background-sync-worker-48634"
-        );
-    }
-}
-
 fn stop_token_present() -> bool {
     stop_token_path().is_file()
 }
@@ -546,5 +521,30 @@ pub fn cmd_status() {
                 .unwrap_or(0);
             println!("运行时长  : {} 秒", now.saturating_sub(ts));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU32;
+
+    use super::{debug_worker_mutex, tracked_pid, WORKER_MUTEX};
+
+    #[test]
+    fn 未登记的算法服务不写成零号进程() {
+        assert_eq!(tracked_pid(&AtomicU32::new(0)), None);
+        assert_eq!(tracked_pid(&AtomicU32::new(2468)), Some(2468));
+    }
+
+    #[test]
+    fn 调试隔离锁仅接受非空名称() {
+        assert_eq!(debug_worker_mutex(None), WORKER_MUTEX);
+        assert_eq!(debug_worker_mutex(Some(" ".to_owned())), WORKER_MUTEX);
+        assert_eq!(
+            debug_worker_mutex(Some(
+                "Global\\shurufa-background-sync-worker-48634".to_owned()
+            )),
+            "Global\\shurufa-background-sync-worker-48634"
+        );
     }
 }

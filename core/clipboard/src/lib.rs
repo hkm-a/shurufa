@@ -191,9 +191,11 @@ impl ClipboardStore {
 
         let existing: Option<i64> = self
             .conn
-            .query_row("SELECT id FROM clips WHERE hash = ?1", params![&hash[..]], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT id FROM clips WHERE hash = ?1",
+                params![&hash[..]],
+                |r| r.get(0),
+            )
             .optional()?;
         if let Some(id) = existing {
             self.conn.execute(

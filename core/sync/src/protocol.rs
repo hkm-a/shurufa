@@ -187,7 +187,7 @@ pub const FEATURE_FILE_V1: &str = "file-v1";
 pub const PROTOCOL_VERSION: u32 = 3;
 
 /// 对端特性闭包：判断 hello 协商出的特性是否包含某项。
-pub fn peer_supports<'a>(features: &'a [String], name: &str) -> bool {
+pub fn peer_supports(features: &[String], name: &str) -> bool {
     features.iter().any(|f| f == name)
 }
 

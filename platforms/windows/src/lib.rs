@@ -43,8 +43,8 @@ pub fn dll_path() -> PathBuf {
     PathBuf::from(String::from_utf16_lossy(&buf[..len]))
 }
 
-/// 引擎已迁出本进程：由独立算法服务（shurufa-algo）提供，本 DLL 只作 IPC 客户端。
-/// （见 core/ime-ipc 与 platforms/windows-algo）
+// 引擎已迁出本进程：由独立算法服务（shurufa-algo）提供，本 DLL 只作 IPC 客户端。
+// （见 core/ime-ipc 与 platforms/windows-algo）
 
 /// 轻量排障日志：写入 %TEMP%\shurufa-tsf.log（AppContainer 有各自的
 /// TEMP，均可写）。失败静默——日志不能反过来影响输入法。
