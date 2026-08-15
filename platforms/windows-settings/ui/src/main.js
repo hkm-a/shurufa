@@ -174,9 +174,9 @@ const PAGE_SIZES = {
 
 function windowSizeFor(mode) {
   let panel;
-  // bar 态 = 悬浮球（48×48 圆形）；menu 宽 = 主菜单 320 + 间距 4 +
-  // 二级面板 236，高含底部悬浮球 48+6
-  if (mode === "bar") panel = { width: 48, height: 48 };
+  // bar 态 = 悬浮球（44×44 圆形，小而美）；menu 宽 = 主菜单 320 + 间距 4 +
+  // 二级面板 236，高含底部悬浮球 44+6
+  if (mode === "bar") panel = { width: 44, height: 44 };
   else if (mode === "menu") panel = { width: 560, height: 560 };
   else panel = PAGE_SIZES[activePage] || { width: 520, height: 640 };
   return {
@@ -376,8 +376,8 @@ function ballTemplate() {
     : imeAscii ? "当前：英文直输 · 点击切换中文" : "当前：中文 · 点击切换英文";
   return `
     <div id="ball" class="floating-ball" data-tauri-drag-region>
-      <button class="ball-main" data-mode-toggle="menu" title="FOX 设置中心" aria-label="打开设置中心">${logoMark(30, 15)}</button>
-      <button class="bar-mode ball-mode-badge" data-bar-mode title="${modeTitle}" aria-label="切换中英文"><span class="ball-mode-text">${ballModeText(imeAscii)}</span></button>
+      <button class="ball-main" data-mode-toggle="menu" title="FOX 设置中心" aria-label="打开设置中心">${logoMark(24, 12)}</button>
+      <button class="bar-mode ball-mode-badge" data-bar-mode data-mode="${imeAscii === true ? "en" : "cn"}" title="${modeTitle}" aria-label="切换中英文"><span class="ball-mode-text">${ballModeText(imeAscii)}</span></button>
     </div>`;
 }
 
@@ -386,6 +386,7 @@ function ballTemplate() {
 function updateBarModeButton() {
   const btn = app.querySelector(".bar-mode");
   if (!btn) return;
+  btn.dataset.mode = imeAscii === true ? "en" : "cn";
   const text = btn.querySelector(".ball-mode-text");
   if (text) text.textContent = ballModeText(imeAscii);
   btn.title = imeAscii === null
@@ -578,7 +579,7 @@ function bindShell() {
 }
 
 // 悬浮球整体可拖（搜狗行为）：按下后位移超过阈值才开始拖窗口，
-// 原地松开仍触发按钮点击。监听挂 window 级——球只有 48px 大，
+// 原地松开仍触发按钮点击。监听挂 window 级——球只有 44px 大，
 // 挂在球上鼠标稍一移出就收不到 mousemove，拖动会时灵时不灵。
 let barDragCtx = null;
 window.addEventListener("mousemove", (event) => {
