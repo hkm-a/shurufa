@@ -174,9 +174,9 @@ const PAGE_SIZES = {
 
 function windowSizeFor(mode) {
   let panel;
-  // bar 态 = 悬浮球（44×44 圆形，小而美）；menu 宽 = 主菜单 320 + 间距 4 +
-  // 二级面板 236，高含底部悬浮球 44+6
-  if (mode === "bar") panel = { width: 44, height: 44 };
+  // bar 态 = 悬浮球（38×38 实心彩色球，小而美）；menu 宽 = 主菜单 320 +
+  // 间距 4 + 二级面板 236，高含底部悬浮球 38+6
+  if (mode === "bar") panel = { width: 38, height: 38 };
   else if (mode === "menu") panel = { width: 560, height: 560 };
   else panel = PAGE_SIZES[activePage] || { width: 520, height: 640 };
   return {
@@ -237,18 +237,14 @@ async function refreshMenuData() {
   if (uiMode === "menu") render();
 }
 
-// S logo（复刻 pics/4.png：橙红渐变圆角方块 + 白色粗斜体 S 带深红投影）
-function logoMark(size = 36, rx = 8) {
+// 悬浮球 F 字形：纯白粗体 F + 柔和投影。球体背景由 CSS data-mode 着色
+// （中文=橙 / 英文=蓝），这里只画 F，不再套橙色圆底（小而美：单一元素）。
+function ballF(size = 22) {
   return `
-    <svg class="logo-mark" width="${size}" height="${size}" viewBox="0 0 36 36" aria-hidden="true">
-      <defs><linearGradient id="shurufa-logo-g" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#C08A73"/><stop offset="1" stop-color="#9E6450"/>
-      </linearGradient></defs>
-      <rect width="36" height="36" rx="${rx}" fill="url(#shurufa-logo-g)"/>
-      <text x="19.2" y="26.5" text-anchor="middle" font-family="'Arial Black','Microsoft YaHei',sans-serif"
-        font-size="23" font-weight="900" font-style="italic" fill="#8a5744">F</text>
-      <text x="18" y="25.5" text-anchor="middle" font-family="'Arial Black','Microsoft YaHei',sans-serif"
-        font-size="23" font-weight="900" font-style="italic" fill="#ffffff">F</text>
+    <svg class="logo-f" width="${size}" height="${size}" viewBox="0 0 36 36" aria-hidden="true">
+      <text x="18" y="26.6" text-anchor="middle" font-family="'Arial Black','Microsoft YaHei',sans-serif"
+        font-size="27" font-weight="900" font-style="italic" fill="#ffffff"
+        style="filter: drop-shadow(0 1.5px 2px rgba(20,10,0,.28))">F</text>
     </svg>`;
 }
 
@@ -338,11 +334,6 @@ const TOOLBOX_ITEMS = [
 // 全局中/英状态（算法服务全局语义）：null=未知；true=英文直输；false=中文
 let imeAscii = null;
 
-// 悬浮球右下角「中/En」徽标文本（显示全局中英态，点击切换）。
-// 徽标只有 18px，SVG 字形缩太小看不清，直接用文本。
-function ballModeText(ascii) {
-  return ascii === null ? "…" : ascii ? "En" : "中";
-}
 
 async function refreshImeMode() {
   try {
@@ -367,31 +358,31 @@ async function cycleImeMode() {
   }
 }
 
-// 悬浮球：白色圆形 + F logo；点球体展开设置中心（菜单态），右下角小徽标
-// 显示并切换中/英。剪贴板、语音、方案切换等快捷入口移入菜单/工具箱——
-// 悬浮球只保留一个入口，点开即设置中心（2026-08-15 用户改版）。
+// 悬浮球：38px 品牌色实心球 + 白色 F。球体颜色即中英状态（橙=中文/蓝=英文），
+// 点击展开设置中心（菜单态）。中英切换在设置中心里做——悬浮球保持单一、
+// 干净（2026-08-15 用户改版：小而美）。
 function ballTemplate() {
   const modeTitle = imeAscii === null
     ? "中英状态读取中…"
-    : imeAscii ? "当前：英文直输 · 点击切换中文" : "当前：中文 · 点击切换英文";
+    : imeAscii ? "当前：英文直输 · 点击打开设置中心" : "当前：中文 · 点击打开设置中心";
   return `
-    <div id="ball" class="floating-ball" data-tauri-drag-region>
-      <button class="ball-main" data-mode-toggle="menu" title="FOX 设置中心" aria-label="打开设置中心">${logoMark(24, 12)}</button>
-      <button class="bar-mode ball-mode-badge" data-bar-mode data-mode="${imeAscii === true ? "en" : "cn"}" title="${modeTitle}" aria-label="切换中英文"><span class="ball-mode-text">${ballModeText(imeAscii)}</span></button>
+    <div id="ball" class="floating-ball" data-mode="${imeAscii === true ? "en" : "cn"}" data-tauri-drag-region>
+      <button class="ball-main" data-mode-toggle="menu" title="FOX 设置中心 · ${modeTitle}" aria-label="打开设置中心">${ballF(22)}</button>
     </div>`;
 }
 
 // 条上「中/En」/「拼/双」的乐观更新：切换点击要干脆利落，先翻按钮再等
 // 结果（失败回滚 + 报错），不做整窗 render()。
 function updateBarModeButton() {
-  const btn = app.querySelector(".bar-mode");
-  if (!btn) return;
-  btn.dataset.mode = imeAscii === true ? "en" : "cn";
-  const text = btn.querySelector(".ball-mode-text");
-  if (text) text.textContent = ballModeText(imeAscii);
-  btn.title = imeAscii === null
-    ? "中英状态读取中…"
-    : imeAscii ? "当前：英文直输 · 点击切换中文" : "当前：中文 · 点击切换英文";
+  const ball = app.querySelector(".floating-ball");
+  if (!ball) return;
+  ball.dataset.mode = imeAscii === true ? "en" : "cn";
+  const main = ball.querySelector(".ball-main");
+  if (main) {
+    main.title = "FOX 设置中心 · " + (imeAscii === null
+      ? "中英状态读取中…"
+      : imeAscii ? "当前：英文直输 · 点击打开设置中心" : "当前：中文 · 点击打开设置中心");
+  }
 }
 
 function updateBarSchemeButton() {

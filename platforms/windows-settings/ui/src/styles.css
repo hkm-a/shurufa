@@ -177,34 +177,48 @@ button { border: 0; cursor: pointer; }
   margin-bottom: 6px;
 }
 
-/* ---------- 悬浮球（小而美：44px 微渐变白球 + F logo + 中/En 彩色徽标） ---------- */
+/* ---------- 悬浮球（小而美：38px 品牌色实心球 + 白 F，颜色=中英状态） ---------- */
 .floating-ball {
-  width: 44px; height: 44px;
+  width: 38px; height: 38px;
   flex: 0 0 auto;
   position: relative;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%;
-  background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
-  border: 1px solid rgba(148, 166, 186, .55);
+  background: radial-gradient(circle at 32% 28%, #ffb37e 0%, #ee7a45 48%, #d65f37 100%);
   box-shadow:
-    0 1px 3px rgba(20, 40, 70, .16),
-    0 4px 12px rgba(20, 40, 70, .12),
-    inset 0 1px 0 rgba(255, 255, 255, .95),
-    inset 0 -1px 1px rgba(148, 166, 186, .12);
+    0 2px 6px rgba(214, 95, 55, .35),
+    0 5px 14px rgba(140, 60, 30, .20),
+    inset 0 1px 0 rgba(255, 255, 255, .38),
+    inset 0 -2px 4px rgba(120, 50, 20, .22);
   overflow: visible;
   user-select: none;
   -webkit-user-select: none;
   transition: transform .14s ease, box-shadow .14s ease;
 }
+.floating-ball[data-mode="en"] {
+  background: radial-gradient(circle at 32% 28%, #8fb9e8 0%, #5f8fd0 48%, #4575b8 100%);
+  box-shadow:
+    0 2px 6px rgba(69, 117, 184, .35),
+    0 5px 14px rgba(40, 70, 130, .20),
+    inset 0 1px 0 rgba(255, 255, 255, .38),
+    inset 0 -2px 4px rgba(25, 50, 100, .22);
+}
 .floating-ball:hover {
   transform: translateY(-1px);
   box-shadow:
-    0 2px 5px rgba(20, 40, 70, .20),
-    0 6px 16px rgba(20, 40, 70, .15),
-    inset 0 1px 0 rgba(255, 255, 255, .95),
-    inset 0 -1px 1px rgba(148, 166, 186, .12);
+    0 3px 8px rgba(214, 95, 55, .42),
+    0 7px 18px rgba(140, 60, 30, .24),
+    inset 0 1px 0 rgba(255, 255, 255, .42),
+    inset 0 -2px 4px rgba(120, 50, 20, .22);
 }
-.floating-ball:active { transform: scale(.97); }
+.floating-ball[data-mode="en"]:hover {
+  box-shadow:
+    0 3px 8px rgba(69, 117, 184, .42),
+    0 7px 18px rgba(40, 70, 130, .24),
+    inset 0 1px 0 rgba(255, 255, 255, .42),
+    inset 0 -2px 4px rgba(25, 50, 100, .22);
+}
+.floating-ball:active { transform: scale(.94); }
 .ball-main {
   width: 100%; height: 100%;
   display: grid; place-items: center;
@@ -213,37 +227,8 @@ button { border: 0; cursor: pointer; }
   border-radius: 50%;
   background: transparent;
   cursor: pointer;
-  transition: filter .12s ease;
 }
-.ball-main:hover { filter: brightness(1.04); }
-.ball-main .logo-mark { display: block; }
-/* 右下角中/En 状态徽标：点击切换全局中英（悬浮球唯一常驻快捷动作） */
-.ball-mode-badge {
-  position: absolute;
-  right: -2px; bottom: -2px;
-  width: 15px; height: 15px;
-  display: grid; place-items: center;
-  padding: 0;
-  border-radius: 50%;
-  border: 1px solid;
-  box-shadow: 0 1px 3px rgba(20, 40, 70, .22);
-  transition: transform .1s ease, background .1s ease;
-}
-.ball-mode-badge:hover { transform: scale(1.1); }
-.ball-mode-badge:active { transform: scale(.92); }
-.ball-mode-badge[data-mode="cn"] {
-  background: #fff4ee;
-  border-color: #f0c4ae;
-  color: #d96a45;
-}
-.ball-mode-badge[data-mode="cn"]:hover { background: #ffeadf; }
-.ball-mode-badge[data-mode="en"] {
-  background: #eef4fc;
-  border-color: #c2d6ef;
-  color: #3f6fb5;
-}
-.ball-mode-badge[data-mode="en"]:hover { background: #e0ecfa; }
-.ball-mode-text { font-size: 8px; font-weight: 800; line-height: 1; letter-spacing: -.2px; }
+.ball-main .logo-f { display: block; }
 
 /* ---------- 菜单面板（pics/5.png：白面板顶橙线 + 头像区 + 工具箱） ---------- */
 .floating-menu {
