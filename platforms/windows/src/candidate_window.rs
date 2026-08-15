@@ -486,6 +486,11 @@ impl CandidateUi {
         } else {
             0
         };
+        // 候选窗最大宽度 = 屏幕宽度 60%（主流输入法习惯，高 DPI/多候选下
+        // 防止单行 9 候选横贯屏幕"大到看不清"；超出部分靠翻页访问）。
+        // 至少不小于最小宽度，保证极端窄屏下仍可读。
+        let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1);
+        let max_width = (screen_w * 6 / 10).max(scale(BASE_MIN_WIDTH, dpi));
 
         // 用与绘制一致的字体实测文本宽度，横向布槽
         let (items, preedit_w) = unsafe {
@@ -496,48 +501,49 @@ impl CandidateUi {
             let old = SelectObject(hdc, HGDIOBJ(cand_font.0));
             let sub_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
             let mut x = padding;
-            let items: Vec<Item> = ctx
-                .candidates
-                .iter()
-                .enumerate()
-                .take(9)
-                .map(|(i, c)| {
-                    // TSF 端候选域固定 9 列；label 为 1..=9（超过 9 的索引不进此分支）
-                    let label = format!("{}.", i + 1);
-                    let label_w = text_width(hdc, &label);
-                    let text_w = text_width(hdc, &c.text);
-                    // 副标（词库附注）；只在文本不重复时展示——同字符的
-                    // comment 是噪音。这里只截断长度，留待 paint 用小号字体。
-                    let comment = if c.comment.is_empty() || c.comment == c.text {
-                        String::new()
-                    } else {
-                        c.comment.chars().take(12).collect()
-                    };
-                    // 宽度预算给 comment：副标跟在主文本右侧，必须占住后续槽位。
-                    // 与 paint 头一致：用 sub_font 实测，再加一侧间隙。
-                    let comment_w = if comment.is_empty() {
-                        0
-                    } else {
-                        SelectObject(hdc, HGDIOBJ(sub_font.0));
-                        let w = text_width(hdc, &comment);
-                        SelectObject(hdc, HGDIOBJ(cand_font.0));
-                        w + scale(4, dpi)
-                    };
-                    let item = Item {
-                        label,
-                        text: c.text.clone(),
-                        comment,
-                        x,
-                        label_w,
-                        text_w: text_w + comment_w,
-                        highlighted: i == ctx.highlighted,
-                        hovered: false,
-                        pure_text_w: text_w,
-                    };
-                    x += label_w + label_gap + text_w + comment_w + item_gap;
-                    item
-                })
-                .collect();
+            // 宽度预算：候选行可用的最大右缘（扣除右侧 padding 与滚动条轨道）。
+            let row_budget = (max_width - padding - sb_w).max(scale(BASE_MIN_WIDTH, dpi));
+            let mut items: Vec<Item> = Vec::with_capacity(9);
+            for (i, c) in ctx.candidates.iter().enumerate().take(9) {
+                // TSF 端候选域固定 9 列；label 为 1..=9（超过 9 的索引不进此分支）
+                let label = format!("{}.", i + 1);
+                let label_w = text_width(hdc, &label);
+                let text_w = text_width(hdc, &c.text);
+                // 副标（词库附注）；只在文本不重复时展示——同字符的
+                // comment 是噪音。这里只截断长度，留待 paint 用小号字体。
+                let comment = if c.comment.is_empty() || c.comment == c.text {
+                    String::new()
+                } else {
+                    c.comment.chars().take(12).collect()
+                };
+                // 宽度预算给 comment：副标跟在主文本右侧，必须占住后续槽位。
+                // 与 paint 头一致：用 sub_font 实测，再加一侧间隙。
+                let comment_w = if comment.is_empty() {
+                    0
+                } else {
+                    SelectObject(hdc, HGDIOBJ(sub_font.0));
+                    let w = text_width(hdc, &comment);
+                    SelectObject(hdc, HGDIOBJ(cand_font.0));
+                    w + scale(4, dpi)
+                };
+                let slot_w = label_w + label_gap + text_w + comment_w + item_gap;
+                // 放不下当前候选（含其后一项间距）则停：剩余候选靠翻页访问。
+                if x + slot_w > row_budget {
+                    break;
+                }
+                items.push(Item {
+                    label,
+                    text: c.text.clone(),
+                    comment,
+                    x,
+                    label_w,
+                    text_w: text_w + comment_w,
+                    highlighted: i == ctx.highlighted,
+                    hovered: false,
+                    pure_text_w: text_w,
+                });
+                x += slot_w;
+            }
             let _ = DeleteObject(HGDIOBJ(sub_font.0));
 
             SelectObject(hdc, HGDIOBJ(preedit_font.0));
@@ -556,9 +562,22 @@ impl CandidateUi {
             .unwrap_or(padding);
         // 给模式徽标预留宽度，避免与 preedit 互相压占
         let mode_badge_hint = scale(BASE_FONT_HEIGHT, dpi) * 3 + scale(BASE_MODE_BADGE_GAP, dpi);
-        let width = (items_end.max(padding + preedit_w + mode_badge_hint) + padding + sb_w)
-            .max(scale(BASE_MIN_WIDTH, dpi));
+        // 总宽 = max(候选行尾, preedit+徽标) + 右 padding + 滚动条，钳到 max_width
+        let width = ((items_end.max(padding + preedit_w + mode_badge_hint) + padding + sb_w)
+            .max(scale(BASE_MIN_WIDTH, dpi)))
+        .min(max_width);
         let height = scale(BASE_PREEDIT_HEIGHT, dpi) + scale(BASE_ROW_HEIGHT, dpi) + padding * 2;
+
+        crate::debug_log(&format!(
+            "cand show: win_dpi={} sys_dpi={} used_dpi={} w={} h={} preedit={:?} cands={}",
+            unsafe { GetDpiForWindow(hwnd) },
+            unsafe { GetDpiForSystem() },
+            dpi,
+            width,
+            height,
+            ctx.preedit,
+            ctx.candidates.len(),
+        ));
 
         PAINT_DATA.with_borrow_mut(|data| {
             data.preedit = ctx.preedit.clone();
@@ -1271,5 +1290,50 @@ mod tests {
         assert_eq!(blend_colorref(0x112233, 0xaabbcc, 0), 0x112233);
         assert_eq!(blend_colorref(0x112233, 0xaabbcc, 1000), 0xaabbcc);
         assert_eq!(blend_colorref(0x112233, 0xaabbcc, 5000), 0xaabbcc);
+    }
+
+    /// 真实窗口布局回归：9 个长候选在任意 DPI 下窗口宽度都必须被钳制到
+    /// 屏幕宽度的 60% 以内（此前单行 9 候选在高 DPI 下横贯屏幕）。
+    /// 在测试进程创建真实候选窗 + GDI 实测文本宽度，喂入足以超宽的候选。
+    #[test]
+    fn candidate_window_width_respects_screen_cap() {
+        use ime_ipc::Candidate;
+        use windows::Win32::Foundation::{POINT, RECT};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, GetWindowRect, SM_CXSCREEN,
+        };
+        let mut ui = super::CandidateUi::new();
+        let ctx = ime_ipc::Context {
+            preedit: "zhonghua renmin gongheguo".into(),
+            candidates: (0..9)
+                .map(|i| Candidate {
+                    text: format!("中华人民共和国万岁{}", i),
+                    comment: String::new(),
+                })
+                .collect(),
+            ..ime_ipc::Context::default()
+        };
+        ui.show(&ctx, Some(POINT { x: 200, y: 200 }));
+        let hwnd = ui.hwnd.expect("候选窗应创建成功");
+        let mut r = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(hwnd, &mut r);
+        };
+        let w = (r.right - r.left).max(0);
+        let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1);
+        let cap = (screen_w * 6 / 10).max(96);
+        assert!(
+            w <= cap,
+            "候选窗宽度 {w}px 超过屏幕 60% 上限 {cap}px（屏宽 {screen_w}px）"
+        );
+        // 锚点在上方 200px 时窗口不应完全超出屏幕右缘（show 内有钳制）
+        assert!(
+            r.right <= screen_w + 8,
+            "候选窗右缘 {} 超出屏幕 {}",
+            r.right,
+            screen_w
+        );
+        ui.hide();
+        ui.destroy();
     }
 }
