@@ -2,6 +2,46 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.6.0] - 2026-08-15
+
+### 修复（实机使用体检发现）
+- **致命 bug：设置选「拼音」实际一直在跑双拼**。librime 新建会话的默认方案
+  是 user.yaml 的 previously_selected_schema；创建会话时把 rime_ice 当作"默认、
+  无需选择"跳过了 select_schema，一旦用过双拼，options.json 选拼音也始终走
+  双拼引擎（凑词垃圾候选、英文混输全失效、输入体验错乱）。改为无条件
+  select_schema，全拼回归真全拼。
+- **双拼 schema 既有配置 bug**：主 translator 的整句/补全设置误落在
+  full_pinyin 块（此前主 translator 只有 dictionary），双拼补全能力缺失。
+- **输入方案热切换后新会话不生效**：options.json 变更已记录日志但会话仍用
+  旧方案；现每个新会话严格按当前方案选择 schema。
+
+### 新增
+- **悬浮球（替代悬浮条）**：白色 44px 圆形 F logo，点击展开设置中心；
+  右下角彩色中/En 徽标（中文=暖橙 / 英文=蓝）点击切换全局中英。剪贴板、
+  语音、方案切换移入菜单与工具箱。小而美：微渐变白球 + 玻璃质感阴影。
+- **英文混输（搜狗/微软拼音同款）**：内置 english 词库（1124 词，高频
+  500000/常规 50000 权重）+ 全拼/双拼接入 english_translator（前缀联想、
+  用户英文词学习）。实测 hello/help/world/zoom/email/app/hi/ok 英文首选；
+  he/you/wo/man/ma 中文优先；nihao→你好、zhongguo→中国。
+- **拼音纠错（近键级）**：enable_correction 启用 librime NearSearchCorrector，
+  键盘相邻键错误自动纠正（如 nohao→你好）。转位类错误（zhogn→zhong）受
+  librime 上游限制（官方构建禁用编辑距离纠错）暂不支持。
+
+### 体验
+- **候选窗悬停高亮**（GDI / D2D / DComp 三后端统一）：鼠标划过候选高亮，
+  配色融合主题。
+- **MRU 落盘移出热路径**：候选提频记录改为脏标记 + 后台 2 秒节流保存，
+  高频打字不再每键同步写盘。
+- **全拼首选质量**：修复双拼 bug 后，常用词句首选全部正确（你好/中国/我们/
+  我要去北京/今天天气很好/我爱你…），整句与英文混输协同正常。
+- **实机测试工具**：新增 pipe_drive（命名管道驱动，逐键/模拟喂入并打印候选）
+  与 english_mixing 集成测试，回归有保障。
+
+### 已知限制
+- 拼音转位纠错（zhogn→zhong）不可用：librime 1.17 官方 Windows 构建把
+  编辑距离纠错（EditDistanceCorrector）以 #if 0 禁用，仅剩 NearSearch。
+- 双拼英文混输弱于全拼：双拼 2 键/音节切分把英文串切成不完整音节，命中大量
+  中文凑词——双拼方案固有取舍，全拼（默认方案）已做到英文整词首选。
 ## [0.5.6] - 2026-08-14
 
 ### 新增（对比搜狗悬浮条参考图补齐）
