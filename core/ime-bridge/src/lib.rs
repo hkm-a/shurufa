@@ -130,7 +130,7 @@ impl Engine {
             traits.distribution_code_name = code.as_ptr();
             traits.distribution_version = version.as_ptr();
             traits.app_name = app.as_ptr();
-            traits.min_log_level = 2; // 仅记录 ERROR 及以上
+            traits.min_log_level = 2;
             traits.log_dir = log_dir.as_ptr(); // 空串表示仅输出到 stderr
 
             (api_ref.setup)(&mut traits);

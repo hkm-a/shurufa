@@ -18,6 +18,7 @@ schema:
     小鹤双拼输入方案，与雾凇拼音共享词典。两键一字：声母 + 韵母键位。
   dependencies:
     - rime_ice
+    - english
 
 switches:
   - name: ascii_mode
@@ -48,12 +49,28 @@ engine:
     - punct_translator
     - script_translator          # 双拼主方案（2 键/音节）
     - script_translator@full_pinyin  # 全拼兼容（低权重，排在双拼之后）
+    - table_translator@english_translator  # 英文混输（与 rime_ice 同款）
 
 translator:
   # 双拼专属词典（词条从 rime_ice 导入）：librime 按本方案 speller.algebra
   # 为其编译独立 prism（双拼码索引），用户输入双拼键序才能命中词条。
   # 不能直接复用 rime_ice 词典——那会沿用全拼 prism，双拼键序无法解析。
   dictionary: shurufa_double_pinyin
+  # 本地 userdb 学习 + 整句 + 完整词条补全（2026-08-15 修复：此前这些设置
+  # 误落在 full_pinyin 块，主 translator 只有 dictionary）。
+  # 注意：双拼下英文混输弱于全拼——2 键/音节的切分把 hello 切成 he|ll|o、
+  # man 切成 ma|n，不完整音节经词条补全命中大量中文凑词（玛瑙/明暗等），
+  # 英文整词被挤出首屏。这是双拼方案的固有取舍（搜狗双拼英文混输同样弱），
+  # 全拼（rime_ice）已做到英文整词首选。
+  enable_user_dict: true
+  enable_sentence: true
+  max_sentence_length: 8
+  enable_word_completion: true
+  initial_quality: 1.2
+  preedit_format:
+    - xform/([nl])v/$1ü/
+    - xform/([nl])ue/$1üe/
+    - xform/([jqxy])v/$1u/
 
 # 全拼兼容 translator：用户在双拼模式误输全拼（如 woshishuo）时也能命中
 # 词条（搜狗等成熟输入法的双拼+全拼混输）。权重低（0.4），双拼键序优先；
@@ -64,15 +81,19 @@ full_pinyin:
   enable_user_dict: true
   enable_sentence: true
   initial_quality: 0.4
+
+# 英文混输：与 rime_ice.schema.yaml 的 english_translator 同款配置；
+# 双拼模式下输入英文前缀/单词同样混排英文候选。
+english_translator:
+  dictionary: english
   enable_user_dict: true
-  enable_sentence: true
-  max_sentence_length: 8
-  enable_word_completion: true
-  initial_quality: 1.2
-  preedit_format:
-    - xform/([nl])v/$1ü/
-    - xform/([nl])ue/$1üe/
-    - xform/([jqxy])v/$1u/
+  enable_sentence: false
+  enable_completion: true
+  enable_encoder: true
+  encode_commit_history: true
+  # 与 rime_ice 对齐（2026-08-15）：0.35 太低，双拼下英文整词会被
+  # 拼音凑词（he-llo→何来哦）挤出首屏；2.0 让英文完整词压过凑词。
+  initial_quality: 2.0
 
 speller:
   alphabet: zyxwvutsrqponmlkjihgfedcba

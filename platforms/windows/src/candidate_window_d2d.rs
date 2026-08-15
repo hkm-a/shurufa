@@ -91,6 +91,8 @@ struct D2dCore {
 struct Brushes {
     background: ID2D1SolidColorBrush,
     highlight: ID2D1SolidColorBrush,
+    /// 悬停底（blend(highlight, background, 40%)），随皮肤重建
+    hover: ID2D1SolidColorBrush,
     text: ID2D1SolidColorBrush,
     preedit: ID2D1SolidColorBrush,
     /// 音节分段交替色（blend(preedit, text, 28%)）；随皮肤重建。
@@ -313,6 +315,19 @@ impl D2dCore {
                         radiusY: radius,
                     };
                     target.FillRoundedRectangle(&hl, &br.highlight);
+                } else if it.hovered {
+                    // 悬停（非选中）：浅色底，与选中态区分（见 Brushes.hover）。
+                    let hv = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: it.x as f32 - hl_pad,
+                            top: row_top,
+                            right: end + hl_pad,
+                            bottom: row_top + row_h,
+                        },
+                        radiusX: radius,
+                        radiusY: radius,
+                    };
+                    target.FillRoundedRectangle(&hv, &br.hover);
                 }
 
                 draw_text(
@@ -502,6 +517,12 @@ impl D2dCore {
             let highlight = t
                 .CreateSolidColorBrush(&mk(skin.candidate.highlight_background), None)
                 .ok();
+            let hover_c = crate::candidate_window::blend_colorref(
+                skin.candidate.highlight_background,
+                skin.candidate.background,
+                400,
+            );
+            let hover = t.CreateSolidColorBrush(&mk(hover_c), None).ok();
             let text = t.CreateSolidColorBrush(&mk(skin.candidate.text), None).ok();
             let preedit = t
                 .CreateSolidColorBrush(&mk(skin.candidate.preedit), None)
@@ -521,6 +542,7 @@ impl D2dCore {
             match (
                 background,
                 highlight,
+                hover,
                 text,
                 preedit,
                 preedit_alt,
@@ -530,6 +552,7 @@ impl D2dCore {
                 (
                     Some(background),
                     Some(highlight),
+                    Some(hover),
                     Some(text),
                     Some(preedit),
                     Some(preedit_alt),
@@ -539,6 +562,7 @@ impl D2dCore {
                     self.brushes = Some(Brushes {
                         background,
                         highlight,
+                        hover,
                         text,
                         preedit,
                         preedit_alt,

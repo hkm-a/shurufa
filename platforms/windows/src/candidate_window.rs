@@ -24,14 +24,15 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    keybd_event, TrackMouseEvent, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, LoadCursorW, MoveWindow,
     RegisterClassW, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW,
     SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
-    WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WM_SETTINGCHANGE, WM_SIZE,
-    WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_SETTINGCHANGE, WM_SIZE, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 
 use ime_ipc::Context;
@@ -115,6 +116,8 @@ struct Item {
     label_w: i32,
     text_w: i32,
     highlighted: bool,
+    /// 鼠标悬停中（不含已被选中的项：选中优先，见 make_paint_view）。
+    hovered: bool,
     /// 主文本不含 comment 的实测宽度（GDI show() 时记录）；D2D comment 起点复用。
     pure_text_w: i32,
 }
@@ -167,6 +170,8 @@ pub struct ItemView {
     pub text_w: i32,
     pub pure_text_w: i32,
     pub highlighted: bool,
+    /// 鼠标悬停中（选中项恒为 true 由 make_paint_view 归并，见 Item.hovered）。
+    pub hovered: bool,
 }
 
 /// 预编辑串内的音节分隔符位置（UTF-16 码元索引）。
@@ -224,12 +229,16 @@ pub fn make_paint_view() -> Option<PaintView> {
     PAINT_DATA.with_borrow(|data| {
         let dpi = data.dpi;
         let font_scale = data.skin.metrics.font_scale;
+        // 悬停与选中合并：选中项永远全高亮（鼠标悬停在选中项上不降级）；
+        // 悬停命中与 HOVER_INDEX 相同（WM_MOUSEMOVE 每次重建后重新命中）。
+        let hover = HOVER_INDEX.with(|h| h.get());
         Some(PaintView {
             preedit: data.preedit.clone(),
             items: data
                 .items
                 .iter()
-                .map(|it| ItemView {
+                .enumerate()
+                .map(|(i, it)| ItemView {
                     label: it.label.clone(),
                     text: it.text.clone(),
                     comment: it.comment.clone(),
@@ -238,6 +247,7 @@ pub fn make_paint_view() -> Option<PaintView> {
                     text_w: it.text_w,
                     pure_text_w: it.pure_text_w,
                     highlighted: it.highlighted,
+                    hovered: it.highlighted || hover == Some(i),
                 })
                 .collect(),
             dpi,
@@ -321,6 +331,14 @@ thread_local! {
         page: PageInfo::default(),
     });
     static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) };
+    /// 当前鼠标悬停的候选序号（None = 不在任何候选上）。
+    /// 每次 show() 重建 items 后由 WM_MOUSEMOVE 重新命中；
+    /// 与 PAINT_DATA 同线程（宿主 UI 线程），Cell 足够。
+    static HOVER_INDEX: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// 是否已向系统注册 WM_MOUSELEAVE 跟踪（TrackMouseEvent 幂等控制）。
+    static HOVER_TRACKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// 当前候选窗 HWND（hover 处理与 paint 共用；ensure_window 创建后写入）。
+    static PAINT_HWND: std::cell::Cell<HWND> = const { std::cell::Cell::new(HWND(std::ptr::null_mut())) };
 }
 
 pub(crate) fn scale(base: i32, dpi: u32) -> i32 {
@@ -434,6 +452,7 @@ impl CandidateUi {
             .ok()?;
             // 现代外观：Win11 圆角 + 沉浸式深色边框 + 按皮肤透明度分层
             skin::apply_appearance(hwnd, &Skin::current());
+            PAINT_HWND.with(|h| h.set(hwnd));
             self.hwnd = Some(hwnd);
             Some(hwnd)
         }
@@ -512,6 +531,7 @@ impl CandidateUi {
                         label_w,
                         text_w: text_w + comment_w,
                         highlighted: i == ctx.highlighted,
+                        hovered: false,
                         pure_text_w: text_w,
                     };
                     x += label_w + label_gap + text_w + comment_w + item_gap;
@@ -675,6 +695,15 @@ unsafe extern "system" fn wnd_proc(
             select_candidate_at(lparam);
             LRESULT(0)
         }
+        value if value == WM_MOUSEMOVE => {
+            update_hover(lparam);
+            LRESULT(0)
+        }
+        // WM_MOUSELEAVE = 0x02A3 = 675（windows crate 的 UI::Controls 特性未启用，用裸值）
+        675 => {
+            clear_hover();
+            LRESULT(0)
+        }
         value if value == WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xffff) as i16;
             send_virtual_key(if delta < 0 { 0x22 } else { 0x21 });
@@ -705,17 +734,16 @@ fn client_rect(hwnd: HWND) -> RECT {
     r
 }
 
-/// 将点击坐标映射到当前候选，并发送 Rime 已支持的数字选词键。
-unsafe fn select_candidate_at(lparam: LPARAM) {
-    let x = (lparam.0 & 0xffff) as i16 as i32;
-    let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+/// 命中测试：把客户区坐标映射到当前候选序号。
+/// 供 WM_MOUSEMOVE（悬停高亮）与 WM_LBUTTONDOWN（点击选词）共用，
+/// 保证两处几何完全一致；None = 落在候选行之外。
+fn hit_test_item(x: i32, y: i32) -> Option<usize> {
     let dpi = PAINT_DATA.with_borrow(|data| data.dpi);
     let row_top = scale(BASE_PADDING, dpi) + scale(BASE_PREEDIT_HEIGHT, dpi);
     let row_bottom = row_top + scale(BASE_ROW_HEIGHT, dpi);
     if y < row_top || y >= row_bottom {
-        return;
+        return None;
     }
-
     let label_gap = scale(BASE_LABEL_GAP, dpi);
     let item_padding = scale(BASE_HL_PAD, dpi);
     PAINT_DATA.with_borrow(|data| {
@@ -723,14 +751,27 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
             let left = item.x - item_padding;
             let right = item.x + item.label_w + label_gap + item.text_w + item_padding;
             if x >= left && x <= right {
-                // 序号键 1..9 → 0x31..0x39；第 10 项按下标 0 → 0x30。
-                let key = if index >= 9 { 0x30 } else { 0x31 + index as u8 };
-                send_virtual_key(key);
-                return;
+                return Some(index);
             }
         }
-        // 落在任何 item 之外但命中滚动条轨道：纯视觉条不响应拖动，按系统习惯
-        // 轨道点击 = 向上/下翻一页（PageUp/PageDown，与滚轮一致）。
+        None
+    })
+}
+
+/// 将点击坐标映射到当前候选，并发送 Rime 已支持的数字选词键。
+unsafe fn select_candidate_at(lparam: LPARAM) {
+    let x = (lparam.0 & 0xffff) as i16 as i32;
+    let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+    let dpi = PAINT_DATA.with_borrow(|data| data.dpi);
+    if let Some(index) = hit_test_item(x, y) {
+        // 序号键 1..9 → 0x31..0x39；第 10 项按下标 0 → 0x30。
+        let key = if index >= 9 { 0x30 } else { 0x31 + index as u8 };
+        send_virtual_key(key);
+        return;
+    }
+    // 落在任何 item 之外但命中滚动条轨道：纯视觉条不响应拖动，按系统习惯
+    // 轨道点击 = 向上/下翻一页（PageUp/PageDown，与滚轮一致）。
+    PAINT_DATA.with_borrow(|data| {
         if !data.items.is_empty() && data.skin.metrics.scrollbar && data.page.total_pages() > 1 {
             let track_w = scale(skin::SCROLLBAR_BASE_WIDTH, dpi);
             let win_right = PAINT_WIN_W.with(|w| w.get());
@@ -742,6 +783,57 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
             }
         }
     });
+}
+
+/// WM_MOUSEMOVE：更新悬停高亮。首次进入时注册 WM_MOUSELEAVE 跟踪，
+/// 悬停项变化或首次悬停时 InvalidateRect 触发重绘。
+fn update_hover(lparam: LPARAM) {
+    let x = (lparam.0 & 0xffff) as i16 as i32;
+    let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+    let idx = hit_test_item(x, y);
+    let changed = HOVER_INDEX.with(|h| {
+        if h.get() == idx {
+            false
+        } else {
+            h.set(idx);
+            true
+        }
+    });
+    if idx.is_some() && !HOVER_TRACKING.with(|t| t.get()) {
+        unsafe {
+            let mut tme = std::mem::zeroed::<TRACKMOUSEEVENT>();
+            tme.cbSize = std::mem::size_of::<TRACKMOUSEEVENT>() as u32;
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = PAINT_HWND.with(|h| h.get());
+            let _ = TrackMouseEvent(&mut tme);
+        }
+        HOVER_TRACKING.with(|t| t.set(true));
+    }
+    if changed {
+        let hwnd = PAINT_HWND.with(|h| h.get());
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, true);
+        }
+    }
+}
+
+/// WM_MOUSELEAVE：清除悬停并重绘。
+fn clear_hover() {
+    HOVER_TRACKING.with(|t| t.set(false));
+    let changed = HOVER_INDEX.with(|h| {
+        if h.get().is_none() {
+            false
+        } else {
+            h.set(None);
+            true
+        }
+    });
+    if changed {
+        let hwnd = PAINT_HWND.with(|h| h.get());
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, true);
+        }
+    }
 }
 
 // paint 时记录客户区宽度供命中测试使用（同 UI 线程，Cell 足够）
@@ -878,6 +970,19 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 };
                 FillRect(hdc, &hl_rect, hl);
                 let _ = DeleteObject(HGDIOBJ(hl.0));
+            } else if item.hovered {
+                // 悬停（非选中）：highlight 向 background 过渡 40% 的浅底，
+                // 与选中态强对比区分，同时有明确的"可点"反馈。
+                let hover_c = blend_colorref(colors.highlight_background, colors.background, 400);
+                let hv = CreateSolidBrush(COLORREF(hover_c));
+                let hv_rect = RECT {
+                    left: item.x - hl_pad,
+                    top: row_top,
+                    right: item_end + hl_pad,
+                    bottom: row_top + row_h,
+                };
+                FillRect(hdc, &hv_rect, hv);
+                let _ = DeleteObject(HGDIOBJ(hv.0));
             }
 
             SetTextColor(hdc, COLORREF(colors.label));

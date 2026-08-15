@@ -1,0 +1,61 @@
+# 英文混输依赖方案（Shurufa 内置）
+# encoding: utf-8
+#
+# 本方案**不进入** default.yaml 的 schema_list（不会出现在方案切换器里），
+# 只作为 rime_ice / shurufa_double_pinyin 的 schema/dependencies 存在：
+# librime 部署器按 dependencies 编译依赖方案的主词典，从而生成
+# english.table.bin 供这两个方案的 english_translator 加载。
+schema:
+  schema_id: english
+  name: 英文
+  version: "2026.08.15"
+  author:
+    - Shurufa
+  description: |
+    英文混输词典（约 1000 常用词）。中文输入时按前缀混排英文候选，
+    用户常输词经 enable_encoder 学习进独立 userdb，词表只是起点。
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - table_translator
+
+translator:
+  dictionary: english
+  enable_user_dict: true
+  enable_sentence: false
+  enable_completion: true
+  enable_encoder: true
+  encode_commit_history: true
+  initial_quality: 1.0
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+  delimiter: " '"
+  algebra:
+    # 英文整词即编码：不做任何转换，输入什么就查什么。
+    - derive/^([a-z]+)$/$1/
+
+punctuator:
+  import_preset: symbols
+
+key_binder:
+  import_preset: default
+
+recognizer:
+  import_preset: default

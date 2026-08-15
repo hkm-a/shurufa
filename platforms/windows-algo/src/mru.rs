@@ -37,6 +37,9 @@ pub struct MruStore {
     /// key = 拼音（原始按键序列），value = 该拼音下用户选中过的词语（最近在前）
     #[serde(default)]
     map: HashMap<String, Vec<String>>,
+    /// 自上次落盘后是否有未保存的变更（不参与序列化）
+    #[serde(skip)]
+    dirty: bool,
 }
 
 impl MruStore {
@@ -47,12 +50,18 @@ impl MruStore {
             .unwrap_or_default()
     }
 
-    pub fn save(&self) -> io::Result<()> {
+    pub fn save(&mut self) -> io::Result<()> {
         let tmp = mru_path().with_extension("tmp");
         let json = serde_json::to_string_pretty(self)?;
         fs::write(&tmp, json)?;
         fs::rename(&tmp, mru_path())?;
+        self.dirty = false;
         Ok(())
+    }
+
+    /// 是否有未落盘的变更（供后台节流保存线程判断）。
+    pub fn dirty(&self) -> bool {
+        self.dirty
     }
 
     /// 把一条新选词记录到 MRU：`pinyin` 是用户当时敲的 raw keys。
@@ -73,6 +82,7 @@ impl MruStore {
                 self.map.remove(&k);
             }
         }
+        self.dirty = true;
     }
 
     /// 查询 `pinyin` 近期的候选 list（最近在前）。
@@ -120,6 +130,7 @@ mod tests {
         // 每个测试使用临时路径，避免影响真实 MRU 数据
         MruStore {
             map: HashMap::new(),
+            dirty: false,
         }
     }
 
@@ -151,6 +162,7 @@ mod tests {
     fn save_load_roundtrip() {
         let mut s = MruStore {
             map: HashMap::new(),
+            dirty: false,
         };
         s.record("shang'hai", "上海");
         s.record("ce'lue", "策略");
@@ -199,6 +211,16 @@ mod tests {
         let mut s = temp_store();
         s.record("nihao", "");
         assert!(s.boost_list("nihao").is_empty());
+    }
+
+    #[test]
+    fn dirty标记_记录后置脏_保存后清除() {
+        let mut s = temp_store();
+        assert!(!s.dirty(), "初始不应脏");
+        s.record("nihao", "你好");
+        assert!(s.dirty(), "record 后应置脏");
+        let _ = s.boost_list("nihao");
+        assert!(s.dirty(), "查询不改脏状态");
     }
 
     #[test]

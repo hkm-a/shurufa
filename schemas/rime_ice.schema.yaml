@@ -11,6 +11,8 @@ schema:
     - Shurufa
   description: |
     雾凇拼音核心词典，启用本地首选词学习、整句与长词补全。
+  dependencies:
+    - english
 
 switches:
   - name: ascii_mode
@@ -40,6 +42,7 @@ engine:
   translators:
     - punct_translator
     - script_translator
+    - table_translator@english_translator
 
 translator:
   dictionary: rime_ice
@@ -55,6 +58,24 @@ translator:
     - xform/([nl])v/$1ü/
     - xform/([nl])ue/$1üe/
     - xform/([jqxy])v/$1u/
+
+# 英文混输（搜狗/微软拼音同款）：中文输入时按前缀混排英文单词候选。
+# - abc_segmentor 把连续小写字母段标记为 abc 段，table_translator 查表；
+# - initial_quality 显著低于拼音（1.2），英文候选永远排在中文之后，
+#   只在拼音无匹配或整词命中时才上到首屏；
+# - enable_completion 支持前缀联想（hel → hello/help）；enable_encoder
+#   把用户常输的英文词学进独立 userdb，词表只是起点。
+english_translator:
+  dictionary: english
+  enable_user_dict: true
+  enable_sentence: false
+  enable_completion: true
+  enable_encoder: true
+  encode_commit_history: true
+  # 实测（2026-08-15）：0.35 太低，拼音对英文串的凑词（he-llo→何来哦）
+  # 会挤掉英文整词候选（hello 在首屏外）。提到 2.0 让英文完整词压过拼音凑词；
+  # 补全候选仍有 -1 惩罚，中文完整词（ma→吗）依然优先。
+  initial_quality: 2.0
 
 speller:
   alphabet: zyxwvutsrqponmlkjihgfedcba

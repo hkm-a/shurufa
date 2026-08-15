@@ -49,13 +49,32 @@ fn mru_boost_candidates(pinyin: &str, candidates: Vec<String>) -> Vec<String> {
         .boost(pinyin, candidates)
 }
 
-/// 处理一次提交：把选中的词记入 MRU。
+/// 处理一次提交：把选中的词记入 MRU（只改内存，由后台节流线程落盘）。
+///
+/// 历史坑：此前这里每次提交都同步 save()（tmp+rename 写盘），处于
+/// ProcessKey 热路径上，高频打字时每次上屏都阻塞引擎应答。现在改为
+/// 脏标记 + 后台 2 秒节流保存（见 spawn_mru_saver），最坏情况进程被强杀
+/// 时丢失最后几秒的 MRU 记录——对提频功能无实质影响。
 fn mru_record_commit(pinyin: &str, committed: &str) {
     mru_store()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .record(pinyin, committed);
-    let _ = mru_store().lock().unwrap_or_else(|p| p.into_inner()).save();
+}
+
+/// 后台节流保存线程：每 2 秒检查 MRU 是否变脏，有变更才写盘。
+/// 常驻服务循环永不退出（run_service 返回类型是 never），无需退出前 flush；
+/// 若进程被强杀，未落盘的少量记录随进程丢失（可接受的提频精度损失）。
+fn spawn_mru_saver() {
+    std::thread::spawn(|| loop {
+        std::thread::sleep(Duration::from_millis(2000));
+        let mut store = mru_store().lock().unwrap_or_else(|p| p.into_inner());
+        if store.dirty() {
+            if let Err(e) = store.save() {
+                log(&format!("MRU 保存失败：{e}"));
+            }
+        }
+    });
 }
 
 /// ProcessKey 应答装饰器（经 ime-ipc::server::serve_connection 每键调用）：
@@ -84,13 +103,17 @@ fn decorate_process_key(
             mru_record_commit(raw_before, text);
         }
     }
+    // 原高亮词：MRU 重排后高亮跟随原高亮词的新位置
+    let hl_text = context
+        .candidates
+        .get(context.highlighted)
+        .map(|c| c.text.clone());
     // 提频：候选按 MRU 重排，高亮跟随原高亮词的新位置
     if !context.candidates.is_empty() && !raw_after.is_empty() {
         let original = context.candidates.clone();
         let boosted =
             mru_boost_candidates(raw_after, original.iter().map(|c| c.text.clone()).collect());
         if boosted.len() == original.len() {
-            let hl_text = original.get(context.highlighted).map(|c| c.text.clone());
             context.candidates = boosted
                 .iter()
                 .map(|text| {
@@ -104,8 +127,12 @@ fn decorate_process_key(
                         })
                 })
                 .collect();
-            if let Some(t) = hl_text {
-                if let Some(pos) = context.candidates.iter().position(|c| c.text == t) {
+            if let Some(ref t) = hl_text {
+                if let Some(pos) = context
+                    .candidates
+                    .iter()
+                    .position(|c| c.text.as_str() == t.as_str())
+                {
                     context.highlighted = pos;
                 }
             }
@@ -166,7 +193,13 @@ fn watch_input_scheme(
     });
 }
 
-/// 创建会话并按当前方案选择 schema（如果非默认 pinyin）。
+/// 创建会话并按当前方案选择 schema。
+///
+/// 历史坑（2026-08-15 实测发现）：librime 新建会话的默认方案是
+/// user.yaml 的 `previously_selected_schema`，一旦用户用过双拼，默认就变成
+/// shurufa_double_pinyin；此前代码把 rime_ice 当成"默认、无需选择"直接跳过
+/// select_schema，导致 options.json 选"拼音"时实际一直在跑双拼。
+/// 修复：无条件 select_schema，即使目标就是 rime_ice。
 fn create_session_with_scheme(
     engine: &'static ime_bridge::Engine,
     current_scheme: &std::sync::Arc<std::sync::Mutex<String>>,
@@ -176,12 +209,8 @@ fn create_session_with_scheme(
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .clone();
-    if scheme != "rime_ice" {
-        if !session.select_schema(&scheme) {
-            log(&format!("select_schema({scheme}) 失败，回退 rime_ice"));
-        } else {
-            log(&format!("会话已切换方案：{scheme}"));
-        }
+    if !session.select_schema(&scheme) {
+        log(&format!("select_schema({scheme}) 失败，回退 rime_ice"));
     }
     Ok(session)
 }
@@ -247,6 +276,7 @@ fn run_service() -> ! {
             .input_scheme,
     ))));
     watch_input_scheme(shared_opts, current_scheme.clone());
+    spawn_mru_saver();
     log(&format!("监听 {} …", PIPE_NAME));
     loop {
         let server = match PipeServer::create() {
@@ -300,6 +330,8 @@ fn run_once(keys: &str) -> ! {
         exit(4);
     }
     let ctx = session.context();
+    // --once 没有后台节流线程，退出前把本次提交的 MRU 落盘
+    let _ = mru_store().lock().unwrap_or_else(|p| p.into_inner()).save();
     println!("preedit: {}", ctx.preedit);
     for (i, c) in ctx.candidates.iter().enumerate() {
         println!("  {}: {} {}", i, c.text, c.comment);
