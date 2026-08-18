@@ -142,6 +142,8 @@ struct PanelState {
     mode: PanelMode,
     /// 当前模板下标（TEMPLATES）；切换只影响下一次请求
     template: usize,
+    /// M9-5：呼出时的前台应用 exe 全路径（Word/WPS 光标场景用于标题提示）
+    context: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -330,6 +332,7 @@ fn show_selection_mode(target: HWND, selected: Option<String>, mode: PanelMode) 
             status,
             mode,
             template: 0,
+            context: None,
         });
     });
 
@@ -466,6 +469,11 @@ pub fn show() {
         crate::log_line("AI 帮写：缺少 AGNES_API_KEY 环境变量");
         Status::Misconfigured
     };
+    // M9-5：识别 Word/WPS 光标场景（标题显示「AI 光标助手」）
+    let context = foreground_app_name(target);
+    if context.as_deref().is_some_and(is_office_cursor_app) {
+        crate::log_line("AI 光标助手：检测到 Word/WPS，提交后草稿将粘贴到光标处");
+    }
     PANEL.with_borrow_mut(|slot| {
         *slot = Some(PanelState {
             hwnd,
@@ -474,6 +482,7 @@ pub fn show() {
             status,
             mode: PanelMode::Write,
             template: 0,
+            context,
         });
     });
 
@@ -922,6 +931,50 @@ unsafe fn send_ctrl_v_impl_inner() {
     SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
 }
 
+/// M9-5：Word/WPS 光标助手判定——exe 文件名白名单。
+fn is_office_cursor_app(exe_path: &str) -> bool {
+    let name = std::path::Path::new(exe_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    matches!(
+        name.as_str(),
+        "WINWORD.EXE" | "WPS.EXE" | "WPSOFFICE.EXE" | "ET.EXE" | "WPP.EXE"
+    )
+}
+
+/// 取前台窗口所属进程的 exe 全路径（用于光标场景识别）。
+fn foreground_app_name(target: HWND) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        if target.is_invalid() {
+            return None;
+        }
+        let pid = GetWindowThreadProcessId(target, None);
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut size = 1024u32;
+        let mut buf = vec![0u16; size as usize];
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut size,
+        )
+        .is_ok();
+        let _ = CloseHandle(handle);
+        if !ok {
+            return None;
+        }
+        buf.truncate(size as usize);
+        Some(String::from_utf16_lossy(&buf))
+    }
+}
+
 fn caret_or_cursor_pos(target: HWND) -> POINT {
     unsafe {
         if !target.is_invalid() {
@@ -1332,7 +1385,12 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         SelectObject(hdc, HGDIOBJ(bold.0));
         SetTextColor(hdc, COLORREF(colors.accent));
         let title = match state.mode {
-            PanelMode::Write => "AI 帮写",
+            PanelMode::Write => state
+                .context
+                .as_deref()
+                .filter(|p| is_office_cursor_app(p))
+                .map(|_| "AI 光标助手 · Word/WPS")
+                .unwrap_or("AI 帮写"),
             PanelMode::Polish => "划词润色",
             PanelMode::Translate => "划词翻译",
         };
