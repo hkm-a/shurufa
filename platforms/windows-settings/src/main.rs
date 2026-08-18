@@ -2480,6 +2480,17 @@ fn main() {
             clear_default_ime,
             exit_app
         ]);
+    // MCP Bridge（hypothesi/mcp-server-tauri，M10 调试基础设施）：
+    // `cargo tauri dev --features mcp-bridge` 时在 127.0.0.1:9323 起 WebSocket
+    // 桥，供 @hypothesi/tauri-mcp-server 连接做截图/DOM/模拟输入/窗口调试。
+    // feature 门控默认关闭，不影响生产构建与既有测试。
+    #[cfg(feature = "mcp-bridge")]
+    let builder = builder.plugin(
+        tauri_plugin_mcp_bridge::Builder::new()
+            .bind_address("127.0.0.1")
+            .base_port(9323)
+            .build(),
+    );
     #[cfg(feature = "ui-e2e")]
     let builder = builder.on_page_load(|webview, payload| {
         e2e_trace("页面加载回调已触发");

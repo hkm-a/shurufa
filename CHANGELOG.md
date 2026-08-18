@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增（M10 调试基础设施：Tauri MCP Bridge 接入）
+- 设置中心接入 [hypothesi/mcp-server-tauri](https://github.com/hypothesi/mcp-server-tauri)
+  的 `tauri-plugin-mcp-bridge`（feature `mcp-bridge`，默认关闭，不影响生产
+  构建与测试）：`cargo tauri dev --features mcp-bridge` 时在
+  `127.0.0.1:9323` 起 WebSocket 桥（localhost-only，插件当前版本无 token，
+  仅绑回环地址），供 `@hypothesi/tauri-mcp-server` 连接做截图 / DOM /
+  模拟输入 / 窗口调试。已实测：dev 启动后端口 9323 正常监听。
+
 ### 新增（M10 困难项：简拼开关，部署期替代方案）
 - **无简拼变体方案**：librime 1.17 speller/algebra 不支持条件规则（实测
   `option@jianpin:` 报 Error loading formula #13），无法热开关简拼；
