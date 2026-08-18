@@ -20,8 +20,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shurufa-options = { path = "../../core/options" }
 sync-core = { path = "../../core/sync" }
+meval = "0.2"
 tauri = { version = "2", features = [] }
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 windows-registry = "0.6"
 
 [dev-dependencies]

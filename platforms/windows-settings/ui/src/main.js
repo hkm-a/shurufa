@@ -554,6 +554,7 @@ const MENU_ITEMS = [
   { id: "schemes", label: "输入方案", key: "F", icon: "circle-dot" },
   { id: "options", label: "输入选项", key: "E", icon: "keyboard" },
   { id: "history", label: "剪贴板历史", key: "K", icon: "clipboard-list" },
+  { id: "search", label: "桌面搜索", key: "S", icon: "search" },
   { id: "ai", label: "AI 助手", key: "A", icon: "sparkles" },
   { id: "pages", label: "设置中心", key: "Y", icon: "layout-dashboard" },
   { id: "help", label: "帮助", key: "Z", icon: "info" }
@@ -768,6 +769,13 @@ function submenuHtml(id) {
       </button>`
       )
       .join("");
+  }
+  if (id === "search") {
+    return `
+      <div class="desktop-search-box">
+        <input id="desktop-search-input" placeholder="搜应用 / 文件 / 计算…" autocomplete="off" spellcheck="false" />
+        <div id="desktop-search-results" class="desktop-search-results"><div class="submenu-empty">输入关键词；算式（如 1+2*3）直接出结果</div></div>
+      </div>`;
   }
   if (id === "ai") {
     return `
@@ -999,6 +1007,10 @@ app.addEventListener("click", (event) => {
   }
   if (button.dataset.copyId) {
     void menuCopyHistory(Number(button.dataset.copyId));
+    return;
+  }
+  if (button.dataset.searchHit) {
+    void handleDesktopSearchHit(button.dataset.searchHit, button.dataset.target || "");
     return;
   }
   if (button.dataset.menuAct) {
@@ -1253,6 +1265,62 @@ app.addEventListener("input", (event) => {
   if (event.target.closest(".app-options-panel")) { markDirty("input"); return; }
   if (event.target.closest("[data-phrase-row]")) { markDirty("phrases"); return; }
 });
+
+// M9-3：桌面快捷搜索（悬浮条子菜单内嵌搜索框，200ms 防抖）
+let desktopSearchTimer = 0;
+app.addEventListener("input", (event) => {
+  if (event.target.id !== "desktop-search-input") return;
+  window.clearTimeout(desktopSearchTimer);
+  desktopSearchTimer = window.setTimeout(() => void runDesktopSearch(), 200);
+});
+app.addEventListener("keydown", (event) => {
+  if (event.target.id !== "desktop-search-input") return;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    window.clearTimeout(desktopSearchTimer);
+    void runDesktopSearch();
+  }
+});
+
+async function runDesktopSearch() {
+  const input = document.querySelector("#desktop-search-input");
+  const box = document.querySelector("#desktop-search-results");
+  if (!input || !box) return;
+  const query = input.value.trim();
+  if (!query) {
+    box.innerHTML = `<div class="submenu-empty">输入关键词；算式（如 1+2*3）直接出结果</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="submenu-empty">搜索中…</div>`;
+  try {
+    const result = await invoke("desktop_search", { query });
+    const parts = [];
+    if (result.calc) {
+      parts.push(`<div class="desktop-search-hit desktop-search-calc"><span class="submenu-label">= ${escapeHtml(result.calc)}</span><button class="ghost-action" data-search-hit="calc" data-target="${escapeAttr(result.calc)}">复制</button></div>`);
+    }
+    if (result.apps && result.apps.length) {
+      parts.push(`<p class="desktop-search-title">应用</p>`);
+      parts.push(...result.apps.map((item) => `<button class="desktop-search-hit" data-search-hit="app" data-target="${escapeAttr(item.target)}" title="${escapeAttr(item.target)}"><span class="submenu-label ellipsis">${escapeHtml(item.name)}</span><span class="submenu-side">启动</span></button>`));
+    }
+    if (result.files && result.files.length) {
+      parts.push(`<p class="desktop-search-title">文件</p>`);
+      parts.push(...result.files.map((item) => `<button class="desktop-search-hit" data-search-hit="file" data-target="${escapeAttr(item.target)}" title="${escapeAttr(item.target)}"><span class="submenu-label ellipsis">${escapeHtml(item.name)}</span><span class="submenu-side">定位</span></button>`));
+    }
+    box.innerHTML = parts.length ? parts.join("") : `<div class="submenu-empty">无结果</div>`;
+  } catch (error) {
+    box.innerHTML = `<div class="submenu-empty">${escapeHtml(String(error))}</div>`;
+  }
+}
+
+async function handleDesktopSearchHit(kind, target) {
+  try {
+    const msg = await invoke("launch_desktop_target", { kind, target });
+    if (kind !== "calc") await applyMode("bar");
+    showToast(msg);
+  } catch (error) {
+    showToast(String(error), true);
+  }
+}
 
 function statusPill() {
   const running = dashboard.service_status === "运行中";

@@ -312,6 +312,305 @@ fn retry_sync_activity(id: u64) -> Result<String, String> {
     Ok("重试已提交，host 数秒内执行".to_owned())
 }
 
+// ---------------------------------------------------------------------------
+// M9-3 桌面快捷搜索：应用（Start Menu .lnk + App Paths）/ 文件（桌面/文档/下载
+// 有限遍历）/ 计算器（算术表达式求值）。
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopSearchHit {
+    name: String,
+    target: String,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopSearchResult {
+    apps: Vec<DesktopSearchHit>,
+    files: Vec<DesktopSearchHit>,
+    calc: Option<String>,
+}
+
+/// 纯函数：识别可计算的算术表达式（数字/+-*/()^. 空格，≤60 字符，须含运算符）。
+fn calc_expression(expr: &str) -> Option<f64> {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 60 {
+        return None;
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_digit() || "+-*/().^ ".contains(c))
+    {
+        return None;
+    }
+    if !trimmed.chars().any(|c| "+-*/^".contains(c)) {
+        return None;
+    }
+    meval::eval_str(trimmed).ok()
+}
+
+fn format_calc_value(value: f64) -> String {
+    if value.fract().abs() < 1e-9 && value.abs() < 1e15 {
+        format!("{}", value as i64)
+    } else {
+        format!("{value:.6}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned()
+    }
+}
+
+/// 纯函数：扫描目录下 .lnk 快捷方式（Start Menu 应用扫描与单测共用）。
+fn scan_lnk_names(dir: &std::path::Path, query: &str) -> Vec<(String, PathBuf)> {
+    let q = query.to_lowercase();
+    let mut hits = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return hits;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("lnk") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        if !name.is_empty() && (q.is_empty() || name.to_lowercase().contains(&q)) {
+            hits.push((name, path));
+        }
+    }
+    hits.sort_by(|a, b| a.0.cmp(&b.0));
+    hits.truncate(12);
+    hits
+}
+
+/// 注册表 App Paths（HKLM + HKCU）里的直连 exe。
+fn scan_app_paths(query: &str) -> Vec<(String, PathBuf)> {
+    use windows_registry::{CURRENT_USER, LOCAL_MACHINE};
+    let q = query.to_lowercase();
+    let mut hits = Vec::new();
+    for hive in [LOCAL_MACHINE, CURRENT_USER] {
+        let Ok(key) = hive.open(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths") else {
+            continue;
+        };
+        let Ok(keys) = key.keys() else { continue };
+        for name in keys {
+            let name_lc = name.to_lowercase();
+            if !q.is_empty() && !name_lc.contains(&q) {
+                continue;
+            }
+            let Ok(sub) = key.open(&name) else { continue };
+            if let Ok(path) = sub.get_string("") {
+                let p = PathBuf::from(path);
+                if p.is_file() {
+                    let display = p
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&name)
+                        .to_owned();
+                    hits.push((display, p));
+                }
+            }
+        }
+    }
+    hits.sort_by(|a, b| a.0.cmp(&b.0));
+    hits.truncate(12);
+    hits
+}
+
+/// 有限深度遍历目录找文件名命中（budget 上限防止卡死）。
+fn walk_files(
+    root: &std::path::Path,
+    query: &str,
+    out: &mut Vec<DesktopSearchHit>,
+    depth: usize,
+    budget: &mut usize,
+) {
+    if depth > 4 || *budget == 0 || out.len() >= 12 {
+        return;
+    }
+    let q = query.to_lowercase();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if *budget == 0 || out.len() >= 12 {
+            return;
+        }
+        *budget -= 1;
+        let path = entry.path();
+        if path.is_dir() {
+            walk_files(&path, query, out, depth + 1, budget);
+        } else if path.is_file() {
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            if !name.is_empty() && name.to_lowercase().contains(&q) {
+                out.push(DesktopSearchHit {
+                    name: name.to_owned(),
+                    target: path.to_string_lossy().into_owned(),
+                });
+            }
+        }
+    }
+}
+
+fn user_profile_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
+/// M9-3：桌面快捷搜索入口——算式优先，其次应用与文件并行扫描。
+#[tauri::command]
+fn desktop_search(query: String) -> DesktopSearchResult {
+    let q = query.trim();
+    if q.is_empty() {
+        return DesktopSearchResult::default();
+    }
+    if let Some(value) = calc_expression(q) {
+        return DesktopSearchResult {
+            apps: vec![],
+            files: vec![],
+            calc: Some(format_calc_value(value)),
+        };
+    }
+    let mut apps: Vec<DesktopSearchHit> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let profile = user_profile_dir();
+    let start_menu_dirs = [
+        profile
+            .join("AppData")
+            .join("Roaming")
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs"),
+        PathBuf::from(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs"),
+    ];
+    for dir in start_menu_dirs {
+        for (name, path) in scan_lnk_names(&dir, q) {
+            if seen.insert(path.clone()) {
+                apps.push(DesktopSearchHit {
+                    name,
+                    target: path.to_string_lossy().into_owned(),
+                });
+            }
+        }
+    }
+    for (name, path) in scan_app_paths(q) {
+        if apps.len() < 12 && seen.insert(path.clone()) {
+            apps.push(DesktopSearchHit {
+                name,
+                target: path.to_string_lossy().into_owned(),
+            });
+        }
+    }
+    apps.truncate(12);
+    let mut files = Vec::new();
+    let mut budget = 3000usize;
+    for root in [
+        profile.join("Desktop"),
+        profile.join("Documents"),
+        profile.join("Downloads"),
+    ] {
+        walk_files(&root, q, &mut files, 0, &mut budget);
+        if files.len() >= 12 {
+            break;
+        }
+    }
+    files.truncate(12);
+    DesktopSearchResult {
+        apps,
+        files,
+        calc: None,
+    }
+}
+
+/// M9-3：执行搜索结果——app 用 ShellExecute 启动（.lnk 需要 Shell 解析），
+/// file 用资源管理器定位，calc 写回剪贴板。
+#[tauri::command]
+fn launch_desktop_target(kind: String, target: String) -> Result<String, String> {
+    match kind.as_str() {
+        "app" => {
+            if !std::path::Path::new(&target).exists() {
+                return Err("目标不存在".to_owned());
+            }
+            let target_wide: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+            unsafe {
+                use windows::Win32::UI::Shell::ShellExecuteW;
+                use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+                let result = ShellExecuteW(
+                    None,
+                    None,
+                    windows::core::PCWSTR(target_wide.as_ptr()),
+                    None,
+                    None,
+                    SW_SHOWNORMAL,
+                );
+                if result.0 as isize <= 32 {
+                    return Err(format!(
+                        "启动失败（ShellExecute 错误码 {}）",
+                        result.0 as isize
+                    ));
+                }
+            }
+            Ok("已启动".to_owned())
+        }
+        "file" => {
+            let _ = Command::new("explorer.exe")
+                .arg(format!("/select,{target}"))
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+            Ok("已在资源管理器中定位".to_owned())
+        }
+        "calc" => write_clipboard_text_impl(target).map(|_| "结果已复制到剪贴板".to_owned()),
+        _ => Err("未知结果类型".to_owned()),
+    }
+}
+
+/// 写系统剪贴板（UTF-16 CF_UNICODETEXT；M9-3 计算器结果复制）。
+fn write_clipboard_text_impl(text: String) -> Result<(), String> {
+    use windows::Win32::Foundation::{GlobalFree, HANDLE};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    // CF_UNICODETEXT = 13（Ole 模块常量，裸值避免模块差异）
+    const CF_UNICODETEXT: u32 = 13;
+    unsafe {
+        if !OpenClipboard(None).is_ok() {
+            return Err("打开剪贴板失败".to_owned());
+        }
+        let result = (|| -> Result<(), String> {
+            if !EmptyClipboard().is_ok() {
+                return Err("清空剪贴板失败".to_owned());
+            }
+            let bytes = (text.encode_utf16().count() + 1) * 2;
+            let handle = GlobalAlloc(GMEM_MOVEABLE, bytes)
+                .map_err(|error| format!("分配剪贴板内存失败：{error}"))?;
+            let ptr = GlobalLock(handle) as *mut u16;
+            if ptr.is_null() {
+                let _ = GlobalFree(Some(handle));
+                return Err("锁定剪贴板内存失败".to_owned());
+            }
+            for (i, unit) in text.encode_utf16().chain(std::iter::once(0)).enumerate() {
+                *ptr.add(i) = unit;
+            }
+            let _ = GlobalUnlock(handle);
+            let _ = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0)))
+                .map_err(|error| format!("写入剪贴板数据失败：{error}"))?;
+            Ok(())
+        })();
+        let _ = CloseClipboard();
+        result
+    }
+}
+
 #[tauri::command]
 fn dashboard_state() -> DashboardState {
     DashboardState {
@@ -1954,6 +2253,8 @@ fn main() {
             remove_peer,
             sync_activity,
             retry_sync_activity,
+            desktop_search,
+            launch_desktop_target,
             dashboard_state,
             e2e_ping,
             save_relay,
@@ -2037,8 +2338,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        history_entry, retry_request_body, sync_dir, validate_skin_json, GeneralSettingsDto,
-        TypingStatsDto,
+        calc_expression, format_calc_value, history_entry, retry_request_body, scan_lnk_names,
+        sync_dir, validate_skin_json, walk_files, GeneralSettingsDto, TypingStatsDto,
     };
     use clipboard_store::{ClipEntry, ClipKind};
     use shurufa_options::LogLevel;
@@ -2235,6 +2536,38 @@ mod tests {
         let body = retry_request_body(7);
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["id"], serde_json::json!(7));
+        // M9-3：计算器表达式识别与求值
+        assert_eq!(calc_expression("1+2*3"), Some(7.0));
+        assert_eq!(calc_expression("(1+2)*3"), Some(9.0));
+        assert_eq!(calc_expression("2^10"), Some(1024.0));
+        assert_eq!(calc_expression("123"), None, "无运算符不算算式");
+        assert_eq!(calc_expression("abc"), None);
+        assert_eq!(calc_expression(""), None);
+        assert_eq!(format_calc_value(7.0), "7");
+        assert_eq!(format_calc_value(0.5), "0.5");
+        // M9-3：.lnk 扫描（临时目录）
+        let dir = std::env::temp_dir().join(format!("shurufa-m9-lnk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("记事本.lnk"), b"x").unwrap();
+        std::fs::write(dir.join("计算器.lnk"), b"x").unwrap();
+        std::fs::write(dir.join("readme.txt"), b"x").unwrap();
+        let hits = scan_lnk_names(&dir, "记");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, "记事本");
+        let all = scan_lnk_names(&dir, "");
+        assert_eq!(all.len(), 2, "空查询返回全部 .lnk");
+        std::fs::remove_dir_all(&dir).unwrap();
+        // M9-3：文件遍历命中（临时目录树）
+        let tree = std::env::temp_dir().join(format!("shurufa-m9-files-{}", std::process::id()));
+        std::fs::create_dir_all(tree.join("sub")).unwrap();
+        std::fs::write(tree.join("report.txt"), b"x").unwrap();
+        std::fs::write(tree.join("sub").join("Report2026.docx"), b"x").unwrap();
+        std::fs::write(tree.join("photo.png"), b"x").unwrap();
+        let mut out = Vec::new();
+        let mut budget = 1000usize;
+        walk_files(&tree, "report", &mut out, 0, &mut budget);
+        assert_eq!(out.len(), 2);
+        std::fs::remove_dir_all(&tree).unwrap();
         // 皮肤 JSON 校验（M8-5 导出/导入共用）
         assert!(validate_skin_json("{\"version\":2}").is_ok());
         assert!(validate_skin_json("not json").is_err());
