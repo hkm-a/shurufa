@@ -782,6 +782,98 @@ pub fn cli_pair(addr: &str) {
     }
 }
 
+/// `pair-ui` 子命令：设置中心配对向导的发起端。连接对端拿到确认码后写
+/// `pair-prompt.json`，轮询 `pair-confirm.json`（token 校验、60s 超时），
+/// 完成/取消后写 `pair-result.json` 并清理 prompt。
+pub fn cli_pair_ui(addr: &str) {
+    let addr = if addr.contains(':') {
+        addr.to_string()
+    } else {
+        format!("{addr}:48632")
+    };
+    let data = crate::app_data_dir();
+    let prompt_path = data.join("pair-prompt.json");
+    let confirm_path = data.join("pair-confirm.json");
+    let result_path = data.join("pair-result.json");
+    let _ = std::fs::remove_file(&prompt_path);
+    let _ = std::fs::remove_file(&confirm_path);
+    let _ = std::fs::remove_file(&result_path);
+    let token = format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let rt = tokio::runtime::Runtime::new().expect("创建运行时失败");
+    let outcome: Result<String, String> = rt.block_on(async {
+        let (in_tx, _in_rx) = tokio::sync::mpsc::channel(4);
+        let mut config = SyncConfig::new(sync_config_dir(), device_name());
+        // 临时实例：不监听固定端口、不广播，仅作发起端
+        config.port = 0;
+        config.enable_mdns = false;
+        let service = SyncService::start(config, in_tx, None, Box::new(|_| {}))
+            .await
+            .map_err(|e| e.to_string())?;
+        let confirm: ConfirmFn = Arc::new({
+            let prompt_path = prompt_path.clone();
+            let confirm_path = confirm_path.clone();
+            let token = token.clone();
+            move |prompt: PairPrompt| {
+                // 1) 展示确认码（设置中心轮询读取）
+                let _ = std::fs::write(
+                    &prompt_path,
+                    serde_json::json!({
+                        "token": token,
+                        "peer_name": prompt.peer_name,
+                        "code": prompt.code,
+                        "ts_ms": std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0),
+                    })
+                    .to_string(),
+                );
+                // 2) 轮询确认文件（60s 超时，300ms 间隔）
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                loop {
+                    if let Ok(raw) = std::fs::read_to_string(&confirm_path) {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                            let matches = value.get("token").and_then(serde_json::Value::as_str)
+                                == Some(token.as_str());
+                            if matches {
+                                let yes = value
+                                    .get("yes")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false);
+                                let _ = std::fs::remove_file(&confirm_path);
+                                return yes;
+                            }
+                        }
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+            }
+        });
+        match service.pair_with(&addr, confirm).await {
+            Ok(peer) => Ok(format!("已与「{}」配对", peer.name)),
+            Err(e) => Err(format!("配对失败：{e}")),
+        }
+    });
+    let _ = std::fs::remove_file(&prompt_path);
+    let (ok, message) = match outcome {
+        Ok(message) => (true, message),
+        Err(message) => (false, message),
+    };
+    let _ = std::fs::write(
+        &result_path,
+        serde_json::json!({ "token": token, "ok": ok, "message": message }).to_string(),
+    );
+}
+
 /// `devices` 子命令：列出本机身份与已配对设备。
 pub fn cli_devices() {
     match sync_core::DeviceIdentity::load_or_create(&sync_config_dir(), &device_name()) {

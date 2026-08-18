@@ -313,6 +313,151 @@ fn retry_sync_activity(id: u64) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// M10 交互式配对向导：settings ↔ host 通过 pair-prompt.json /
+// pair-confirm.json / pair-result.json 文件交互（host pair-ui 发起端）。
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PairUiState {
+    /// "idle" | "prompt" | "done" | "failed"
+    phase: String,
+    peer_name: Option<String>,
+    code: Option<String>,
+    token: Option<String>,
+    ok: Option<bool>,
+    message: Option<String>,
+}
+
+impl Default for PairUiState {
+    fn default() -> Self {
+        Self {
+            phase: "idle".to_owned(),
+            peer_name: None,
+            code: None,
+            token: None,
+            ok: None,
+            message: None,
+        }
+    }
+}
+
+/// M10：发起配对向导（fire-and-forget 启动 host pair-ui 发起端）。
+#[tauri::command]
+async fn pair_ui_start(ip: String) -> Result<String, String> {
+    let ip = ip.trim();
+    if ip.is_empty() || ip.chars().any(|c| c.is_whitespace()) {
+        return Err("请输入有效的对方 IP（如 192.168.1.20）".to_owned());
+    }
+    launch_host(&["pair-ui", ip]).await
+}
+
+/// M10：配对向导状态纯函数（结果文件优先；其次确认码文件；
+/// prompt 超龄 >75s 判 failed）。result_raw / prompt_raw 为文件原文。
+fn pair_ui_state_from(
+    result_raw: Option<&str>,
+    prompt_raw: Option<&str>,
+    age_ms: i64,
+) -> PairUiState {
+    if let Some(raw) = result_raw {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+            let ok = value
+                .get("ok")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            return PairUiState {
+                phase: if ok { "done" } else { "failed" }.to_owned(),
+                ok: Some(ok),
+                message: value
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                ..Default::default()
+            };
+        }
+    }
+    if let Some(raw) = prompt_raw {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+            if age_ms > 75_000 {
+                return PairUiState {
+                    phase: "failed".to_owned(),
+                    ok: Some(false),
+                    message: Some("等待确认超时，发起端已退出".to_owned()),
+                    ..Default::default()
+                };
+            }
+            return PairUiState {
+                phase: "prompt".to_owned(),
+                peer_name: value
+                    .get("peer_name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                code: value
+                    .get("code")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                token: value
+                    .get("token")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                ..Default::default()
+            };
+        }
+    }
+    PairUiState::default()
+}
+
+/// M10：读取配对向导状态（轮询用）。
+#[tauri::command]
+fn pair_ui_state() -> PairUiState {
+    let data = app_data_dir();
+    let result_raw = std::fs::read_to_string(data.join("pair-result.json")).ok();
+    let prompt_raw = std::fs::read_to_string(data.join("pair-prompt.json")).ok();
+    let age_ms = prompt_raw
+        .as_ref()
+        .and_then(|raw| {
+            serde_json::from_str::<serde_json::Value>(raw)
+                .ok()
+                .and_then(|v| v.get("ts_ms").and_then(serde_json::Value::as_i64))
+        })
+        .map(|ts| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+                - ts
+        })
+        .unwrap_or(0);
+    pair_ui_state_from(result_raw.as_deref(), prompt_raw.as_deref(), age_ms)
+}
+
+/// M10：确认/取消配对（写 pair-confirm.json，token 与发起端匹配才生效）。
+#[tauri::command]
+fn pair_ui_confirm(yes: bool) -> Result<String, String> {
+    let data = app_data_dir();
+    let prompt_path = data.join("pair-prompt.json");
+    let raw =
+        std::fs::read_to_string(&prompt_path).map_err(|_| "没有进行中的配对请求".to_owned())?;
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("配对请求解析失败：{e}"))?;
+    let token = value
+        .get("token")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "配对请求缺少 token".to_owned())?;
+    let body = serde_json::json!({ "token": token, "yes": yes }).to_string();
+    let path = data.join("pair-confirm.json");
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body).map_err(|error| format!("写入确认失败：{error}"))?;
+    std::fs::rename(&tmp, &path).map_err(|error| format!("提交确认失败：{error}"))?;
+    Ok(if yes {
+        "已确认，等待对方完成配对…"
+    } else {
+        "已取消配对"
+    }
+    .to_owned())
+}
+
+// ---------------------------------------------------------------------------
 // M9-3 桌面快捷搜索：应用（Start Menu .lnk + App Paths）/ 文件（桌面/文档/下载
 // 有限遍历）/ 计算器（算术表达式求值）。
 // ---------------------------------------------------------------------------
@@ -2270,6 +2415,9 @@ fn main() {
             remove_peer,
             sync_activity,
             retry_sync_activity,
+            pair_ui_start,
+            pair_ui_state,
+            pair_ui_confirm,
             desktop_search,
             launch_desktop_target,
             dashboard_state,
@@ -2355,8 +2503,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        calc_expression, format_calc_value, history_entry, retry_request_body, scan_lnk_names,
-        sync_dir, validate_skin_json, walk_files, GeneralSettingsDto, TypingStatsDto,
+        calc_expression, format_calc_value, history_entry, pair_ui_state_from, retry_request_body,
+        scan_lnk_names, sync_dir, validate_skin_json, walk_files, GeneralSettingsDto,
+        TypingStatsDto,
     };
     use clipboard_store::{ClipEntry, ClipKind};
     use shurufa_options::LogLevel;
@@ -2556,6 +2705,31 @@ mod tests {
         let body = retry_request_body(7);
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["id"], serde_json::json!(7));
+        // M10：配对向导状态机（结果优先 / prompt / 超时 / 空闲）
+        let done = pair_ui_state_from(
+            Some(r#"{"token":"t","ok":true,"message":"已配对"}"#),
+            Some(r#"{"token":"t","peer_name":"手机","code":"ABCD","ts_ms":1}"#),
+            1000,
+        );
+        assert_eq!(done.phase, "done");
+        assert_eq!(done.ok, Some(true));
+        let failed = pair_ui_state_from(
+            Some(r#"{"token":"t","ok":false,"message":"配对失败"}"#),
+            None,
+            0,
+        );
+        assert_eq!(failed.phase, "failed");
+        let prompt = pair_ui_state_from(
+            None,
+            Some(r#"{"token":"t","peer_name":"手机","code":"ABCD","ts_ms":1}"#),
+            1000,
+        );
+        assert_eq!(prompt.phase, "prompt");
+        assert_eq!(prompt.code.as_deref(), Some("ABCD"));
+        assert_eq!(prompt.peer_name.as_deref(), Some("手机"));
+        let timeout = pair_ui_state_from(None, Some(r#"{"token":"t","ts_ms":1}"#), 80_000);
+        assert_eq!(timeout.phase, "failed");
+        assert_eq!(pair_ui_state_from(None, None, 0).phase, "idle");
         // M9-3：计算器表达式识别与求值
         assert_eq!(calc_expression("1+2*3"), Some(7.0));
         assert_eq!(calc_expression("(1+2)*3"), Some(9.0));

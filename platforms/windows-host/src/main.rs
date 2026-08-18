@@ -263,6 +263,13 @@ fn main() {
             };
             sync::cli_pair(addr);
         }
+        "pair-ui" => {
+            let Some(addr) = args.get(1) else {
+                eprintln!("用法：shurufa-host pair-ui <对方IP[:端口]>（设置中心配对向导发起端）");
+                std::process::exit(2);
+            };
+            sync::cli_pair_ui(addr);
+        }
         "devices" => sync::cli_devices(),
         "unpair" => {
             let Some(fp) = args.get(1) else {
@@ -356,6 +363,8 @@ fn main() {
                  \x20 clip-remote-search <关键词> 跨设备搜索（8 秒聚合）\n\
                  \x20 chat <提示词>     Agnes 一次性帮写（不弹面板）\n\
                  \x20 ai <show>       唤起 AI 帮写面板（后台服务常驻时）\n\
+                 \x20 pair <对方IP>    发起配对（控制台确认码交互）\n\
+                 \x20 pair-ui <对方IP> 设置中心配对向导发起端（文件确认）\n\
                  \x20 pin/unpin <id>  置顶/取消置顶\n\
                  \x20 copy <id>       把条目写回剪贴板\n\
                  \x20 delete <id>     删除单条\n\

@@ -362,6 +362,8 @@ let skinPresets = [];
 let skinPresetBanner = null;
 // 跨设备同步活动流（M8-1：最近收发记录/来源标签/状态）；null=未加载
 let syncActivity = null;
+// M10：配对向导状态变量（null = 无进行中向导）。
+let pairWizard = null;
 // M8-2：已配对设备（peers.json）+ 重命名/移除交互状态
 let peers = null;
 let renamingFp = null;
@@ -1523,6 +1525,70 @@ function syncPage() {
     </section>`;
 }
 
+// M10：配对向导状态渲染（prompt → 确认码大号展示；done/failed → 结果）。
+function pairWizardHtml() {
+  if (!pairWizard || pairWizard.phase === 'idle') return '';
+  if (pairWizard.phase === 'waiting') {
+    return '<div class="setting-row"><div class="row-icon dim"><i data-lucide="loader-circle"></i></div><div><h3>正在连接对方…</h3><p>等待对方设备响应（约 30 秒内）</p></div></div>';
+  }
+  if (pairWizard.phase === 'prompt') {
+    return '<div class="pair-wizard">' +
+      '<p class="pair-code-label">对方设备「' + escapeHtml(pairWizard.peer_name || '未知') + '」的确认码</p>' +
+      '<div class="pair-code">' + escapeHtml(pairWizard.code || '……') + '</div>' +
+      '<p class="field-note">请核对对方屏幕上的确认码与本页一致后，点击「确认配对」；对方同时点击「是」即可完成配对。</p>' +
+      '<div class="field-action">' +
+      '<button class="primary-action compact" data-action="pair-confirm"><i data-lucide="check"></i>确认配对</button>' +
+      '<button class="outline-action compact" data-action="pair-cancel">取消</button>' +
+      '</div></div>';
+  }
+  const failed = pairWizard.phase === 'failed';
+  return '<div class="setting-row"><div class="row-icon ' + (failed ? 'coral' : 'teal') + '"><i data-lucide="' + (failed ? 'x-circle' : 'check-circle-2') + '"></i></div>' +
+    '<div><h3>' + (failed ? '配对失败' : '配对成功') + '</h3><p>' + escapeHtml(pairWizard.message || '') + '</p></div>' +
+    '<button class="ghost-action" data-action="pair-dismiss">关闭</button></div>';
+}
+
+// M10：配对向导轮询（每 2s 拉状态，最多 40 次；离开同步页自动停）。
+let pairPollTimer = 0;
+let pairPollCount = 0;
+async function pollPairState() {
+  if (!pairWizard || activePage !== 'sync') return;
+  if (pairPollCount >= 40) {
+    stopPairPoll();
+    if (pairWizard.phase !== 'done' && pairWizard.phase !== 'failed') {
+      pairWizard = { phase: 'failed', message: '等待超时，请重试' };
+      render();
+    }
+    return;
+  }
+  pairPollCount += 1;
+  try {
+    const state = await invoke('pair_ui_state');
+    const prevPhase = pairWizard.phase;
+    pairWizard = { ...pairWizard, ...state };
+    if (state.phase === 'done' || state.phase === 'failed') {
+      stopPairPoll();
+      await refreshPeers().catch(() => {});
+      render();
+      showToast(state.message || (state.phase === 'done' ? '配对成功' : '配对失败'), state.phase === 'failed');
+      return;
+    }
+    if (state.phase !== prevPhase) render();
+  } catch (error) {
+    showToast(String(error), true);
+    stopPairPoll();
+  }
+}
+function stopPairPoll() {
+  if (pairPollTimer) {
+    window.clearInterval(pairPollTimer);
+    pairPollTimer = 0;
+  }
+}
+function startPairPoll() {
+  stopPairPoll();
+  pairPollCount = 0;
+  pairPollTimer = window.setInterval(() => void pollPairState(), 2000);
+}
 // M8-1：最近同步活动行（来源标签/方向/类型/状态/相对时间）。
 // 相对时间（毫秒时间戳 → “N 秒/分钟/小时/天前”）。
 function relTimeAgo(ms) {
@@ -2817,6 +2883,7 @@ async function navigateTo(page) {
   globalSearchQuery = "";
   searchOpen = false;
   activePage = page;
+  if (page !== 'sync') stopPairPoll();
   if (page === "history") {
     try {
       await refreshHistory();
@@ -2915,6 +2982,38 @@ async function handleAction(button) {
       "retry-sync-activity": ["retry_sync_activity", { id }, "重试已提交，host 数秒内执行", 3200],
       refresh: [undefined, undefined, "后台状态已刷新"]
     };
+    if (action === 'pair-start') {
+      const ip = (document.querySelector('#pair-ip')?.value || '').trim();
+      if (!ip) { showToast('请输入对方设备 IP', true); return; }
+      try {
+        await invoke('pair_ui_start', { ip });
+        pairWizard = { phase: 'waiting' };
+        render();
+        startPairPoll();
+        showToast('配对已发起，等待对方响应…');
+      } catch (error) { showToast(String(error), true); }
+      return;
+    }
+    if (action === 'pair-confirm') {
+      try {
+        const msg = await invoke('pair_ui_confirm', { yes: true });
+        showToast(msg);
+      } catch (error) { showToast(String(error), true); }
+      return;
+    }
+    if (action === 'pair-cancel') {
+      try { await invoke('pair_ui_confirm', { yes: false }); } catch (_error) { /* 忽略 */ }
+      stopPairPoll();
+      pairWizard = null;
+      render();
+      showToast('已取消配对');
+      return;
+    }
+    if (action === 'pair-dismiss') {
+      pairWizard = null;
+      render();
+      return;
+    }
     if (action === "add-app-option") {
       appOptions = [...(appOptions ?? []), { app: "", ascii_mode: true }];
       markDirty("input");
