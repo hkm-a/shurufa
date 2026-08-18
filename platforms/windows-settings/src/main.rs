@@ -218,6 +218,84 @@ fn read_service_status() -> String {
     }
 }
 
+/// 读取应用/网站直达清单（app-shortcuts.json）。
+#[tauri::command]
+fn list_shortcuts() -> shurufa_options::AppShortcuts {
+    shurufa_options::app_shortcuts::load()
+}
+
+/// 保存直达清单：校验后落盘 JSON，并生成引擎 lua 快捷表（改完即生效）。
+#[tauri::command]
+fn save_shortcuts(
+    shortcuts: shurufa_options::AppShortcuts,
+) -> Result<shurufa_options::AppShortcuts, String> {
+    for s in &shortcuts.entries {
+        let code = s.code.trim();
+        if code.is_empty() {
+            return Err("触发码不能为空".to_owned());
+        }
+        if !code
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        {
+            return Err(format!("触发码「{code}」只能含小写字母和数字"));
+        }
+        if code.len() > 32 {
+            return Err("触发码不能超过 32 个字符".to_owned());
+        }
+        if s.label.trim().is_empty() || s.label.chars().count() > 30 {
+            return Err("名称需为 1-30 个字符".to_owned());
+        }
+        if s.target.trim().is_empty() {
+            return Err("目标不能为空".to_owned());
+        }
+        if s.kind == shurufa_options::AppShortcutKind::Url
+            && !s.target.starts_with("http://")
+            && !s.target.starts_with("https://")
+        {
+            return Err(format!("网址目标「{}」需以 http(s):// 开头", s.target));
+        }
+    }
+    let saved = shurufa_options::app_shortcuts::save(shortcuts)
+        .map_err(|error| format!("保存直达清单失败：{error}"))?;
+    shurufa_options::app_shortcuts::write_lua(&saved)
+        .map_err(|error| format!("生成引擎快捷表失败：{error}"))?;
+    Ok(saved)
+}
+
+#[tauri::command]
+fn list_peers() -> Result<Vec<sync_core::Peer>, String> {
+    sync_core::PeerStore::open(&sync_dir()).map(|store| store.list())
+}
+
+#[tauri::command]
+fn rename_peer(fingerprint: String, name: String) -> Result<(), String> {
+    let store = sync_core::PeerStore::open(&sync_dir())?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("设备名称不能为空".to_owned());
+    }
+    if name.chars().count() > 40 {
+        return Err("设备名称不能超过 40 个字符".to_owned());
+    }
+    let peers = store.list();
+    let Some(mut peer) = peers.into_iter().find(|p| p.fingerprint == fingerprint) else {
+        return Err("未找到该设备（可能已被移除）".to_owned());
+    };
+    peer.name = name.to_owned();
+    store.upsert(peer)
+}
+
+#[tauri::command]
+fn remove_peer(fingerprint: String) -> Result<bool, String> {
+    sync_core::PeerStore::open(&sync_dir())?.remove(&fingerprint)
+}
+
+#[tauri::command]
+fn sync_activity() -> shurufa_options::SyncActivity {
+    shurufa_options::sync_activity::load()
+}
+
 #[tauri::command]
 fn dashboard_state() -> DashboardState {
     DashboardState {
@@ -625,6 +703,38 @@ fn set_history_pinned(id: i64, pinned: bool) -> Result<(), String> {
     } else {
         Err("该历史条目已不存在".to_owned())
     }
+}
+
+/// 批量置顶/取消置顶（M8-3 批量整理）：逐条更新，返回实际更新的条数。
+#[tauri::command]
+fn batch_set_pinned(ids: Vec<i64>, pinned: bool) -> Result<usize, String> {
+    let store = open_history_store()?;
+    let mut done = 0usize;
+    for id in ids {
+        if store
+            .set_pinned(id, pinned)
+            .map_err(|error| format!("更新置顶状态失败：{error}"))?
+        {
+            done += 1;
+        }
+    }
+    Ok(done)
+}
+
+/// 批量删除历史（M8-3 批量整理）：逐条删除，返回实际删除的条数。
+#[tauri::command]
+fn batch_delete_history(ids: Vec<i64>) -> Result<usize, String> {
+    let store = open_history_store()?;
+    let mut done = 0usize;
+    for id in ids {
+        if store
+            .delete(id)
+            .map_err(|error| format!("删除历史条目失败：{error}"))?
+        {
+            done += 1;
+        }
+    }
+    Ok(done)
 }
 
 #[tauri::command]
@@ -1137,11 +1247,10 @@ fn skin_payload() -> Result<SkinPayload, String> {
     })
 }
 
-#[tauri::command]
-fn save_skin(content: String) -> Result<(), String> {
-    // 基本完整性检查：必须是合法 JSON 且 version 字段为 1 或 2。
+/// 皮肤 JSON 完整性校验（保存/导出/导入共用）：合法 JSON 且 version ∈ {1,2}。
+fn validate_skin_json(content: &str) -> Result<(), String> {
     let value: serde_json::Value =
-        serde_json::from_str(&content).map_err(|error| format!("JSON 无效：{error}"))?;
+        serde_json::from_str(content).map_err(|error| format!("JSON 无效：{error}"))?;
     let version = value
         .get("version")
         .and_then(serde_json::Value::as_u64)
@@ -1149,6 +1258,38 @@ fn save_skin(content: String) -> Result<(), String> {
     if version != 1 && version != 2 {
         return Err(format!("version 仅支持 1 或 2，当前为 {version}"));
     }
+    Ok(())
+}
+
+/// 导出皮肤为单文件 JSON 到下载目录（M8-5 皮肤包导出）。返回完整路径。
+#[tauri::command]
+fn export_skin(name: String, json: String) -> Result<String, String> {
+    validate_skin_json(&json)?;
+    // 名称净化：仅保留字母数字/空白/连字符/下划线，杜绝路径注入
+    let safe: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || c.is_ascii_whitespace())
+        .collect();
+    let safe = if safe.trim().is_empty() {
+        "skin".to_owned()
+    } else {
+        safe.trim().to_owned()
+    };
+    let dir = std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .map(|p| p.join("Downloads"))
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(app_data_dir);
+    std::fs::create_dir_all(&dir).map_err(|error| format!("创建导出目录失败：{error}"))?;
+    let path = dir.join(format!("shurufa-skin-{safe}.json"));
+    std::fs::write(&path, &json).map_err(|error| format!("导出失败：{error}"))?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+fn save_skin(content: String) -> Result<(), String> {
+    // 基本完整性检查：必须是合法 JSON 且 version 字段为 1 或 2。
+    validate_skin_json(&content)?;
     let path = app_data_dir().join("shurufa-skin.json");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| format!("创建目录失败：{error}"))?;
@@ -1784,6 +1925,12 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            list_shortcuts,
+            save_shortcuts,
+            list_peers,
+            rename_peer,
+            remove_peer,
+            sync_activity,
             dashboard_state,
             e2e_ping,
             save_relay,
@@ -1796,6 +1943,8 @@ fn main() {
             history_entries,
             copy_history,
             set_history_pinned,
+            batch_set_pinned,
+            batch_delete_history,
             delete_history,
             clear_unpinned_history,
             ime_options,
@@ -1815,6 +1964,7 @@ fn main() {
             skin_payload,
             save_skin,
             reset_skin,
+            export_skin,
             list_skins,
             apply_skin,
             list_input_schemes,
@@ -1862,7 +2012,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{history_entry, sync_dir, GeneralSettingsDto, TypingStatsDto};
+    use super::{history_entry, sync_dir, validate_skin_json, GeneralSettingsDto, TypingStatsDto};
     use clipboard_store::{ClipEntry, ClipKind};
     use shurufa_options::LogLevel;
 
@@ -2054,6 +2204,11 @@ mod tests {
         assert_eq!(minimal.ball_opacity, 100);
         // 老 JSON 无 enable_translate_hotkey → serde default 为 true（默认开）
         assert!(minimal.enable_translate_hotkey);
+        // 皮肤 JSON 校验（M8-5 导出/导入共用）
+        assert!(validate_skin_json("{\"version\":2}").is_ok());
+        assert!(validate_skin_json("not json").is_err());
+        assert!(validate_skin_json("{\"version\":3}").is_err());
+        assert!(validate_skin_json("{}").is_err());
         // 不透明度钳位：越界值被压回 [30, 100]
         assert_eq!(
             shurufa_options::GeneralSettings {

@@ -676,6 +676,7 @@ impl SyncService {
             name: fingerprint.chars().take(8).collect(),
             fingerprint: fingerprint.to_string(),
             last_addr: Some(addr.to_string()),
+            last_seen_ms: None,
         });
     }
 
@@ -1344,6 +1345,12 @@ async fn handle_inbound(
         name: name.clone(),
         fingerprint: fp.clone(),
         last_addr: direct_addr,
+        last_seen_ms: Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        ),
     })?;
     shared.log(&format!("已与 {name} 配对"));
     duplex(shared, tls, fp, name, format, features).await
@@ -1412,6 +1419,12 @@ async fn pair_initiate(
         name,
         fingerprint: fp,
         last_addr: Some(addr.to_string()),
+        last_seen_ms: Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        ),
     };
     shared.peers.upsert(peer.clone())?;
     shared.log(&format!("已与 {} 配对", peer.name));
@@ -2164,6 +2177,7 @@ mod tests {
                 name: "乙设备".into(),
                 fingerprint: second_identity.fingerprint.clone(),
                 last_addr: None,
+                last_seen_ms: None,
             })
             .unwrap();
         PeerStore::open(second_dir.path())
@@ -2172,6 +2186,7 @@ mod tests {
                 name: "甲设备".into(),
                 fingerprint: first_identity.fingerprint.clone(),
                 last_addr: None,
+                last_seen_ms: None,
             })
             .unwrap();
 

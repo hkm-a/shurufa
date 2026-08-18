@@ -279,6 +279,12 @@ pub fn app_dir() -> PathBuf {
         .join("shurufa")
 }
 
+/// Rime 用户数据目录（与 host 的 user_rime_dir / algo 的 user_config_root 一致）：
+/// app_dir()/rime；引擎部署与 lua 生成都写这里。
+pub fn rime_dir() -> PathBuf {
+    app_dir().join("rime")
+}
+
 /// 选项文件路径：`app_dir()/options.json`。
 pub fn path() -> PathBuf {
     path_in(&app_dir())
@@ -904,6 +910,422 @@ pub mod favorites {
             assert!(re.entries[0].pinned_at_ms < 0);
             assert_eq!(re.entries[0].pinned_at_ms, -original);
             std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 跨设备同步活动流（M8-1：同步状态可视化 / 来源标签）
+// ---------------------------------------------------------------------------
+
+/// 同步活动类型。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncActivityKind {
+    Text,
+    Image,
+    File,
+}
+
+/// 同步活动方向：收到（in）/ 发出（out）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncDirection {
+    In,
+    Out,
+}
+
+/// 单条跨设备同步活动：来源标签（peer）、状态、时间、预览。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SyncActivityEntry {
+    pub id: u64,
+    pub direction: SyncDirection,
+    pub kind: SyncActivityKind,
+    /// 预览：文本截断 ~60 字符 / 图片"图片 N 字节" / 文件名
+    pub preview: String,
+    /// 来源/目标设备名（收到 = 对端 from_name；发出 = 对端应答来源）
+    #[serde(default)]
+    pub peer: Option<String>,
+    /// "ok" | "failed"
+    pub status: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    pub ts_ms: i64,
+}
+
+/// 同步活动流文件（sync-activity.json）；最多保留 sync_activity::CAP 条。
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SyncActivity {
+    #[serde(default)]
+    pub next_id: u64,
+    #[serde(default)]
+    pub entries: Vec<SyncActivityEntry>,
+}
+
+pub mod sync_activity {
+    use super::{SyncActivity, SyncActivityEntry};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+
+    /// 活动流保留上限：设置中心最多展示最近 50 条。
+    pub const CAP: usize = 50;
+
+    fn path() -> PathBuf {
+        crate::app_dir().join("sync-activity.json")
+    }
+
+    fn load_from(p: &Path) -> SyncActivity {
+        std::fs::read(p)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_to(p: &Path, act: &SyncActivity) -> std::io::Result<()> {
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(act)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        // 原子替换：先写 .tmp 再 rename，避免崩溃留下半截文件
+        let tmp = p.with_extension("json.tmp");
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, p)?;
+        Ok(())
+    }
+
+    /// 进程内串行化：host 多个事件回调与设置中心读取可能并发，先掐同进程。
+    static LOCAL: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        LOCAL
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// 读取活动流（磁盘缺失/损坏回退空）。
+    pub fn load() -> SyncActivity {
+        load_from(&path())
+    }
+
+    /// 记录一条活动到指定文件：分配单调 id、追加并裁剪到 CAP 条、原子落盘。
+    /// 返回带 id 的条目；id 由本函数分配（入参 id 字段被覆盖）。
+    /// 测试经此函数注入临时路径，生产走 [`record`] 的默认路径。
+    fn record_to(p: &Path, mut entry: SyncActivityEntry) -> std::io::Result<SyncActivityEntry> {
+        let _guard = lock();
+        let mut act = load_from(p);
+        entry.id = act.next_id;
+        act.next_id = act.next_id.saturating_add(1);
+        act.entries.push(entry.clone());
+        if act.entries.len() > CAP {
+            let drop_n = act.entries.len() - CAP;
+            act.entries.drain(0..drop_n);
+        }
+        save_to(p, &act)?;
+        Ok(entry)
+    }
+
+    /// 记录一条活动（默认文件路径）：见 [`record_to`]。
+    pub fn record(entry: SyncActivityEntry) -> std::io::Result<SyncActivityEntry> {
+        record_to(&path(), entry)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::{SyncActivityKind, SyncDirection};
+
+        fn temp_dir(tag: &str) -> PathBuf {
+            let d = std::env::temp_dir().join(format!(
+                "shurufa-sync-activity-{tag}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }
+
+        fn sample(id: u64) -> SyncActivityEntry {
+            SyncActivityEntry {
+                id,
+                direction: SyncDirection::In,
+                kind: SyncActivityKind::Text,
+                preview: "你好".into(),
+                peer: Some("手机".into()),
+                status: "ok".into(),
+                detail: None,
+                ts_ms: 1_700_000_000_000,
+            }
+        }
+
+        #[test]
+        fn 活动可往返序列化() {
+            let dir = temp_dir("roundtrip");
+            let p = dir.join("sync-activity.json");
+            let act = SyncActivity {
+                next_id: 2,
+                entries: vec![sample(0), sample(1)],
+            };
+            save_to(&p, &act).unwrap();
+            assert_eq!(load_from(&p), act);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn 记录分配单调id且失败状态可标记() {
+            let dir = temp_dir("record");
+            let p = dir.join("sync-activity.json");
+            let mut entry = sample(u64::MAX);
+            entry.status = "failed".into();
+            entry.detail = Some("写入系统剪贴板失败".into());
+            let saved = record_to(&p, entry).unwrap();
+            assert_eq!(saved.id, 0, "首次记录 id 应为 0");
+            assert_eq!(saved.status, "failed");
+            let back = load_from(&p);
+            assert_eq!(back.next_id, 1);
+            assert_eq!(back.entries.len(), 1);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn 超过上限时裁剪最旧() {
+            let dir = temp_dir("cap");
+            let p = dir.join("sync-activity.json");
+            for _ in 0..(CAP + 5) {
+                record_to(&p, sample(u64::MAX)).unwrap();
+            }
+            let back = load_from(&p);
+            assert_eq!(back.entries.len(), CAP);
+            // 最旧的 5 条被裁掉：第一条 id 应为 5
+            assert_eq!(back.entries[0].id, 5);
+            assert_eq!(back.next_id, (CAP + 5) as u64);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 应用/网站直达（M8-4，搜狗 15.2 灵犀候选直达同类）
+// ---------------------------------------------------------------------------
+
+/// 直达目标类型：应用（可执行文件）或网址（浏览器打开）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppShortcutKind {
+    App,
+    Url,
+}
+
+/// 一条直达快捷：输入 code 命中候选 → 提交后启动 target（不落文本）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppShortcut {
+    pub id: u64,
+    /// 触发码（小写字母/数字，≤32）
+    pub code: String,
+    /// 候选显示名（≤30）
+    pub label: String,
+    pub kind: AppShortcutKind,
+    /// 应用可执行文件绝对路径 或 URL（http/https）
+    pub target: String,
+}
+
+/// 直达清单（app-shortcuts.json）；设置中心整表读写。
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppShortcuts {
+    #[serde(default)]
+    pub next_id: u64,
+    #[serde(default)]
+    pub entries: Vec<AppShortcut>,
+}
+
+pub mod app_shortcuts {
+    use super::{AppShortcutKind, AppShortcuts};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+
+    /// 直达清单上限（防止误填刷爆；正常使用远达不到）。
+    pub const CAP: usize = 100;
+
+    pub fn path() -> PathBuf {
+        crate::app_dir().join("app-shortcuts.json")
+    }
+
+    fn load_from(p: &Path) -> AppShortcuts {
+        std::fs::read(p)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_to(p: &Path, shortcuts: &AppShortcuts) -> std::io::Result<()> {
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(shortcuts)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tmp = p.with_extension("json.tmp");
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, p)?;
+        Ok(())
+    }
+
+    static LOCAL: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        LOCAL
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn load() -> AppShortcuts {
+        load_from(&path())
+    }
+
+    /// 规范化清单（纯函数，可单测）：去空 code、同 code 去重（保留首个）、
+    /// 分配单调 id、code 转小写、裁剪到 CAP。
+    fn normalize(shortcuts: &mut AppShortcuts) {
+        let mut seen = std::collections::HashSet::new();
+        shortcuts.entries.retain(|s| {
+            let code = s.code.trim().to_ascii_lowercase();
+            !code.is_empty() && seen.insert(code)
+        });
+        for entry in shortcuts.entries.iter_mut() {
+            entry.id = shortcuts.next_id;
+            shortcuts.next_id = shortcuts.next_id.saturating_add(1);
+            entry.code = entry.code.trim().to_ascii_lowercase();
+        }
+        if shortcuts.entries.len() > CAP {
+            shortcuts.entries.truncate(CAP);
+        }
+    }
+
+    /// 整表保存（设置中心编辑后整体写回）：规范化后原子落盘。
+    pub fn save(mut shortcuts: AppShortcuts) -> std::io::Result<AppShortcuts> {
+        let _guard = lock();
+        normalize(&mut shortcuts);
+        save_to(&path(), &shortcuts)?;
+        Ok(shortcuts)
+    }
+
+    /// 生成供引擎 lua 读取的快捷表（写往 user_rime_dir()/lua/app_direct_shortcuts.lua）。
+    pub fn generate_lua(shortcuts: &AppShortcuts) -> String {
+        let mut out = String::from(
+            "-- 应用/网站直达（M8-4）：由设置中心从 app-shortcuts.json 生成，勿手改。
+",
+        );
+        out.push_str(
+            "return {
+",
+        );
+        for s in &shortcuts.entries {
+            let kind = match s.kind {
+                AppShortcutKind::App => "app",
+                AppShortcutKind::Url => "url",
+            };
+            out.push_str(&format!(
+                "  {{ code = {:?}, label = {:?}, kind = {:?}, target = {:?} }},
+",
+                s.code, s.label, kind, s.target
+            ));
+        }
+        out.push_str(
+            "}
+",
+        );
+        out
+    }
+
+    /// 把快捷表写为 lua 模块（engine 的 user_data_dir/lua 下，require 直接命中）。
+    pub fn write_lua(shortcuts: &AppShortcuts) -> std::io::Result<()> {
+        let dir = crate::rime_dir().join("lua");
+        std::fs::create_dir_all(&dir)?;
+        let text = generate_lua(shortcuts);
+        std::fs::write(dir.join("app_direct_shortcuts.lua"), text)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        use crate::AppShortcut;
+
+        fn temp_dir(tag: &str) -> PathBuf {
+            let d = std::env::temp_dir().join(format!(
+                "shurufa-app-shortcuts-{tag}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }
+
+        fn sample(code: &str, kind: AppShortcutKind) -> AppShortcut {
+            AppShortcut {
+                id: 0,
+                code: code.to_owned(),
+                label: format!("目标-{code}"),
+                kind,
+                target: if kind == AppShortcutKind::Url {
+                    "https://example.com".into()
+                } else {
+                    "C:\\apps\\x.exe".into()
+                },
+            }
+        }
+
+        #[test]
+        fn 清单往返序列化与去重() {
+            let dir = temp_dir("roundtrip");
+            let p = dir.join("app-shortcuts.json");
+            let mut list = AppShortcuts::default();
+            list.entries.push(sample("weixin", AppShortcutKind::App));
+            list.entries.push(sample("weixin", AppShortcutKind::App)); // 重复 code
+            list.entries.push(sample("baidu", AppShortcutKind::Url));
+            save_to(&p, &list).unwrap();
+            let back = load_from(&p);
+            assert_eq!(back, list);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn lua生成包含转义与类型() {
+            let mut list = AppShortcuts::default();
+            list.entries.push(AppShortcut {
+                id: 1,
+                code: "weixin".into(),
+                label: "微信".into(),
+                kind: AppShortcutKind::App,
+                target: "C:\\Program Files\\wechat.exe".into(),
+            });
+            list.entries.push(sample("baidu", AppShortcutKind::Url));
+            let lua = generate_lua(&list);
+            assert!(lua.contains("code = \"weixin\""));
+            assert!(lua.contains("kind = \"app\""));
+            assert!(lua.contains("C:\\\\Program Files\\\\wechat.exe"));
+            assert!(lua.contains("kind = \"url\""));
+        }
+
+        #[test]
+        fn 规范化去重分配id并裁剪上限() {
+            let mut list = AppShortcuts::default();
+            for i in 0..(CAP as u64 + 3) {
+                list.entries
+                    .push(sample(&format!("code{i}"), AppShortcutKind::App));
+            }
+            // 重复 code（大小写不同）只留首个；空 code 剔除
+            list.entries.push(sample("CODE0", AppShortcutKind::App));
+            list.entries.push(sample("", AppShortcutKind::App));
+            normalize(&mut list);
+            assert_eq!(list.entries.len(), CAP);
+            // code 归一化小写；id 从 0 起连续
+            assert_eq!(list.entries[0].code, "code0");
+            assert_eq!(list.entries[0].id, 0);
+            assert_eq!(list.entries[1].id, 1);
+            // 裁剪不回退 next_id（已分配的 id 不复用）
+            assert_eq!(list.next_id, (CAP as u64) + 3);
+            assert!(list.entries.iter().all(|e| !e.code.is_empty()));
         }
     }
 }

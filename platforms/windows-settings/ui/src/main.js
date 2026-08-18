@@ -329,6 +329,18 @@ function saveEmojiTone(tone) {
 // 预设皮肤列表（schemas/skins-index.json）；banner 为一次性成功/失败提示
 let skinPresets = [];
 let skinPresetBanner = null;
+// 跨设备同步活动流（M8-1：最近收发记录/来源标签/状态）；null=未加载
+let syncActivity = null;
+// M8-2：已配对设备（peers.json）+ 重命名/移除交互状态
+let peers = null;
+let renamingFp = null;
+let confirmRemoveFp = null;
+// M8-4：应用/网站直达编辑文本（code<TAB>名称<TAB>app|url<TAB>目标）
+let shortcutsText = "";
+// M8-3：历史面板批量选择状态
+let historySelectMode = false;
+let historySelected = new Set();
+let confirmBatchDelete = false;
 // 通用页（通用 6 字段）；null=未加载/读取失败（表单全部禁用）
 let generalSettings = null;
 // 语音转写卡片（wave 4 新挂在通用页里；speechSettings 与 general 完全独立
@@ -1057,6 +1069,23 @@ app.addEventListener("input", (event) => {
   search?.setSelectionRange(historyQuery.length, historyQuery.length);
 });
 
+// 皮肤导入（M8-5）：webview 本地读文件文本，复用 save_skin 落盘后刷新编辑器
+app.addEventListener("change", (event) => {
+  if (event.target.id !== "skin-import-file") return;
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  file.text()
+    .then(async (text) => {
+      await invoke("save_skin", { content: text });
+      const payload = await invoke("skin_payload");
+      skinState = { loaded: true, content: payload.content ?? "", source: payload.source, user_path: payload.user_path, dirty: false };
+      try { skinPresets = await invoke("list_skins"); } catch (_error) { skinPresets = []; }
+      render();
+      showToast("皮肤已导入并应用");
+    })
+    .catch((error) => showToast(String(error), true));
+});
+
 // 符号面板搜索（Tier 11）：实时过滤，重渲染后恢复焦点与光标位置。
 app.addEventListener("input", (event) => {
   if (event.target.id !== "symbol-search") return;
@@ -1107,6 +1136,8 @@ function workspacePage() {
 }
 
 function inputPage() {
+  // M8-4：进入输入页即拉取直达清单（完成后若仍在本页则重绘）。
+  void refreshShortcuts().catch(() => { shortcutsText = ""; });
   // 当前输入方案（与工作台一致）
   const schemeLabel = (() => {
     const meta = (schemeList || []).find((s) => s.id === schemeCurrent);
@@ -1135,6 +1166,12 @@ function inputPage() {
         <div class="divider"></div>
         <div class="setting-row"><div class="row-icon dim"><i data-lucide="sparkles"></i></div><div><h3>候选与历史</h3><p>使用 Ctrl+Shift+V 呼出剪贴板历史</p></div><button class="outline-action" data-page="history"><i data-lucide="clipboard-list"></i>管理历史</button></div>
       </article>
+      <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="rocket"></i></div><div><h3>直达快捷</h3><p>输入触发码出直达候选：🖥 打开应用 / 🌐 打开网址（搜狗 15.2 灵犀候选直达同类）</p></div></div>
+        <textarea id="shortcuts-editor" rows="6" spellcheck="false" placeholder="每行一条：触发码  名称  app|url  目标&#10;weixin&#9;微信&#9;app&#9;C:/apps/wechat.exe&#10;baidu&#9;百度&#9;url&#9;https://www.baidu.com">${escapeHtml(shortcutsText)}</textarea>
+        <p class="field-note">每行：触发码（小写字母数字） 名称  类型(app/url)  目标；保存即生效（引擎每次按键重新加载快捷表）</p>
+        <button class="primary-action compact" data-action="save-shortcuts"><i data-lucide="save"></i>保存直达</button>
+      </article>
       <article class="hint-card"><i data-lucide="lightbulb"></i><p>后台服务负责剪贴板历史与跨设备同步。它会以隐藏窗口运行。语音转写（Ctrl+Shift+S）当前为 dev-stub。</p></article>
     </section>`;
 }
@@ -1143,21 +1180,41 @@ function historyPage() {
   const query = historyQuery.trim().toLocaleLowerCase();
   const entries = historyEntries.filter((entry) => `${entry.text} ${entry.source_app} ${entry.kind}`.toLocaleLowerCase().includes(query));
   const list = entries.length
-    ? entries.map((entry) => `
-        <article class="history-entry">
+    ? entries.map((entry) => {
+        const selected = historySelected.has(entry.id);
+        const selectBox = historySelectMode
+          ? `<button class="history-check ${selected ? "checked" : ""}" data-action="history-select" data-id="${entry.id}" aria-label="选择条目"><i data-lucide="${selected ? "check-square" : "square"}"></i></button>`
+          : "";
+        const actions = historySelectMode
+          ? ""
+          : `<div class="history-actions">
+              <button class="icon-action" data-action="copy-history" data-id="${entry.id}" title="复制到剪贴板"><i data-lucide="copy"></i></button>
+              <button class="icon-action" data-action="toggle-pin-history" data-id="${entry.id}" data-pinned="${entry.pinned}" title="${entry.pinned ? "取消置顶" : "置顶"}"><i data-lucide="pin"></i></button>
+              <button class="icon-action danger-action" data-action="delete-history" data-id="${entry.id}" title="删除历史条目"><i data-lucide="trash-2"></i></button>
+            </div>`;
+        return `
+        <article class="history-entry${selected ? " selected" : ""}">
+          ${selectBox}
           <div class="history-kind ${entry.pinned ? "pinned" : ""}"><i data-lucide="${entry.kind === "图片" ? "image" : entry.kind === "文件" ? "folder-open" : "copy"}"></i></div>
           <div class="history-copy"><div class="history-title">${escapeHtml(entry.text)}</div><p>${escapeHtml(entry.kind)}${entry.source_app ? ` · ${escapeHtml(entry.source_app)}` : ""}</p></div>
-          <div class="history-actions">
-            <button class="icon-action" data-action="copy-history" data-id="${entry.id}" title="复制到剪贴板"><i data-lucide="copy"></i></button>
-            <button class="icon-action" data-action="toggle-pin-history" data-id="${entry.id}" data-pinned="${entry.pinned}" title="${entry.pinned ? "取消置顶" : "置顶"}"><i data-lucide="pin"></i></button>
-            <button class="icon-action danger-action" data-action="delete-history" data-id="${entry.id}" title="删除历史条目"><i data-lucide="trash-2"></i></button>
-          </div>
-        </article>`).join("")
+          ${actions}
+        </article>`;
+      }).join("")
     : `<div class="history-empty"><i data-lucide="clipboard-list"></i><p>${query ? "没有匹配的历史内容" : "还没有可管理的剪贴板历史"}</p></div>`;
+  const batchBar = historySelectMode ? `<div class="history-batchbar">
+    <button class="ghost-action" data-action="history-select-all">全选</button>
+    <button class="ghost-action" data-action="history-batch-pin">置顶</button>
+    <button class="ghost-action" data-action="history-batch-unpin">取消置顶</button>
+    <button class="ghost-action ${confirmBatchDelete ? "danger-action" : ""}" data-action="history-batch-delete">${confirmBatchDelete ? "确认删除所选" : "删除所选"}</button>
+    <span class="history-batchcount">已选 ${historySelected.size} 项</span>
+  </div>` : "";
   return `
     <section class="page settings-page history-page">
-      <header class="page-header"><div><p class="eyebrow">CLIPBOARD</p><h1>剪贴板历史</h1></div><button class="outline-action" data-action="clear-history"><i data-lucide="trash-2"></i>清空未置顶</button></header>
+      <header class="page-header"><div><p class="eyebrow">CLIPBOARD</p><h1>剪贴板历史</h1></div>${historySelectMode
+        ? `<button class="outline-action" data-action="history-select-clear">清除选择</button><button class="outline-action" data-action="history-select-mode">完成</button>`
+        : `<button class="outline-action" data-action="history-select-mode"><i data-lucide="check-square"></i>选择</button><button class="outline-action" data-action="clear-history"><i data-lucide="trash-2"></i>清空未置顶</button>`}</header>
       <div class="history-toolbar"><label class="history-search"><i data-lucide="search"></i><input id="history-search" value="${escapeHtml(historyQuery)}" placeholder="搜索历史内容或来源" /></label><button class="icon-action" data-action="refresh-history" title="刷新历史"><i data-lucide="refresh-cw"></i></button></div>
+      ${batchBar}
       <section class="history-list">${list}</section>
     </section>`;
 }
@@ -1204,6 +1261,10 @@ function dictionaryPage() {
 }
 
 function syncPage() {
+  // M8-1：进入同步页即拉取活动流（完成后若仍在本页则重绘）。
+  void refreshSyncActivity().catch(() => { syncActivity = null; });
+  // M8-2：拉取已配对设备列表。
+  void refreshPeers().catch(() => { peers = null; });
   return `
     <section class="page settings-page">
       <header class="page-header"><div><p class="eyebrow">CROSS DEVICE</p><h1>跨设备</h1></div>${statusPill()}</header>
@@ -1214,7 +1275,72 @@ function syncPage() {
         <p class="field-note">保存后会在后台服务下次启动时生效。</p>
       </article>
       <div class="metric-grid sync-metrics"><article class="metric-card"><div class="metric-icon teal"><i data-lucide="copy"></i></div><span>文本</span><strong>双向同步</strong></article><article class="metric-card"><div class="metric-icon blue"><i data-lucide="image"></i></div><span>图片</span><strong>双向同步</strong></article></div>
+      <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="activity"></i></div><div><h3>最近同步</h3><p>跨设备收发记录（来源设备 / 状态 / 时间，最多 50 条）</p></div></div>
+        ${syncActivityRows()}
+      </article>
+      <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="smartphone"></i></div><div><h3>已配对设备</h3><p>设备状态 / 重命名 / 移除；发起配对请在终端执行 shurufa-host.exe pair &lt;对方IP&gt;</p></div></div>
+        ${deviceRows()}
+      </article>
     </section>`;
+}
+
+// M8-1：最近同步活动行（来源标签/方向/类型/状态/相对时间）。
+// 相对时间（毫秒时间戳 → “N 秒/分钟/小时/天前”）。
+function relTimeAgo(ms) {
+  const s = Math.max(1, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return `${s} 秒前`;
+  if (s < 3600) return `${Math.round(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.round(s / 3600)} 小时前`;
+  return `${Math.round(s / 86400)} 天前`;
+}
+
+function syncActivityRows() {
+  const list = syncActivity?.entries || [];
+  if (list.length === 0) {
+    return `<div class="setting-row"><div class="row-icon dim"><i data-lucide="activity"></i></div><div><h3>暂无同步记录</h3><p>跨设备收发后这里会显示最近 50 条（来源设备 / 状态 / 时间）</p></div></div>`;
+  }
+  const iconFor = { text: "type", image: "image", file: "file-text" };
+  const dirFor = (d) => (d === "in" ? "收到" : "发出");
+  return list.map((e) => {
+    const peer = e.peer ? `来自 ${escapeHtml(e.peer)}` : (e.direction === "in" ? "来自对端" : "本机发出");
+    const statusCls = e.status === "failed" ? "pill pill-error" : "pill pill-ok";
+    const statusText = e.status === "failed" ? `失败${e.detail ? " · " + escapeHtml(e.detail) : ""}` : "成功";
+    return `<div class="setting-row">
+      <div class="row-icon"><i data-lucide="${iconFor[e.kind] || "activity"}"></i></div>
+      <div><h3>${dirFor(e.direction)}${e.kind === "image" ? " 图片" : e.kind === "file" ? " 文件" : " 文本"}<span class="pill ${statusCls}">${statusText}</span></h3><p>${escapeHtml(String(e.preview).slice(0, 60))} · ${peer} · ${relTimeAgo(e.ts_ms)}</p></div>
+    </div>`;
+  }).join("");
+}
+
+// M8-2：已配对设备行（名称/指纹/最近在线/地址 + 重命名/移除）。
+function deviceRows() {
+  const list = peers || [];
+  if (list.length === 0) {
+    return `<div class="setting-row"><div class="row-icon dim"><i data-lucide="smartphone"></i></div><div><h3>暂无已配对设备</h3><p>在终端运行 <code>shurufa-host.exe pair &lt;对方IP&gt;</code> 发起配对（对方屏幕确认码一致后输入 y）</p></div></div>`;
+  }
+  return list.map((p) => {
+    const fp = String(p.fingerprint || "");
+    const fpShort = fp.slice(0, 8);
+    const seen = p.last_seen_ms ? `最近在线 ${relTimeAgo(p.last_seen_ms)}` : "尚未连通过";
+    const addr = p.last_addr ? ` · ${escapeHtml(p.last_addr)}` : "";
+    if (renamingFp === fp) {
+      return `<div class="setting-row">
+        <div class="row-icon"><i data-lucide="pencil-line"></i></div>
+        <div class="device-edit"><input data-peer-rename-input value="${escapeHtml(p.name)}" maxlength="40" aria-label="设备名称" /><p>${fpShort} · ${seen}</p></div>
+        <button class="outline-action" data-action="peer-rename" data-fp="${fp}">保存</button>
+        <button class="ghost-action" data-action="peer-rename-cancel">取消</button>
+      </div>`;
+    }
+    const removing = confirmRemoveFp === fp;
+    return `<div class="setting-row">
+      <div class="row-icon"><i data-lucide="smartphone"></i></div>
+      <div><h3>${escapeHtml(p.name)}</h3><p>${fpShort} · ${seen}${addr}</p></div>
+      <button class="ghost-action" data-action="peer-rename-start" data-fp="${fp}">重命名</button>
+      <button class="${removing ? "danger-action" : "ghost-action"}" data-action="peer-remove" data-fp="${fp}">${removing ? "确认移除" : "移除"}</button>
+    </div>`;
+  }).join("");
 }
 
 function imeOptionsPanel() {
@@ -1809,6 +1935,12 @@ function skinPage() {
           <button class="outline-action" data-action="reset-skin"><i data-lucide="trash-2"></i>删除自定义（回退内置）</button>
           <button class="outline-action" data-action="reload-skin"><i data-lucide="refresh-cw"></i>重新加载</button>
         </div>
+        <div class="field-action skin-file-actions">
+          <input id="skin-export-name" maxlength="40" placeholder="导出文件名（如：护眼绿）" aria-label="导出文件名" />
+          <button class="outline-action" data-action="export-skin"><i data-lucide="download"></i>导出为文件</button>
+          <label class="outline-action" for="skin-import-file"><i data-lucide="upload"></i>导入文件</label>
+          <input id="skin-import-file" type="file" accept=".json,application/json" hidden />
+        </div>
       </article>
     </section>`;
 }
@@ -2380,6 +2512,25 @@ async function refreshGeneralSettings() {
   void getCurrentWindow().setOpacity((generalSettings.ball_opacity ?? 100) / 100);
 }
 
+// M8-1：拉取跨设备同步活动流；仍在同步页时重绘（新事件到达即刷新）。
+async function refreshSyncActivity() {
+  syncActivity = await invoke("sync_activity");
+  if (activePage === "sync") render();
+}
+
+// M8-2：拉取已配对设备列表（peers.json）；仍在同步页时重绘。
+async function refreshPeers() {
+  peers = await invoke("list_peers");
+  if (activePage === "sync") render();
+}
+
+// M8-4：拉取直达清单 → 编辑文本（每行 code/名称/类型/目标）。
+async function refreshShortcuts() {
+  const list = await invoke("list_shortcuts");
+  shortcutsText = (list.entries || []).map((s) => `${s.code}\t${s.label}\t${s.kind}\t${s.target}`).join("\n");
+  if (activePage === "input") render();
+}
+
 async function refreshSpeechSettings() {
   speechSettings = await invoke("get_speech_settings");
 }
@@ -2628,6 +2779,17 @@ async function handleAction(button) {
       showToast("已重新加载");
       return;
     }
+    if (action === "export-skin") {
+      const name = (document.querySelector("#skin-export-name")?.value || "").trim() || "custom";
+      const editor = document.querySelector("#skin-editor");
+      const json = editor ? editor.value : "";
+      if (!json.trim()) { showToast("编辑器为空，无法导出", true); return; }
+      try {
+        const path = await invoke("export_skin", { name, json });
+        showToast(`已导出：${path}`);
+      } catch (error) { showToast(String(error), true); }
+      return;
+    }
     if (action === "rollback-dictionary") {
       const last = dictionaryInfo.revision || "上一版";
       if (!window.confirm(`将回滚到 ${last}，继续？`)) {
@@ -2763,11 +2925,152 @@ async function handleAction(button) {
       render();
       return;
     }
+    // M8-4：保存直达清单（解析 textarea 行格式）
+    if (action === "save-shortcuts") {
+      const text = document.querySelector("#shortcuts-editor")?.value ?? "";
+      const entries = [];
+      for (const line of text.split("\n")) {
+        const parts = line.split("\t").map((p) => p.trim());
+        if (parts.length < 4 || !parts[0]) continue;
+        const [code, label, kind, target] = parts;
+        if (kind !== "app" && kind !== "url") {
+          showToast(`类型需为 app 或 url：${code}`, true);
+          return;
+        }
+        entries.push({ id: 0, code, label, kind, target });
+      }
+      try {
+        const saved = await invoke("save_shortcuts", { shortcuts: { next_id: 0, entries } });
+        shortcutsText = (saved.entries || []).map((s) => `${s.code}\t${s.label}\t${s.kind}\t${s.target}`).join("\n");
+        render();
+        showToast(`已保存 ${saved.entries.length} 条直达`);
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    // M8-2：设备管理（重命名/移除，两步确认避免误删）
+    if (action === "peer-rename-start") {
+      renamingFp = String(button.dataset.fp || "");
+      render();
+      return;
+    }
+    if (action === "peer-rename-cancel") {
+      renamingFp = null;
+      render();
+      return;
+    }
+    if (action === "peer-rename") {
+      const fp = String(button.dataset.fp || "");
+      const input = document.querySelector("[data-peer-rename-input]");
+      const name = input ? input.value.trim() : "";
+      if (!name) {
+        showToast("设备名称不能为空", true);
+        return;
+      }
+      try {
+        await invoke("rename_peer", { fingerprint: fp, name });
+        renamingFp = null;
+        await refreshPeers();
+        showToast("已重命名设备");
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "peer-remove") {
+      const fp = String(button.dataset.fp || "");
+      if (confirmRemoveFp !== fp) {
+        confirmRemoveFp = fp;
+        render();
+        return;
+      }
+      confirmRemoveFp = null;
+      try {
+        await invoke("remove_peer", { fingerprint: fp });
+        await refreshPeers();
+        showToast("已移除设备");
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    // M8-3：历史面板批量选择/置顶/删除
+    if (action === "history-select-mode") {
+      historySelectMode = !historySelectMode;
+      historySelected.clear();
+      confirmBatchDelete = false;
+      render();
+      return;
+    }
+    if (action === "history-select") {
+      const id = Number(button.dataset.id);
+      if (historySelected.has(id)) historySelected.delete(id);
+      else historySelected.add(id);
+      render();
+      return;
+    }
+    if (action === "history-select-all") {
+      const q = historyQuery.trim().toLocaleLowerCase();
+      historyEntries.forEach((e) => {
+        if (`${e.text} ${e.source_app} ${e.kind}`.toLocaleLowerCase().includes(q)) historySelected.add(e.id);
+      });
+      render();
+      return;
+    }
+    if (action === "history-select-clear") {
+      historySelected.clear();
+      confirmBatchDelete = false;
+      render();
+      return;
+    }
+    if (action === "history-batch-pin" || action === "history-batch-unpin") {
+      const ids = [...historySelected];
+      if (!ids.length) {
+        showToast("请先选择条目", true);
+        return;
+      }
+      const pinned = action === "history-batch-pin";
+      try {
+        await invoke("batch_set_pinned", { ids, pinned });
+        await refreshHistory();
+        render();
+        showToast(pinned ? `已置顶 ${ids.length} 条` : `已取消置顶 ${ids.length} 条`);
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "history-batch-delete") {
+      const ids = [...historySelected];
+      if (!ids.length) {
+        showToast("请先选择条目", true);
+        return;
+      }
+      if (!confirmBatchDelete) {
+        confirmBatchDelete = true;
+        render();
+        return;
+      }
+      confirmBatchDelete = false;
+      try {
+        const n = await invoke("batch_delete_history", { ids });
+        historySelected.clear();
+        historySelectMode = false;
+        await refreshHistory();
+        render();
+        showToast(`已删除 ${n} 条`);
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
     const [command, args, success, delay] = actions[action];
     if (command) await invoke(command, args);
     if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
     await refreshDashboard();
     if (activePage === "history") await refreshHistory();
+    if (activePage === "sync") await refreshSyncActivity();
     render();
     showToast(success);
   } catch (error) {

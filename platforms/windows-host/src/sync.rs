@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
+use shurufa_options::{SyncActivityKind, SyncDirection};
 use sync_core::{ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService, MAX_CLIP_IMAGE_BYTES};
 
 /// 守护进程内广播的内容：文本或图片。
@@ -105,6 +106,36 @@ pub fn send_file_to_all(path: &std::path::Path) {
     if let Some(tx) = CLIP_TX.get() {
         let _ = tx.send(Broadcast::FileV3(path_buf));
     }
+}
+
+/// 记录一条跨设备同步活动（M8-1：同步状态可视化/来源标签）。
+/// 失败静默：活动记录本身不影响同步主流程。
+fn record_sync_activity(
+    direction: SyncDirection,
+    kind: SyncActivityKind,
+    preview: String,
+    peer: Option<String>,
+    ok: bool,
+    detail: Option<String>,
+) {
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let _ = shurufa_options::sync_activity::record(shurufa_options::SyncActivityEntry {
+        id: 0,
+        direction,
+        kind,
+        preview,
+        peer,
+        status: if ok {
+            "ok".to_owned()
+        } else {
+            "failed".to_owned()
+        },
+        detail,
+        ts_ms,
+    });
 }
 
 fn mime_type_for(path: &std::path::Path) -> String {
@@ -264,9 +295,23 @@ pub fn start_daemon() {
                             tokio::task::spawn_blocking(move || match incoming {
                                 Incoming::Clip { from_name, text, .. } => {
                                     let store = crate::open_store();
+                                    let preview: String = text.chars().take(60).collect();
                                     match store.insert_text(&text, &format!("同步·{from_name}")) {
                                         Ok(_) => {
-                                            if crate::listener::write_remote_text(text.clone()) {
+                                            let ok = crate::listener::write_remote_text(text.clone());
+                                            record_sync_activity(
+                                                SyncDirection::In,
+                                                SyncActivityKind::Text,
+                                                preview,
+                                                Some(from_name.clone()),
+                                                ok,
+                                                if ok {
+                                                    None
+                                                } else {
+                                                    Some("写入系统剪贴板失败".to_owned())
+                                                },
+                                            );
+                                            if ok {
                                                 crate::log_line(&format!(
                                                 "收到 {from_name} 的剪贴板（{} 字符），已写入系统剪贴板",
                                                 text.chars().count()
@@ -277,15 +322,39 @@ pub fn start_daemon() {
                                                 ));
                                             }
                                         }
-                                        Err(e) => crate::log_line(&format!("同步条目入库失败：{e}")),
+                                        Err(e) => {
+                                            record_sync_activity(
+                                                SyncDirection::In,
+                                                SyncActivityKind::Text,
+                                                preview,
+                                                Some(from_name),
+                                                false,
+                                                Some(format!("同步条目入库失败：{e}")),
+                                            );
+                                            crate::log_line(&format!("同步条目入库失败：{e}"));
+                                        }
                                     }
                                 }
                                 Incoming::Image { from_name, png } => match png_to_bmp(&png) {
                                     Some(bmp) => {
                                         let store = crate::open_store();
+                                        let preview = format!("图片 {} 字节", png.len());
                                         match store.insert_image(&bmp, &format!("同步·{from_name}")) {
                                             Ok(_) => {
-                                                if crate::listener::write_remote_image(bmp.clone()) {
+                                                let ok = crate::listener::write_remote_image(bmp.clone());
+                                                record_sync_activity(
+                                                    SyncDirection::In,
+                                                    SyncActivityKind::Image,
+                                                    preview,
+                                                    Some(from_name.clone()),
+                                                    ok,
+                                                    if ok {
+                                                        None
+                                                    } else {
+                                                        Some("写入系统剪贴板失败".to_owned())
+                                                    },
+                                                );
+                                                if ok {
                                                     crate::log_line(&format!(
                                                     "收到 {from_name} 的图片（{} 字节 PNG），已写入系统剪贴板",
                                                     png.len()
@@ -296,7 +365,17 @@ pub fn start_daemon() {
                                                     ));
                                                 }
                                             }
-                                            Err(e) => crate::log_line(&format!("同步图片入库失败：{e}")),
+                                            Err(e) => {
+                                                record_sync_activity(
+                                                    SyncDirection::In,
+                                                    SyncActivityKind::Image,
+                                                    preview,
+                                                    Some(from_name),
+                                                    false,
+                                                    Some(format!("同步图片入库失败：{e}")),
+                                                );
+                                                crate::log_line(&format!("同步图片入库失败：{e}"));
+                                            }
                                         }
                                     }
                                     None => crate::log_line("收到图片解码失败"),
@@ -335,6 +414,14 @@ pub fn start_daemon() {
                                 Incoming::FileTransferDone { msg_id, name, ok, detail } => {
                                     if ok {
                                         let bytes = detail.unwrap_or(0);
+                                        record_sync_activity(
+                                            SyncDirection::Out,
+                                            SyncActivityKind::File,
+                                            name.clone(),
+                                            None,
+                                            true,
+                                            Some(format!("对方已接收（{bytes} B）")),
+                                        );
                                         crate::log_line(&format!(
                                             "对方已接收 {name}（{}，{} B）",
                                             &msg_id[..8.min(msg_id.len())],
@@ -342,6 +429,14 @@ pub fn start_daemon() {
                                         ));
                                     } else {
                                         let reason = detail.err().unwrap_or_else(|| "未知".into());
+                                        record_sync_activity(
+                                            SyncDirection::Out,
+                                            SyncActivityKind::File,
+                                            name.clone(),
+                                            None,
+                                            false,
+                                            Some(format!("文件发送失败：{reason}")),
+                                        );
                                         crate::log_line(&format!(
                                             "文件发送失败 {name}：{reason}"
                                         ));
@@ -358,9 +453,22 @@ pub fn start_daemon() {
                                             let paths = vec![path.to_string_lossy().into_owned()];
                                             match store.insert_files(&paths, &format!("同步·{from_name}")) {
                                                 Ok(_) => {
-                                                    if crate::listener::write_remote_files(
+                                                    let ok = crate::listener::write_remote_files(
                                                         path.to_string_lossy().into_owned(),
-                                                    ) {
+                                                    );
+                                                    record_sync_activity(
+                                                        SyncDirection::In,
+                                                        SyncActivityKind::File,
+                                                        name.clone(),
+                                                        Some(from_name.clone()),
+                                                        ok,
+                                                        if ok {
+                                                            None
+                                                        } else {
+                                                            Some("写入系统剪贴板失败".to_owned())
+                                                        },
+                                                    );
+                                                    if ok {
                                                         crate::log_line(&format!(
                                                         "收到 {from_name} 的文件：{name}，已写入系统剪贴板"
                                                         ));

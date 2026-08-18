@@ -86,6 +86,9 @@ engine:
     - lua_translator@*v_help
     # 多时机表情推荐（M7-9，搜狗 15.9 同类）：okok→👌、aini→❤️、wanan→🌙。
     - lua_translator@*emoji_timing
+    # 应用/网站直达（M8-4，搜狗 15.2 灵犀候选直达同类）：🖥/🌐 标记候选，
+    # TSF 提交时启动目标不落文本。数据源 app_direct_shortcuts.lua。
+    - lua_translator@*app_direct
     # Unicode 输入（rime-ice 同款，2026-08-18 引入）：U + 十六进制码点 →
     # 对应字符（U4F60→你、U1F600→😀、U03B1→α），生僻字/emoji/特殊符号
     # 不再依赖词库收录。脚本 schemas/lua/unicode.lua；触发前缀见

@@ -17,6 +17,10 @@ pub struct Peer {
     pub fingerprint: String,
     /// 最近一次成功连接的地址（ip:port），用于 mDNS 不可用时直连
     pub last_addr: Option<String>,
+    /// 最近一次成功连接/更新地址的毫秒时间戳（M8-2 设备状态用；
+    /// 老 peers.json 无此字段时回退 None = 尚未连通过）。
+    #[serde(default)]
+    pub last_seen_ms: Option<i64>,
 }
 
 pub struct PeerStore {
@@ -64,8 +68,16 @@ impl PeerStore {
         let _guard = self.write_lock.lock().expect("配对表锁不可恢复");
         let mut peers = self.read();
         if let Some(p) = peers.iter_mut().find(|p| p.fingerprint == fingerprint) {
-            if p.last_addr.as_deref() != Some(addr) {
-                p.last_addr = Some(addr.to_string());
+            let changed = p.last_addr.as_deref() != Some(addr);
+            p.last_addr = Some(addr.to_string());
+            // 连接成功即刷新最近在线时间（M8-2：设备状态可视化）
+            p.last_seen_ms = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+            );
+            if changed {
                 return self.persist(&peers);
             }
         }
@@ -107,6 +119,7 @@ mod tests {
             name: "手机".into(),
             fingerprint: "ab".repeat(32),
             last_addr: None,
+            last_seen_ms: None,
         };
         store.upsert(peer.clone()).unwrap();
         assert!(store.contains(&peer.fingerprint));

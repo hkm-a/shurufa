@@ -729,9 +729,22 @@ impl Inner {
         let ui = &mut self.ui;
         let edit_result = edit_session(client_id, context, |ec| {
             unsafe {
-                // 1. 上屏文本：结束组合并以最终文本落盘
+                // 1. 上屏文本：结束组合并以最终文本落盘（M8-4 直达候选除外）
                 if let Some(text) = commit.as_deref() {
-                    if let Some(comp) = composition_slot.take() {
+                    if let Some(shortcut) = crate::direct_launch::resolve_commit(text) {
+                        // 应用/网站直达：清空组合但不落文本，启动目标。
+                        crate::debug_log(&format!(
+                            "直达候选提交（不落盘）：{} → {}",
+                            shortcut.label, shortcut.target
+                        ));
+                        if let Some(comp) = composition_slot.take() {
+                            set_composition_text(&comp, ec, "", 0)?;
+                            comp.EndComposition(ec)?;
+                        }
+                        if let Err(e) = crate::direct_launch::spawn_target(&shortcut) {
+                            crate::debug_log(&format!("直达启动失败：{e}"));
+                        }
+                    } else if let Some(comp) = composition_slot.take() {
                         set_composition_text(&comp, ec, text, text.encode_utf16().count())?;
                         comp.EndComposition(ec)?;
                     } else {
