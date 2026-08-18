@@ -251,11 +251,36 @@ pub fn refresh_hotkey_gates() {
     let _ = register_hotkey();
 }
 
+/// M9-6：划词应用白名单判定——options 白名单为空 = 所有应用放行；
+/// 非空时仅允许列表中的 exe 文件名（大小写不敏感，取进程 exe 的 file_name）。
+fn selection_whitelist_allows(exe_path: Option<&str>) -> bool {
+    let whitelist = shurufa_options::load().general.selection_app_whitelist;
+    if whitelist.is_empty() {
+        return true;
+    }
+    let Some(name) = exe_path
+        .map(std::path::Path::new)
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+    else {
+        return false;
+    };
+    whitelist.iter().any(|item| item.eq_ignore_ascii_case(name))
+}
+
 /// 划词润色入口（Ctrl+Shift+R）：抓选区 → 面板预填进 Editing；无有效选区时
 /// 面板走 Failed 样式提示"未选中有效文本"。请求与粘贴都复用面板状态机。
 pub fn polish_selection() {
     crate::log_line("划词润色：收到热键");
     let target = unsafe { GetForegroundWindow() };
+    let exe = foreground_app_name(target);
+    if !selection_whitelist_allows(exe.as_deref()) {
+        crate::log_line(&format!(
+            "划词润色：白名单未命中（{}），跳过",
+            exe.unwrap_or_default()
+        ));
+        return;
+    }
     let grabbed = grab_selected_text();
     show_selection_mode(target, grabbed, PanelMode::Polish);
 }
@@ -265,6 +290,14 @@ pub fn polish_selection() {
 pub fn translate_selection() {
     crate::log_line("划词翻译：收到热键");
     let target = unsafe { GetForegroundWindow() };
+    let exe = foreground_app_name(target);
+    if !selection_whitelist_allows(exe.as_deref()) {
+        crate::log_line(&format!(
+            "划词翻译：白名单未命中（{}），跳过",
+            exe.unwrap_or_default()
+        ));
+        return;
+    }
     let grabbed = grab_selected_text();
     show_selection_mode(target, grabbed, PanelMode::Translate);
 }

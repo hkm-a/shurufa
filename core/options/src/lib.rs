@@ -127,6 +127,9 @@ pub struct GeneralSettings {
     /// 由设置中心读取并 `setOpacity` 应用；保存路径统一钳位。
     #[serde(default = "default_ball_opacity")]
     pub ball_opacity: u8,
+    /// M9-6：划词工具应用白名单（exe 文件名，如 WINWORD.EXE；空 = 所有应用）。
+    #[serde(default)]
+    pub selection_app_whitelist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -164,6 +167,7 @@ impl Default for GeneralSettings {
             enable_ai_hotkey: true,
             enable_translate_hotkey: true,
             ball_opacity: default_ball_opacity(),
+            selection_app_whitelist: Vec::new(),
         }
     }
 }

@@ -1227,6 +1227,9 @@ struct GeneralSettingsDto {
     /// 悬浮球不透明度（%，30..=100；搜狗 16.1 状态栏不透明度同类）。
     #[serde(default = "default_ball_opacity_dto")]
     ball_opacity: u8,
+    /// M9-6：划词工具应用白名单（exe 文件名；空 = 所有应用）。
+    #[serde(default)]
+    selection_app_whitelist: Vec<String>,
 }
 
 fn default_candidate_position_dto() -> String {
@@ -1266,6 +1269,7 @@ impl From<GeneralSettings> for GeneralSettingsDto {
             enable_ai_hotkey: g.enable_ai_hotkey,
             enable_translate_hotkey: g.enable_translate_hotkey,
             ball_opacity: g.ball_opacity,
+            selection_app_whitelist: g.selection_app_whitelist,
             // GeneralSettings 不含方案字段；读盘时由 get_general_settings 另行注入
             input_scheme: default_scheme_for_dto(),
             candidate_position: default_candidate_position_dto(),
@@ -1301,6 +1305,19 @@ fn save_general_settings(s: GeneralSettingsDto) -> Result<(), String> {
         enable_ai_hotkey: s.enable_ai_hotkey,
         enable_translate_hotkey: s.enable_translate_hotkey,
         ball_opacity: s.ball_opacity,
+        // M9-6：白名单规范化（大写去重，限 50 项）
+        selection_app_whitelist: {
+            let mut list: Vec<String> = s
+                .selection_app_whitelist
+                .iter()
+                .map(|item| item.trim().to_ascii_uppercase())
+                .filter(|item| !item.is_empty())
+                .collect();
+            list.sort();
+            list.dedup();
+            list.truncate(50);
+            list
+        },
     }
     .clamped();
     let position = match s.candidate_position.as_str() {
@@ -2445,6 +2462,7 @@ mod tests {
             enable_ai_hotkey: true,
             enable_translate_hotkey: true,
             ball_opacity: 60,
+            selection_app_whitelist: vec!["WINWORD.EXE".to_owned()],
         };
         let dto: GeneralSettingsDto = domain.into();
         assert!(dto.autostart);
@@ -2474,6 +2492,7 @@ mod tests {
             candidate_position: "follow".to_owned(),
             candidate_panel_mode: "single".to_owned(),
             ball_opacity: 100,
+            selection_app_whitelist: vec![],
         };
         let mapped = matches!(bad.log_level.as_str(), "info" | "debug" | "trace");
         assert!(!mapped, "未知级别应被 save 路径拒绝");
@@ -2510,6 +2529,7 @@ mod tests {
             candidate_position: "bottom_right".to_owned(),
             candidate_panel_mode: "multi".to_owned(),
             ball_opacity: 80,
+            selection_app_whitelist: vec!["WINWORD.EXE".to_owned()],
         };
         let value = serde_json::to_value(&dto).expect("DTO 序列化失败");
         assert_eq!(value["input_scheme"], serde_json::json!("wubi"));

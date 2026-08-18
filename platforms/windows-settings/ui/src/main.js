@@ -103,7 +103,7 @@ const NAV_GROUPS = [
 // M9-1：全页搜索索引（页内面板关键词，静态声明即可覆盖全部设置）
 const SETTINGS_SEARCH_INDEX = [
   { page: "workspace", label: "工作台", keywords: ["概览", "后台服务", "服务状态", "输入方案", "剪贴板历史", "热门词库", "直达"] },
-  { page: "general", label: "通用", keywords: ["行为", "主题", "亮色", "暗色", "跟随系统", "悬浮球", "不透明度", "历史保留", "AI", "帮写", "润色", "翻译", "热键"] },
+  { page: "general", label: "通用", keywords: ["行为", "主题", "亮色", "暗色", "跟随系统", "悬浮球", "不透明度", "历史保留", "AI", "帮写", "润色", "翻译", "热键", "划词", "白名单"] },
   { page: "input", label: "输入", keywords: ["候选", "直达快捷", "快捷键", "中英切换", "大写锁定", "符号", "emoji", "引擎开关", "空格"] },
   { page: "scheme", label: "方案", keywords: ["输入方案", "全拼", "双拼", "小鹤", "五笔", "仓颉"] },
   { page: "phrases", label: "短语", keywords: ["自定义词条", "词条", "短语", "编码"] },
@@ -1312,6 +1312,17 @@ async function runDesktopSearch() {
   }
 }
 
+// M9-6：划词白名单保存（textarea change 即存，复用通用保存通道）
+app.addEventListener("change", (event) => {
+  if (event.target.id !== "general-selection-whitelist") return;
+  if (!generalSettings) return;
+  const list = (event.target.value || "").split("\n").map((item) => item.trim().toUpperCase()).filter(Boolean);
+  const next = { ...generalSettings, selection_app_whitelist: [...new Set(list)].slice(0, 50) };
+  invoke("save_general_settings", { s: next })
+    .then(() => { generalSettings = next; showToast("已保存"); })
+    .catch((error) => showToast(String(error), true));
+});
+
 async function handleDesktopSearchHit(kind, target) {
   try {
     const msg = await invoke("launch_desktop_target", { kind, target });
@@ -1773,6 +1784,12 @@ function generalPage() {
           <div class="row-icon"><i data-lucide="languages"></i></div>
           <label class="setting-toggle"><div><h3>Ctrl+Shift+T 划词翻译</h3><p>选中文本后调 AI 翻译成中文（原文中文则译英文），回车覆盖选区</p></div></label>
           <label class="switch"><input type="checkbox" data-general-field="enable_translate_hotkey" ${g.enable_translate_hotkey ? "checked" : ""} /><span></span></label>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="list-filter"></i></div>
+          <div class="setting-toggle" style="flex:1"><div><h3>划词应用白名单（M9-6）</h3><p>每行一个 exe 文件名，如 WINWORD.EXE / chrome.exe；留空 = 所有应用均可划词</p></div>
+          <textarea id="general-selection-whitelist" rows="3" spellcheck="false" placeholder="WINWORD.EXE&#10;chrome.exe">${escapeTextarea((g.selection_app_whitelist || []).join("\n"))}</textarea></div>
         </div>
       </article>
 
