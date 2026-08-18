@@ -30,7 +30,9 @@ function emoji_timing.func(input, seg, env)
         return
     end
     -- 让 emoji 候选出现在普通候选之后（comment 标触发码，方便识别来源）
-    yield(Candidate("emoji_timing", seg.start, seg._end, emoji, "表情"))
+    local cand = Candidate("emoji_timing", seg.start, seg._end, emoji, "表情")
+    cand.quality = 100
+    yield(cand)
 end
 
 return emoji_timing

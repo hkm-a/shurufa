@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 新增（M10-6 节日/节气提醒，搜狗 5.2 节气提示同类）
+- **候选栏节气/节日提示**：输入 `jieqi` → 「今日节气：xxx」（无节气日显示
+  「今日无节气」，comment 带日期）；输入 `jieri` → 今日公历节日（元旦/
+  情人节/妇女节/劳动节/儿童节/教师节/国庆节/圣诞节）。节气日用 C 世纪常数
+  近似公式（1901-2100，±1 天）；农历节日（春节/中秋）需农历换算，暂不含。
+- **实现要点**：lua_translator 候选必须设 `quality=100` 才能突破 librime
+  的候选质量过滤（拼音 initial_quality 2.0 会把低质量 lua 候选挤出/丢弃，
+  已实测定位）；新增引擎集成测试（jieqi 必出「今日」候选、jieri 候选格式、
+  常规拼音 nihao 不受影响）。
+
 ### 新增（M10 调试基础设施：Tauri MCP Bridge 接入）
 - 设置中心接入 [hypothesi/mcp-server-tauri](https://github.com/hypothesi/mcp-server-tauri)
   的 `tauri-plugin-mcp-bridge`（feature `mcp-bridge`，默认关闭，不影响生产

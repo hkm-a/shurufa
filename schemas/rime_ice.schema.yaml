@@ -86,6 +86,9 @@ engine:
     - lua_translator@*v_help
     # 多时机表情推荐（M7-9，搜狗 15.9 同类）：okok→👌、aini→❤️、wanan→🌙。
     - lua_translator@*emoji_timing
+    # 节日/节气提醒（M10-6，搜狗 5.2 节气提示同类）：jieqi→今日节气、
+    # jieri→今日公历节日。节气日用近似公式（±1 天）；农历节日待农历换算。
+    - lua_translator@*solar_terms
     # 应用/网站直达（M8-4，搜狗 15.2 灵犀候选直达同类）：🖥/🌐 标记候选，
     # TSF 提交时启动目标不落文本。数据源 app_direct_shortcuts.lua。
     - lua_translator@*app_direct
