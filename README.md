@@ -72,16 +72,16 @@ version.json   版本号单一事实源（由 set-version.ps1 同步四处派生
 - 产品：[架构说明](docs/架构说明.md) · [迭代方向](docs/迭代方向.md) · [开发计划](docs/开发计划.md)
 - 用户：[Windows 安装指南](docs/Windows安装指南.md) · [安卓安装与使用](docs/安卓安装与使用.md) · [云词库](docs/云词库.md) · [自托管中继](docs/自托管中继.md)
 - 开发者：[开发环境](docs/开发环境.md) · [发布流程](docs/发布流程.md) · [版本管理](docs/版本管理.md) · [文档管理](docs/文档管理.md) · [CHANGELOG](CHANGELOG.md)
-- 验收：[M1](docs/M1-验收报告.md) · [M2](docs/M2-验收报告.md) · [M3](docs/M3-验收报告.md) · [M4 Windows](docs/M4-验收报告.md) · [M4 Android](docs/M4-安卓验收报告.md) · [M7](docs/M7-验收报告.md) · [M8](docs/M8-验收报告.md) · [M9](docs/M9-验收报告.md) · [安卓附件测试](docs/安卓附件测试.md)
+- 验收：[M1](docs/M1-验收报告.md) · [M2](docs/M2-验收报告.md) · [M3](docs/M3-验收报告.md) · [M4 Windows](docs/M4-验收报告.md) · [M4 Android](docs/M4-安卓验收报告.md) · [M7](docs/M7-验收报告.md) · [M8](docs/M8-验收报告.md) · [M9](docs/M9-验收报告.md) · [M10](docs/M10-验收报告.md) · [M10 评估](docs/M10-评估报告.md) · [安卓附件测试](docs/安卓附件测试.md)
 
 ## 当前状态
 
-当前版本 **v1.0.0（versionCode 32，2026-08-18）**，M9「设置中心与 AI 助手整合」已完成：
-设置中心分组导航 + 全页搜索 + 未保存提示、悬浮条 AI 工具箱统一入口（帮写/润色/
-翻译/设置）、桌面快捷搜索（应用/文件/计算器）、AI 面板窗口跟随与 Word/WPS 光标
-助手、划词应用白名单；承接 M8 的跨设备同步可视化/失败重试/设备管理/直达候选/
-皮肤包导入导出（M9 验收见 [M9 验收报告](docs/M9-验收报告.md)，M8 见
-[M8 验收报告](docs/M8-验收报告.md)，M7 见 [M7 验收报告](docs/M7-验收报告.md)），
+当前版本 **v1.1.0（versionCode 33，2026-08-18）**，M10「专业与无障碍 + 困难项攻克」已完成：
+专业词模式（医生/律师/代码场景词库）、节日/节气提醒、文件发送失败重试、
+交互式配对 UI、「？？？」表情（TSF 替代实现）、简拼开关（部署期替代方案），
+并接入 Tauri MCP 调试基础设施；承接 M9 的设置中心升级与 AI 工具箱、M8 的
+跨设备同步闭环（M10 验收见 [M10 验收报告](docs/M10-验收报告.md)，M9 见
+[M9 验收报告](docs/M9-验收报告.md)，M8 见 [M8 验收报告](docs/M8-验收报告.md)），
 路线图见 [开发计划](docs/开发计划.md)：
 
 - **输入**：librime 雾凇拼音 + 小鹤双拼、MRU 最近使用提频、音节分词视图、
@@ -94,7 +94,7 @@ version.json   版本号单一事实源（由 set-version.ps1 同步四处派生
 - **跨设备**：剪贴板文本/图片/文件双向同步（协议 v3：分块校验 + 回执）、文件接收
   审批通知、剪贴板收藏、自托管中继、云词库多代回滚。
 - **工程**：全工作区 cargo clippy（-D warnings）与 cargo fmt --check 零告警、
-  约 199 项测试全绿、版本单一事实源 1.0.0/32、CI 双平台（Windows/Android）流水线；
+  约 206 项测试全绿、版本单一事实源 1.1.0/33、CI 双平台（Windows/Android）流水线；
    开发调试可启用 Tauri MCP Bridge（`--features mcp-bridge`，127.0.0.1:9223）供
    mcp-server-tauri 连接，DSH 侧工具以 `mcp__tauri__*` 注册。
 

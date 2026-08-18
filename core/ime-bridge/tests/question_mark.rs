@@ -42,8 +42,10 @@ fn 中文标点斜杠立即上屏全角问号无组合累积() {
     let first = session.commit().unwrap_or_default();
     let ctx = session.context();
     assert!(
-        first == "、" || first == "？？？" || ctx.preedit.contains('、')
-        || ctx.preedit.contains('？'),
+        first == "、"
+            || first == "？？？"
+            || ctx.preedit.contains('、')
+            || ctx.preedit.contains('？'),
         "单个 / 应产生顿号或全角问号（立即上屏或进预编辑），实际 first={first:?} preedit={:?}",
         ctx.preedit
     );
