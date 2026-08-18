@@ -2488,7 +2488,9 @@ fn main() {
     let builder = builder.plugin(
         tauri_plugin_mcp_bridge::Builder::new()
             .bind_address("127.0.0.1")
-            .base_port(9323)
+            // 默认基端口 9223：tauri-mcp-server 0.12 的 driver 自动连接
+            // 只探测默认端口，须与桥一致才能免手动连接
+            .base_port(9223)
             .build(),
     );
     #[cfg(feature = "ui-e2e")]

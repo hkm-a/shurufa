@@ -8,9 +8,11 @@
 - 设置中心接入 [hypothesi/mcp-server-tauri](https://github.com/hypothesi/mcp-server-tauri)
   的 `tauri-plugin-mcp-bridge`（feature `mcp-bridge`，默认关闭，不影响生产
   构建与测试）：`cargo tauri dev --features mcp-bridge` 时在
-  `127.0.0.1:9323` 起 WebSocket 桥（localhost-only，插件当前版本无 token，
+  `127.0.0.1:9223` 起 WebSocket 桥（localhost-only，插件当前版本无 token，
   仅绑回环地址），供 `@hypothesi/tauri-mcp-server` 连接做截图 / DOM /
-  模拟输入 / 窗口调试。已实测：dev 启动后端口 9323 正常监听。
+  模拟输入 / 窗口调试。已实测：dev 启动后端口 9223 正常监听，且与
+  tauri-mcp-server 0.12 的 driver 自动连接默认端口一致（自动连接只探测
+  默认端口，桥必须对齐到 9223）。
 
 ### 新增（M10 困难项：简拼开关，部署期替代方案）
 - **无简拼变体方案**：librime 1.17 speller/algebra 不支持条件规则（实测
