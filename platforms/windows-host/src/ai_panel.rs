@@ -34,11 +34,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
-    GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW, MoveWindow, PostMessageW,
-    RegisterClassW, SetForegroundWindow, ShowWindow, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO,
-    IDC_ARROW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_APP, WM_CHAR, WM_KEYDOWN,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_PAINT, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId, KillTimer, LoadCursorW, MoveWindow,
+    PostMessageW, RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow, CS_HREDRAW,
+    CS_VREDRAW, GUITHREADINFO, IDC_ARROW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOWNA, WM_APP,
+    WM_CHAR, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_PAINT, WM_SETTINGCHANGE, WM_TIMER,
+    WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::panel::skin::{self, ShadowShell, Skin};
@@ -54,6 +54,8 @@ const WM_AI_DONE: u32 = WM_APP + 71;
 const WM_AI_CHUNK: u32 = WM_APP + 72;
 /// 外部进程（设置中心）经 `shurufa-host ai show` 投递的唤起消息。
 pub const WM_AI_EXTERNAL_SHOW: u32 = WM_APP + 73;
+/// M9-4：窗口跟随定时器（200ms 轮询输入锚点重定位，光标移动面板跟随）。
+const AI_FOLLOW_TIMER_ID: usize = 0x5A11;
 
 /// 内置系统提示（默认"正式"）：控制输出端为"可直接粘贴的中文文本片段"。
 pub(crate) const SYSTEM_PROMPT: &str = SYSTEM_PROMPT_FORMAL;
@@ -342,6 +344,8 @@ fn show_selection_mode(target: HWND, selected: Option<String>, mode: PanelMode) 
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
         let _ = InvalidateRect(Some(hwnd), None, true);
+        // M9-4：划词面板同样跟随输入锚点
+        let _ = SetTimer(Some(hwnd), AI_FOLLOW_TIMER_ID, 200, None);
     }
 }
 
@@ -485,6 +489,36 @@ pub fn show() {
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
         let _ = InvalidateRect(Some(hwnd), None, true);
+        // M9-4：面板可见期间 200ms 轮询输入锚点
+        let _ = SetTimer(Some(hwnd), AI_FOLLOW_TIMER_ID, 200, None);
+    }
+}
+
+/// M9-4：输入锚点跟随——保持面板宽高，仅按目标窗口当前光标/插入点重定位
+/// （配合 AI_FOLLOW_TIMER_ID 定时器；目标窗口消失时回退光标位置）。
+fn follow_anchor() {
+    let Some((hwnd, target, dpi)) =
+        PANEL.with_borrow(|slot| slot.as_ref().map(|s| (s.hwnd, s.target, s.dpi)))
+    else {
+        return;
+    };
+    let anchor = caret_or_cursor_pos(target);
+    let mut rect = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut rect);
+    }
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let (mut x, mut y) = (anchor.x, anchor.y + scale(6, dpi));
+    unsafe {
+        x = x.min(GetSystemMetrics(SM_CXSCREEN) - width - 8).max(0);
+        y = y.min(GetSystemMetrics(SM_CYSCREEN) - height - 8).max(0);
+        let _ = MoveWindow(hwnd, x, y, width, height, true);
+        let (_, _, shadow) = palette();
+        SHADOW.with_borrow_mut(|shell| shell.sync(hwnd, x, y, width, height, &shadow));
     }
 }
 
@@ -494,6 +528,8 @@ fn hide() {
     SHADOW.with_borrow_mut(|shell| shell.hide());
     if let Some(hwnd) = hwnd {
         unsafe {
+            // M9-4：停止锚点跟随定时器
+            let _ = KillTimer(Some(hwnd), AI_FOLLOW_TIMER_ID);
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
     }
@@ -1023,6 +1059,14 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_KEYDOWN => {
             on_key(hwnd, VIRTUAL_KEY(wparam.0 as u16));
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            if wparam.0 == AI_FOLLOW_TIMER_ID {
+                follow_anchor();
+            } else {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
             LRESULT(0)
         }
         WM_CHAR => {
