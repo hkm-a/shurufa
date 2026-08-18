@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 新增（M10 困难项：简拼开关，部署期替代方案）
+- **无简拼变体方案**：librime 1.17 speller/algebra 不支持条件规则（实测
+  `option@jianpin:` 报 Error loading formula #13），无法热开关简拼；
+  新增 `scripts/gen-nojianpin-schema.ps1` 生成去掉 abbrev 规则的
+  `schemas/rime_ice_nojianpin.schema.yaml`（schema_id/name 同步改写），
+  方案页切换 + 重新部署生效。
+- **可部署性已验证**：引擎集成测试通过 default.custom.yaml 把变体列入
+  schema_list 部署后，select_schema 可加载、全拼 beijing 正常出候选
+  （功能不回归）；简拼开关效果依赖 prism 部署增量，留实机验证；设置中心
+  方案项接入待 algo 部署管道支持 schema_list 注入后补充。
+
 ### 新增（M10 困难项：「？？？」表情触发，TSF 层替代实现）
 - **Shift+/ 三连 → 🤔**：中文态、无组合下连续按 Shift+/ 时，TSF 接管
   按键——前两个上屏全角「？」，第三个上屏 🤔（文档呈「？？🤔」），再按
