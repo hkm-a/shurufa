@@ -108,7 +108,29 @@ pub fn send_file_to_all(path: &std::path::Path) {
     }
 }
 
-/// 记录一条跨设备同步活动（M8-1：同步状态可视化/来源标签）。
+/// 重试载荷目录：`app_dir()/sync-retry/`（每活动一个 JSON，键=retry_id）。
+fn retry_payload_dir() -> PathBuf {
+    shurufa_options::app_dir().join("sync-retry")
+}
+
+/// 为可重试失败保存载荷，返回 retry_id；载荷超限等不可重试场景返回 None。
+fn save_retry_payload(kind: &str, value: &serde_json::Value) -> Option<String> {
+    let id = format!(
+        "r{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let dir = retry_payload_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let payload = serde_json::json!({ "kind": kind, "value": value });
+    let bytes = serde_json::to_vec_pretty(&payload).ok()?;
+    std::fs::write(dir.join(format!("{id}.json")), bytes).ok()?;
+    Some(id)
+}
+
+/// 记录一条跨设备同步活动（M8-1：同步状态可视化/来源标签；M8-1b：失败重试句柄）。
 /// 失败静默：活动记录本身不影响同步主流程。
 fn record_sync_activity(
     direction: SyncDirection,
@@ -117,6 +139,7 @@ fn record_sync_activity(
     peer: Option<String>,
     ok: bool,
     detail: Option<String>,
+    retry_id: Option<String>,
 ) {
     let ts_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -134,8 +157,123 @@ fn record_sync_activity(
             "failed".to_owned()
         },
         detail,
+        retry_id,
         ts_ms,
     });
+}
+
+/// M8-1b：失败重试执行器。设置中心写入 `app_dir()/sync-retry-request.json`
+/// （{"id": <活动 id>}）后，本线程 2s 轮询处理：找回原活动与载荷 →
+/// 重放（文本/图片/文件写剪贴板）→ 记录新活动 → 清理请求与载荷。
+fn spawn_sync_retry_watcher() {
+    std::thread::Builder::new()
+        .name("sync-retry".into())
+        .spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let request = shurufa_options::app_dir().join("sync-retry-request.json");
+            let Ok(raw) = std::fs::read_to_string(&request) else {
+                continue;
+            };
+            // 无论成败都先清除请求，避免同一文件被永久轮询
+            let _ = std::fs::remove_file(&request);
+            let Ok(req) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                continue;
+            };
+            let Some(id) = req.get("id").and_then(serde_json::Value::as_u64) else {
+                continue;
+            };
+            execute_sync_retry(id);
+        })
+        .ok();
+}
+
+fn execute_sync_retry(id: u64) {
+    let act = shurufa_options::sync_activity::load();
+    let Some(orig) = act.entries.iter().find(|e| e.id == id).cloned() else {
+        crate::log_line(&format!("重试：活动 {id} 不存在"));
+        return;
+    };
+    let Some(retry_id) = orig.retry_id.clone() else {
+        crate::log_line(&format!("重试：活动 {id} 无可重试载荷"));
+        return;
+    };
+    let payload_path = retry_payload_dir().join(format!("{retry_id}.json"));
+    let Ok(raw) = std::fs::read_to_string(&payload_path) else {
+        crate::log_line(&format!("重试：载荷 {retry_id} 缺失"));
+        return;
+    };
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        crate::log_line(&format!("重试：载荷 {retry_id} 解析失败"));
+        return;
+    };
+    let kind = payload
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let value = payload.get("value");
+    let result: Result<(), String> = (|| match kind {
+        "clip_text" => {
+            let text = value
+                .and_then(|v| v.get("text"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "载荷缺 text".to_owned())?;
+            if crate::listener::write_remote_text(text.to_owned()) {
+                Ok(())
+            } else {
+                Err("写入系统剪贴板失败".to_owned())
+            }
+        }
+        "clip_image" => {
+            let b64 = value
+                .and_then(|v| v.get("png_b64"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "载荷缺 png_b64".to_owned())?;
+            let png = {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .map_err(|e| format!("PNG 解码失败：{e}"))?
+            };
+            let bmp = png_to_bmp(&png).ok_or_else(|| "PNG 转 BMP 失败".to_owned())?;
+            if crate::listener::write_remote_image(bmp) {
+                Ok(())
+            } else {
+                Err("写入系统剪贴板失败".to_owned())
+            }
+        }
+        "clip_files" => {
+            let path = value
+                .and_then(|v| v.get("paths"))
+                .and_then(serde_json::Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "载荷缺 paths".to_owned())?;
+            if crate::listener::write_remote_files(path.to_owned()) {
+                Ok(())
+            } else {
+                Err("写入系统剪贴板失败".to_owned())
+            }
+        }
+        other => Err(format!("未知重试类型：{other}")),
+    })();
+    let (ok, detail) = match result {
+        Ok(()) => (true, Some("重试成功".to_owned())),
+        Err(e) => (false, Some(format!("重试失败：{e}"))),
+    };
+    record_sync_activity(
+        SyncDirection::In,
+        orig.kind,
+        format!("{}（重试）", orig.preview),
+        orig.peer.clone(),
+        ok,
+        detail,
+        None,
+    );
+    let _ = std::fs::remove_file(&payload_path);
+    crate::log_line(&format!(
+        "重试活动 {id}：{}",
+        if ok { "成功" } else { "失败" }
+    ));
 }
 
 fn mime_type_for(path: &std::path::Path) -> String {
@@ -215,6 +353,7 @@ pub fn start_daemon() {
     if CLIP_TX.set(tx).is_err() {
         return;
     }
+    spawn_sync_retry_watcher();
     std::thread::Builder::new()
         .name("sync".into())
         .spawn(move || {
@@ -299,6 +438,15 @@ pub fn start_daemon() {
                                     match store.insert_text(&text, &format!("同步·{from_name}")) {
                                         Ok(_) => {
                                             let ok = crate::listener::write_remote_text(text.clone());
+                                            // M8-1b：剪贴板写失败可一键重试；超大文本不落载荷
+                                            let retry = if ok || text.chars().count() > 512 * 1024 {
+                                                None
+                                            } else {
+                                                save_retry_payload(
+                                                    "clip_text",
+                                                    &serde_json::json!({ "text": text }),
+                                                )
+                                            };
                                             record_sync_activity(
                                                 SyncDirection::In,
                                                 SyncActivityKind::Text,
@@ -310,6 +458,7 @@ pub fn start_daemon() {
                                                 } else {
                                                     Some("写入系统剪贴板失败".to_owned())
                                                 },
+                                                retry,
                                             );
                                             if ok {
                                                 crate::log_line(&format!(
@@ -330,6 +479,7 @@ pub fn start_daemon() {
                                                 Some(from_name),
                                                 false,
                                                 Some(format!("同步条目入库失败：{e}")),
+                                                None,
                                             );
                                             crate::log_line(&format!("同步条目入库失败：{e}"));
                                         }
@@ -342,6 +492,20 @@ pub fn start_daemon() {
                                         match store.insert_image(&bmp, &format!("同步·{from_name}")) {
                                             Ok(_) => {
                                                 let ok = crate::listener::write_remote_image(bmp.clone());
+                                                // M8-1b：图片剪贴板写失败可重试（存 PNG 载荷）
+                                                let retry = if ok || png.len() > 1024 * 1024 {
+                                                    None
+                                                } else {
+                                                    let b64 = {
+                                                        use base64::Engine;
+                                                        base64::engine::general_purpose::STANDARD
+                                                            .encode(&png)
+                                                    };
+                                                    save_retry_payload(
+                                                        "clip_image",
+                                                        &serde_json::json!({ "png_b64": b64 }),
+                                                    )
+                                                };
                                                 record_sync_activity(
                                                     SyncDirection::In,
                                                     SyncActivityKind::Image,
@@ -353,6 +517,7 @@ pub fn start_daemon() {
                                                     } else {
                                                         Some("写入系统剪贴板失败".to_owned())
                                                     },
+                                                    retry,
                                                 );
                                                 if ok {
                                                     crate::log_line(&format!(
@@ -373,6 +538,7 @@ pub fn start_daemon() {
                                                     Some(from_name),
                                                     false,
                                                     Some(format!("同步图片入库失败：{e}")),
+                                                    None,
                                                 );
                                                 crate::log_line(&format!("同步图片入库失败：{e}"));
                                             }
@@ -421,6 +587,7 @@ pub fn start_daemon() {
                                             None,
                                             true,
                                             Some(format!("对方已接收（{bytes} B）")),
+                                            None,
                                         );
                                         crate::log_line(&format!(
                                             "对方已接收 {name}（{}，{} B）",
@@ -436,6 +603,8 @@ pub fn start_daemon() {
                                             None,
                                             false,
                                             Some(format!("文件发送失败：{reason}")),
+                                            // 发送侧重试需 msg_id→原路径映射，数据链路待补，暂不提供
+                                            None,
                                         );
                                         crate::log_line(&format!(
                                             "文件发送失败 {name}：{reason}"
@@ -456,6 +625,17 @@ pub fn start_daemon() {
                                                     let ok = crate::listener::write_remote_files(
                                                         path.to_string_lossy().into_owned(),
                                                     );
+                                                    // M8-1b：文件剪贴板写失败可重试（按落盘路径重放）
+                                                    let retry = if ok {
+                                                        None
+                                                    } else {
+                                                        save_retry_payload(
+                                                            "clip_files",
+                                                            &serde_json::json!({
+                                                                "paths": [path.to_string_lossy()],
+                                                            }),
+                                                        )
+                                                    };
                                                     record_sync_activity(
                                                         SyncDirection::In,
                                                         SyncActivityKind::File,
@@ -467,6 +647,7 @@ pub fn start_daemon() {
                                                         } else {
                                                             Some("写入系统剪贴板失败".to_owned())
                                                         },
+                                                        retry,
                                                     );
                                                     if ok {
                                                         crate::log_line(&format!(

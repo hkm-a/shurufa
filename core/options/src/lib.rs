@@ -950,6 +950,9 @@ pub struct SyncActivityEntry {
     pub status: String,
     #[serde(default)]
     pub detail: Option<String>,
+    /// 失败重试句柄：host 为可重试失败生成的载荷 id（设置中心据此显示「重试」按钮）。
+    #[serde(default)]
+    pub retry_id: Option<String>,
     pub ts_ms: i64,
 }
 
@@ -1055,6 +1058,7 @@ pub mod sync_activity {
                 peer: Some("手机".into()),
                 status: "ok".into(),
                 detail: None,
+                retry_id: None,
                 ts_ms: 1_700_000_000_000,
             }
         }
@@ -1063,12 +1067,18 @@ pub mod sync_activity {
         fn 活动可往返序列化() {
             let dir = temp_dir("roundtrip");
             let p = dir.join("sync-activity.json");
+            let mut with_retry = sample(0);
+            with_retry.retry_id = Some("r1".into());
             let act = SyncActivity {
                 next_id: 2,
-                entries: vec![sample(0), sample(1)],
+                entries: vec![with_retry, sample(1)],
             };
             save_to(&p, &act).unwrap();
             assert_eq!(load_from(&p), act);
+            // 旧文件缺 retry_id 字段仍可解析（serde default → None）
+            let legacy = r#"{"entries":[{"id":0,"direction":"in","kind":"text","preview":"旧","status":"failed","ts_ms":1}]}"#;
+            let parsed: crate::SyncActivity = serde_json::from_str(legacy).unwrap();
+            assert_eq!(parsed.entries[0].retry_id, None);
             std::fs::remove_dir_all(dir).unwrap();
         }
 

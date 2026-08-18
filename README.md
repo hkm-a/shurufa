@@ -72,14 +72,16 @@ version.json   版本号单一事实源（由 set-version.ps1 同步四处派生
 - 产品：[架构说明](docs/架构说明.md) · [迭代方向](docs/迭代方向.md) · [开发计划](docs/开发计划.md)
 - 用户：[Windows 安装指南](docs/Windows安装指南.md) · [安卓安装与使用](docs/安卓安装与使用.md) · [云词库](docs/云词库.md) · [自托管中继](docs/自托管中继.md)
 - 开发者：[开发环境](docs/开发环境.md) · [发布流程](docs/发布流程.md) · [版本管理](docs/版本管理.md) · [文档管理](docs/文档管理.md) · [CHANGELOG](CHANGELOG.md)
-- 验收：[M1](docs/M1-验收报告.md) · [M2](docs/M2-验收报告.md) · [M3](docs/M3-验收报告.md) · [M4 Windows](docs/M4-验收报告.md) · [M4 Android](docs/M4-安卓验收报告.md) · [安卓附件测试](docs/安卓附件测试.md)
+- 验收：[M1](docs/M1-验收报告.md) · [M2](docs/M2-验收报告.md) · [M3](docs/M3-验收报告.md) · [M4 Windows](docs/M4-验收报告.md) · [M4 Android](docs/M4-安卓验收报告.md) · [M7](docs/M7-验收报告.md) · [M8](docs/M8-验收报告.md) · [安卓附件测试](docs/安卓附件测试.md)
 
 ## 当前状态
 
-当前版本 **v0.8.0（versionCode 30，2026-08-18）**，M7「候选与打字体验收尾」已完成：
-多行候选面板（单/多行切换）、候选条右键菜单、悬浮球不透明度、上下文调频、
-多时机表情推荐等（验收见 [M7 验收报告](docs/M7-验收报告.md)），路线图见
-[开发计划](docs/开发计划.md)：
+当前版本 **v0.9.0（versionCode 31，2026-08-18）**，M8「跨设备与个性化深化」已完成：
+跨设备同步状态可视化与失败重试、设备管理（重命名/移除/最近在线）、剪贴板批量整理、
+应用/网站直达候选、皮肤包导入导出；承接 M7 的多行候选面板、候选条右键菜单、
+悬浮球不透明度、上下文调频、多时机表情推荐（M8 验收见
+[M8 验收报告](docs/M8-验收报告.md)，M7 见 [M7 验收报告](docs/M7-验收报告.md)），
+路线图见 [开发计划](docs/开发计划.md)：
 
 - **输入**：librime 雾凇拼音 + 小鹤双拼、MRU 最近使用提频、音节分词视图、
   Shift/CapsLock/Ctrl+. 切换、全局中/英语义、V 模式 / 以词定字 / 辅码检字 /
@@ -91,7 +93,7 @@ version.json   版本号单一事实源（由 set-version.ps1 同步四处派生
 - **跨设备**：剪贴板文本/图片/文件双向同步（协议 v3：分块校验 + 回执）、文件接收
   审批通知、剪贴板收藏、自托管中继、云词库多代回滚。
 - **工程**：全工作区 cargo clippy（-D warnings）与 cargo fmt --check 零告警、
-  约 170+ 项测试全绿、版本单一事实源 0.8.0/30、CI 双平台（Windows/Android）流水线。
+  约 199 项测试全绿、版本单一事实源 0.9.0/31、CI 双平台（Windows/Android）流水线。
 
 详细验收证据与评分见 [验证报告](.claude/verification-report.md)，演进过程见 [CHANGELOG](CHANGELOG.md)。
 

@@ -1307,9 +1307,14 @@ function syncActivityRows() {
     const peer = e.peer ? `来自 ${escapeHtml(e.peer)}` : (e.direction === "in" ? "来自对端" : "本机发出");
     const statusCls = e.status === "failed" ? "pill pill-error" : "pill pill-ok";
     const statusText = e.status === "failed" ? `失败${e.detail ? " · " + escapeHtml(e.detail) : ""}` : "成功";
+    // M8-1b：仅带重试载荷的失败条目提供一键重发
+    const retryBtn = e.status === "failed" && e.retry_id
+      ? `<button class="ghost-action" data-action="retry-sync-activity" data-id="${e.id}">重试</button>`
+      : "";
     return `<div class="setting-row">
       <div class="row-icon"><i data-lucide="${iconFor[e.kind] || "activity"}"></i></div>
       <div><h3>${dirFor(e.direction)}${e.kind === "image" ? " 图片" : e.kind === "file" ? " 文件" : " 文本"}<span class="pill ${statusCls}">${statusText}</span></h3><p>${escapeHtml(String(e.preview).slice(0, 60))} · ${peer} · ${relTimeAgo(e.ts_ms)}</p></div>
+      ${retryBtn}
     </div>`;
   }).join("");
 }
@@ -2653,6 +2658,7 @@ async function handleAction(button) {
       "delete-history": ["delete_history", { id }, "已删除历史条目"],
       "clear-history": ["clear_unpinned_history", undefined, "已清空未置顶历史"],
       "refresh-history": [undefined, undefined, "历史已刷新"],
+      "retry-sync-activity": ["retry_sync_activity", { id }, "重试已提交，host 数秒内执行", 3200],
       refresh: [undefined, undefined, "后台状态已刷新"]
     };
     if (action === "add-app-option") {

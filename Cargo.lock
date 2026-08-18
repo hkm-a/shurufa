@@ -4673,6 +4673,7 @@ dependencies = [
 name = "shurufa-host"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.0",
  "clipboard-store",
  "image",
  "ime-ipc",

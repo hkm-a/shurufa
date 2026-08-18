@@ -296,6 +296,22 @@ fn sync_activity() -> shurufa_options::SyncActivity {
     shurufa_options::sync_activity::load()
 }
 
+/// 重试请求体：`{"id": N}`（纯函数便于单测）。
+fn retry_request_body(id: u64) -> String {
+    format!("{{\"id\":{id}}}")
+}
+
+/// M8-1b：失败重试——写重试请求文件，host 2s 轮询执行并回写新活动。
+#[tauri::command]
+fn retry_sync_activity(id: u64) -> Result<String, String> {
+    let path = app_data_dir().join("sync-retry-request.json");
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, retry_request_body(id))
+        .map_err(|error| format!("写入重试请求失败：{error}"))?;
+    std::fs::rename(&tmp, &path).map_err(|error| format!("提交重试请求失败：{error}"))?;
+    Ok("重试已提交，host 数秒内执行".to_owned())
+}
+
 #[tauri::command]
 fn dashboard_state() -> DashboardState {
     DashboardState {
@@ -1931,6 +1947,7 @@ fn main() {
             rename_peer,
             remove_peer,
             sync_activity,
+            retry_sync_activity,
             dashboard_state,
             e2e_ping,
             save_relay,
@@ -2012,7 +2029,10 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{history_entry, sync_dir, validate_skin_json, GeneralSettingsDto, TypingStatsDto};
+    use super::{
+        history_entry, retry_request_body, sync_dir, validate_skin_json, GeneralSettingsDto,
+        TypingStatsDto,
+    };
     use clipboard_store::{ClipEntry, ClipKind};
     use shurufa_options::LogLevel;
 
@@ -2204,6 +2224,10 @@ mod tests {
         assert_eq!(minimal.ball_opacity, 100);
         // 老 JSON 无 enable_translate_hotkey → serde default 为 true（默认开）
         assert!(minimal.enable_translate_hotkey);
+        // M8-1b：重试请求体形状稳定（serde 可解析出 id）
+        let body = retry_request_body(7);
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["id"], serde_json::json!(7));
         // 皮肤 JSON 校验（M8-5 导出/导入共用）
         assert!(validate_skin_json("{\"version\":2}").is_ok());
         assert!(validate_skin_json("not json").is_err());
