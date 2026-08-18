@@ -374,6 +374,12 @@ async fn start_service() -> Result<String, String> {
     launch_host(&["supervise"]).await
 }
 
+/// M9-2：唤起 AI 帮写面板（host 投递 WM_AI_EXTERNAL_SHOW 到面板窗口）。
+#[tauri::command]
+async fn open_ai_panel() -> Result<String, String> {
+    launch_host(&["ai", "show"]).await
+}
+
 #[tauri::command]
 async fn stop_service() -> Result<String, String> {
     launch_host(&["stop"]).await
@@ -1953,6 +1959,7 @@ fn main() {
             save_relay,
             start_service,
             stop_service,
+            open_ai_panel,
             update_dictionary,
             redeploy_dictionaries,
             open_system_settings,

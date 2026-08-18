@@ -103,7 +103,7 @@ const NAV_GROUPS = [
 // M9-1：全页搜索索引（页内面板关键词，静态声明即可覆盖全部设置）
 const SETTINGS_SEARCH_INDEX = [
   { page: "workspace", label: "工作台", keywords: ["概览", "后台服务", "服务状态", "输入方案", "剪贴板历史", "热门词库", "直达"] },
-  { page: "general", label: "通用", keywords: ["行为", "主题", "亮色", "暗色", "跟随系统", "悬浮球", "不透明度", "历史保留"] },
+  { page: "general", label: "通用", keywords: ["行为", "主题", "亮色", "暗色", "跟随系统", "悬浮球", "不透明度", "历史保留", "AI", "帮写", "润色", "翻译", "热键"] },
   { page: "input", label: "输入", keywords: ["候选", "直达快捷", "快捷键", "中英切换", "大写锁定", "符号", "emoji", "引擎开关", "空格"] },
   { page: "scheme", label: "方案", keywords: ["输入方案", "全拼", "双拼", "小鹤", "五笔", "仓颉"] },
   { page: "phrases", label: "短语", keywords: ["自定义词条", "词条", "短语", "编码"] },
@@ -554,6 +554,7 @@ const MENU_ITEMS = [
   { id: "schemes", label: "输入方案", key: "F", icon: "circle-dot" },
   { id: "options", label: "输入选项", key: "E", icon: "keyboard" },
   { id: "history", label: "剪贴板历史", key: "K", icon: "clipboard-list" },
+  { id: "ai", label: "AI 助手", key: "A", icon: "sparkles" },
   { id: "pages", label: "设置中心", key: "Y", icon: "layout-dashboard" },
   { id: "help", label: "帮助", key: "Z", icon: "info" }
 ];
@@ -767,6 +768,17 @@ function submenuHtml(id) {
       </button>`
       )
       .join("");
+  }
+  if (id === "ai") {
+    return `
+      <button class="submenu-item" data-menu-act="ai-panel" title="唤起 AI 帮写面板（同 Ctrl+Shift+W）">
+        <span class="submenu-label">AI 帮写</span><span class="submenu-side">Ctrl+Shift+W</span>
+      </button>
+      <button class="submenu-item" data-menu-act="ai-hint" title="选中文本后按热键">
+        <span class="submenu-label">划词润色 / 划词翻译</span><span class="submenu-side">R / T</span>
+      </button>
+      <div class="submenu-divider"></div>
+      <button class="submenu-item" data-page="general"><span class="submenu-label">AI 热键与开关设置…</span></button>`;
   }
   if (id === "help") {
     return `
@@ -1092,6 +1104,21 @@ async function menuHelpAction(act) {
     } catch (error) {
       showToast(String(error), true);
     }
+    return;
+  }
+  // M9-2：唤起 AI 帮写面板（host ai show → WM_AI_EXTERNAL_SHOW）
+  if (act === "ai-panel") {
+    try {
+      const msg = await invoke("open_ai_panel");
+      await applyMode("bar");
+      showToast(msg);
+    } catch (error) {
+      showToast(String(error), true);
+    }
+    return;
+  }
+  if (act === "ai-hint") {
+    showToast("划词润色：选中文本后按 Ctrl+Shift+R；划词翻译：Ctrl+Shift+T");
     return;
   }
   // 重新部署：同步等待宿主编译结果，成功/失败都带回具体消息

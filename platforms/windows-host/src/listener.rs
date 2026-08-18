@@ -124,6 +124,8 @@ pub fn run(store: ClipboardStore) -> Result<()> {
         // AI/划词润色热键门控：与设置中心开关联动（默认全开），每 2 秒轮询
         // options.json，门控变化时反注册+重注册（必须在消息循环线程执行）。
         crate::ai_panel::sync_hotkey_gate_cache();
+        // M9-2：预热 AI 面板窗口，设置中心「AI 帮写」入口可随时外部唤起
+        crate::ai_panel::warm_up();
         let _ = SetTimer(Some(hwnd), HOTKEY_GATE_TIMER_ID, 2000, None);
 
         let mut msg = MSG::default();

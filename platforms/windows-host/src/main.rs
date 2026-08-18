@@ -145,6 +145,42 @@ fn main() {
             };
             sync::cli_remote_search(query);
         }
+        "ai" => {
+            let Some(action) = args.get(1) else {
+                eprintln!(
+                    "用法：shurufa-host ai <show>（唤起 AI 帮写面板；划词润色/翻译请用热键 Ctrl+Shift+R / Ctrl+Shift+T）"
+                );
+                std::process::exit(2);
+            };
+            match action.as_str() {
+                "show" => {
+                    use windows::Win32::Foundation::{LPARAM, WPARAM};
+                    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+                    let class = windows::core::w!("ShurufaAiPanel");
+                    match unsafe { FindWindowW(class, None) } {
+                        Ok(hwnd) => {
+                            let _ = unsafe {
+                                PostMessageW(
+                                    Some(hwnd),
+                                    ai_panel::WM_AI_EXTERNAL_SHOW,
+                                    WPARAM(0),
+                                    LPARAM(0),
+                                )
+                            };
+                            println!("已唤起 AI 帮写面板");
+                        }
+                        Err(_) => {
+                            eprintln!("AI 面板尚未创建（后台服务未运行？先执行 start-service）");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                other => {
+                    eprintln!("未知动作：{other}（仅支持 show）");
+                    std::process::exit(2);
+                }
+            }
+        }
         "chat" => {
             let Some(prompt) = args.get(1) else {
                 eprintln!("用法：shurufa-host chat <提示词>  （走 Agnes，AI 帮写同款通道）");
@@ -319,6 +355,7 @@ fn main() {
                  \x20 clip-search <关键词>     search 同义别名（供脚本用）\n\
                  \x20 clip-remote-search <关键词> 跨设备搜索（8 秒聚合）\n\
                  \x20 chat <提示词>     Agnes 一次性帮写（不弹面板）\n\
+                 \x20 ai <show>       唤起 AI 帮写面板（后台服务常驻时）\n\
                  \x20 pin/unpin <id>  置顶/取消置顶\n\
                  \x20 copy <id>       把条目写回剪贴板\n\
                  \x20 delete <id>     删除单条\n\

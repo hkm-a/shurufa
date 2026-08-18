@@ -52,6 +52,8 @@ pub const TRANSLATE_HOTKEY_ID: i32 = 4;
 const WM_AI_DONE: u32 = WM_APP + 71;
 /// 流式增量包：LPARAM 携带 Box<(String /*已累积全文*/, bool /*is_final*/)>。
 const WM_AI_CHUNK: u32 = WM_APP + 72;
+/// 外部进程（设置中心）经 `shurufa-host ai show` 投递的唤起消息。
+pub const WM_AI_EXTERNAL_SHOW: u32 = WM_APP + 73;
 
 /// 内置系统提示（默认"正式"）：控制输出端为"可直接粘贴的中文文本片段"。
 pub(crate) const SYSTEM_PROMPT: &str = SYSTEM_PROMPT_FORMAL;
@@ -418,6 +420,16 @@ fn read_clipboard_text() -> Option<String> {
         })();
         let _ = CloseClipboard();
         result
+    }
+}
+
+/// 预热面板窗口（run 模式启动时调用）：后台服务一启动就创建隐藏窗口，
+/// 设置中心「AI 帮写」入口可随时投递 WM_AI_EXTERNAL_SHOW 唤起。
+pub fn warm_up() {
+    if let Some(hwnd) = ensure_window() {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
     }
 }
 
@@ -1050,6 +1062,10 @@ unsafe extern "system" fn wnd_proc(
                     let _ = InvalidateRect(Some(hwnd), None, true);
                 }
             }
+            LRESULT(0)
+        }
+        x if x == WM_AI_EXTERNAL_SHOW => {
+            show();
             LRESULT(0)
         }
         x if x == WM_AI_CHUNK => {
