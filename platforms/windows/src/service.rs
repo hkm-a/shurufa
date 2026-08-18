@@ -84,6 +84,8 @@ pub struct Inner {
     /// 按应用选项跟踪（weasel app_options）：记录当前前台应用与
     /// 进入被覆盖应用前的 ascii_mode 快照，应用切换时恢复。
     app_ascii: AppAsciiState,
+    /// 「？？？」表情计数（M10 困难项替代实现，见 emoji_question.rs）。
+    question_state: crate::emoji_question::QuestionState,
 }
 
 /// Shift 按住时长阈值：超过即视长按（→ 大写视觉提示），否则按既有的
@@ -329,6 +331,7 @@ impl TextService {
                 last_comp_ptr: None,
                 last_anchor: None,
                 app_ascii: AppAsciiState::new(),
+                question_state: crate::emoji_question::QuestionState::default(),
             }),
         }
     }
@@ -454,6 +457,9 @@ impl Inner {
         let shift = modifiers & keys::MASK_SHIFT != 0;
         let ctrl = modifiers & keys::MASK_CONTROL != 0;
         let alt = modifiers & keys::MASK_ALT != 0;
+
+        // 「？？？」表情（M10）：非斜杠键重置连续问号计数。
+        self.question_state.reset();
 
         // 按应用选项（weasel app_options）：前台应用变化时按覆盖表应用
         // ascii_mode 覆盖 / 恢复快照。只在应用真的变化时动作，同应用内的
@@ -603,6 +609,36 @@ impl Inner {
             self.toast_mode(if next { "英文标点" } else { "中文标点" });
             return true;
         }
+        // 「？？？」表情（M10 困难项替代实现，emoji_question.rs）：中文态、
+        // 无组合的 Shift+/（0xBF）由 TSF 接管——前两个上屏全角「？」（顺带
+        // 修正中文态 Shift+/ 被既有直通分支上成半角 "?" 的瑕疵），第三个上屏
+        // 🤔。零回退风险：librime 组合无法累积标点（实测 / 上屏「、」、
+        // 无组合），TSF 自建组合会与引擎抢 composition。
+        if vk == 0xBF
+            && shift
+            && !ctrl
+            && !alt
+            && self.composition.is_none()
+            && self
+                .client
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_option("ascii_mode")
+                == Some(false)
+        {
+            let action = self.question_state.on_slash();
+            let text = match action {
+                crate::emoji_question::QuestionAction::EmitQuestion => "？",
+                crate::emoji_question::QuestionAction::EmitEmoji => crate::emoji_question::EMOJI,
+            };
+            let client_id = self.client_id;
+            let _ = edit_session(client_id, context, |ec| unsafe {
+                insert_text(context, ec, text)
+            });
+            crate::debug_log(&format!("？？？表情：上屏 {text}"));
+            return true;
+        }
+
         // 符号配对（微信输入法同类，默认关）：中文态、无组合时按配对键 →
         // 插入配对符号并把光标居中（`(` → `()` 光标中间）。必须放在
         // Shift+可打印键分支之前——US 键盘上 ( [ { 是 Shift+数字/括号，
