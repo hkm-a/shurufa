@@ -91,6 +91,31 @@ const pages = [
   { id: "settings", label: "偏好", icon: "sliders-horizontal" }
 ];
 
+// M9-1：导航分组（设置中心侧栏）；order 决定展示顺序
+const NAV_GROUPS = [
+  { label: "概览", pages: ["workspace"] },
+  { label: "输入", pages: ["input", "scheme", "phrases", "symbols", "dictionary"] },
+  { label: "效率", pages: ["history", "stats"] },
+  { label: "外观", pages: ["skin"] },
+  { label: "系统", pages: ["general", "sync", "settings"] }
+];
+
+// M9-1：全页搜索索引（页内面板关键词，静态声明即可覆盖全部设置）
+const SETTINGS_SEARCH_INDEX = [
+  { page: "workspace", label: "工作台", keywords: ["概览", "后台服务", "服务状态", "输入方案", "剪贴板历史", "热门词库", "直达"] },
+  { page: "general", label: "通用", keywords: ["行为", "主题", "亮色", "暗色", "跟随系统", "悬浮球", "不透明度", "历史保留"] },
+  { page: "input", label: "输入", keywords: ["候选", "直达快捷", "快捷键", "中英切换", "大写锁定", "符号", "emoji", "引擎开关", "空格"] },
+  { page: "scheme", label: "方案", keywords: ["输入方案", "全拼", "双拼", "小鹤", "五笔", "仓颉"] },
+  { page: "phrases", label: "短语", keywords: ["自定义词条", "词条", "短语", "编码"] },
+  { page: "symbols", label: "符号", keywords: ["符号", "emoji", "表情", "搜索", "颜文字"] },
+  { page: "history", label: "历史", keywords: ["剪贴板历史", "置顶", "批量删除", "批量置顶", "搜索"] },
+  { page: "dictionary", label: "词库", keywords: ["词库", "更新", "回滚", "userdb", "词典", "云词库"] },
+  { page: "stats", label: "统计", keywords: ["打字统计", "曲线", "字数", "日均"] },
+  { page: "skin", label: "皮肤", keywords: ["外观", "颜色", "圆角", "字号", "JSON", "导入", "导出", "预设"] },
+  { page: "sync", label: "跨设备", keywords: ["同步", "配对", "设备", "中继", "最近同步", "重试"] },
+  { page: "settings", label: "偏好", keywords: ["默认输入法", "自启动", "开机启动", "高级", "会话"] }
+];
+
 // 主题："auto" 跟随系统（默认）；"light"|"dark" 由用户手选，记 localStorage
 const THEME_KEY = "shurufa-settings-theme";
 function currentTheme() {
@@ -120,6 +145,12 @@ function toggleTheme() {
 applyTheme(currentTheme());
 
 let activePage = "workspace";
+// M9-1：全页搜索状态与未保存修改追踪
+let globalSearchQuery = "";
+let searchOpen = false;
+const dirtyPages = new Set();
+function markDirty(page) { dirtyPages.add(page); }
+function clearDirty(page) { dirtyPages.delete(page); }
 let dashboard = {
   relay: "",
   service_status: "待启动",
@@ -748,21 +779,102 @@ function submenuHtml(id) {
   return "";
 }
 
+function navGroupsHtml() {
+  return NAV_GROUPS.map((group) => `
+    <div class="nav-group">
+      <p class="nav-group-label">${group.label}</p>
+      ${group.pages.map((id) => {
+        const p = pages.find((x) => x.id === id);
+        if (!p) return "";
+        const active = id === activePage ? " active" : "";
+        const dirty = dirtyPages.has(id) ? '<i class="nav-dirty-dot" title="有未保存修改"></i>' : "";
+        return `<button class="nav-item${active}" data-page="${id}"><i data-lucide="${p.icon}"></i><span>${p.label}</span>${dirty}</button>`;
+      }).join("")}
+    </div>`).join("");
+}
+
+function searchMatches() {
+  const q = globalSearchQuery.trim().toLowerCase();
+  if (!q) return [];
+  return SETTINGS_SEARCH_INDEX
+    .filter((e) => e.label.toLowerCase().includes(q) || e.keywords.some((k) => k.toLowerCase().includes(q)))
+    .slice(0, 12);
+}
+
+function updateSearchDropdown() {
+  const wrap = document.querySelector("#global-search-wrap");
+  if (!wrap) return;
+  const drop = wrap.querySelector("#global-search-drop");
+  if (!drop) return;
+  const hits = searchMatches();
+  if (!searchOpen || hits.length === 0) {
+    drop.innerHTML = hits.length === 0 && globalSearchQuery.trim() && searchOpen
+      ? `<div class="global-search-empty">无匹配设置项</div>`
+      : "";
+    return;
+  }
+  drop.innerHTML = hits.map((h) => {
+    const meta = pages.find((p) => p.id === h.page);
+    return `<button class="global-search-item" data-page="${h.page}">
+      <i data-lucide="${meta ? meta.icon : "search"}"></i>
+      <span>${escapeHtml(meta ? meta.label : h.page)}</span>
+      <small>${escapeHtml(h.keywords[0] || "")}</small>
+    </button>`;
+  }).join("");
+  createIcons({ icons: controlCenterIcons });
+}
+
 function pageShellTemplate() {
   const meta = pages.find((p) => p.id === activePage) || pages[0];
   return `
-    <div id="page" class="floating-page">
-      <header class="page-topbar">
-        <button class="page-back icon-action" data-mode-toggle="menu" title="返回菜单"><i data-lucide="arrow-left"></i></button>
-        <span class="page-topbar-title">${meta.label}</span>
-        <span class="page-topbar-grow"></span>
-        <button class="page-collapse icon-action" data-mode-toggle="bar" title="收起为悬浮球"><i data-lucide="chevron-up"></i></button>
-      </header>
-      <div class="page-content">${pageTemplate()}</div>
+    <div id="page" class="floating-page page-with-nav">
+      <nav class="page-nav" aria-label="设置分类">${navGroupsHtml()}</nav>
+      <div class="page-main">
+        <header class="page-topbar">
+          <button class="page-back icon-action" data-mode-toggle="menu" title="返回菜单"><i data-lucide="arrow-left"></i></button>
+          <span class="page-topbar-title">${meta.label}</span>
+          <div class="global-search-wrap" id="global-search-wrap">
+            <i data-lucide="search" class="global-search-icon"></i>
+            <input id="global-search" type="search" placeholder="搜索设置…" value="${escapeAttr(globalSearchQuery)}" autocomplete="off" aria-label="搜索全部设置" />
+            <div class="global-search-drop" id="global-search-drop"></div>
+          </div>
+          <span class="page-topbar-grow"></span>
+          <button class="page-collapse icon-action" data-mode-toggle="bar" title="收起为悬浮球"><i data-lucide="chevron-up"></i></button>
+        </header>
+        <div class="page-content">${pageTemplate()}</div>
+      </div>
     </div>`;
 }
 
 function bindShell() {
+  // M9-1：全页搜索框键盘/焦点（下拉点击走 data-page 委托）
+  const searchInput = app.querySelector("#global-search");
+  if (searchInput) {
+    searchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        const first = app.querySelector(".global-search-item[data-page]");
+        if (first) {
+          globalSearchQuery = "";
+          searchOpen = false;
+          void navigateTo(first.dataset.page);
+        }
+      } else if (event.key === "Escape") {
+        globalSearchQuery = "";
+        searchOpen = false;
+        render();
+      }
+    });
+    searchInput.addEventListener("focusin", () => {
+      searchOpen = true;
+      updateSearchDropdown();
+    });
+    searchInput.addEventListener("focusout", () => {
+      window.setTimeout(() => {
+        searchOpen = false;
+        updateSearchDropdown();
+      }, 180);
+    });
+  }
   // 主题切换按钮（菜单面板头部；render 会重置 DOM，每次 render 后重新点亮）。
   // data-mode-toggle / data-page 按钮统一走 #app 点击委托，不在此重复绑定。
   const themeBtn = app.querySelector(".theme-toggle");
@@ -842,6 +954,10 @@ app.addEventListener("click", (event) => {
   }
   if (!button || !app.contains(button) || button.disabled) return;
   if (button.dataset.modeToggle) {
+    if (uiMode === "page" && button.dataset.modeToggle !== "page" && dirtyPages.has(activePage)
+        && !window.confirm("当前页面有未保存的修改，收起将丢失。确定继续？")) {
+      return;
+    }
     void applyMode(button.dataset.modeToggle);
     return;
   }
@@ -1079,6 +1195,7 @@ app.addEventListener("change", (event) => {
       await invoke("save_skin", { content: text });
       const payload = await invoke("skin_payload");
       skinState = { loaded: true, content: payload.content ?? "", source: payload.source, user_path: payload.user_path, dirty: false };
+      clearDirty("skin");
       try { skinPresets = await invoke("list_skins"); } catch (_error) { skinPresets = []; }
       render();
       showToast("皮肤已导入并应用");
@@ -1094,6 +1211,20 @@ app.addEventListener("input", (event) => {
   const search = document.querySelector("#symbol-search");
   search?.focus();
   search?.setSelectionRange(symbolQuery.length, symbolQuery.length);
+});
+
+// M9-1：全页搜索（仅更新下拉，不整页重渲染以免丢焦点）
+app.addEventListener("input", (event) => {
+  if (event.target.id !== "global-search") return;
+  globalSearchQuery = event.target.value;
+  updateSearchDropdown();
+});
+
+// M9-1：未保存修改追踪——直达编辑器 / 按应用选项 / 短语行编辑
+app.addEventListener("input", (event) => {
+  if (event.target.id === "shortcuts-editor") { markDirty("input"); return; }
+  if (event.target.closest(".app-options-panel")) { markDirty("input"); return; }
+  if (event.target.closest("[data-phrase-row]")) { markDirty("phrases"); return; }
 });
 
 function statusPill() {
@@ -2216,6 +2347,7 @@ function onSkinFormInput(event) {
     if (nextContent === null) return;
     skinState.content = nextContent;
     skinState.dirty = true;
+    markDirty("skin");
     const pill = document.querySelector(".skin-page .status-pill");
     if (pill) {
       pill.textContent = `${skinState.source === "user" ? "自定义" : skinState.source === "builtin" ? "内置默认" : "未找到皮肤文件"} · 未保存`;
@@ -2474,6 +2606,7 @@ function render() {
   if (skinEditor) {
     skinEditor.addEventListener("input", () => {
       skinState.dirty = skinEditor.value !== skinState.content;
+      if (skinState.dirty) markDirty("skin"); else clearDirty("skin");
       // 更新头部 status-pill（仅一次，不深 render）
       const pill = app.querySelector(".skin-page .status-pill");
       if (pill) {
@@ -2563,6 +2696,14 @@ async function refreshUserdbs() {
 }
 
 async function navigateTo(page) {
+  if (page === activePage) return;
+  if (dirtyPages.has(activePage)
+      && !window.confirm("当前页面有未保存的修改，离开将丢失。确定继续？")) {
+    render();
+    return;
+  }
+  globalSearchQuery = "";
+  searchOpen = false;
   activePage = page;
   if (page === "history") {
     try {
@@ -2625,6 +2766,7 @@ async function navigateTo(page) {
       showToast(String(error), true);
     }
   } else if (page === "skin") {
+    clearDirty("skin");
     try {
       const payload = await invoke("skin_payload");
       skinState = { loaded: true, content: payload.content ?? "", source: payload.source, user_path: payload.user_path, dirty: false };
@@ -2663,12 +2805,14 @@ async function handleAction(button) {
     };
     if (action === "add-app-option") {
       appOptions = [...(appOptions ?? []), { app: "", ascii_mode: true }];
+      markDirty("input");
       render();
       return;
     }
     if (action === "remove-app-option") {
       const idx = Number(button.dataset.index);
       appOptions = (appOptions ?? []).filter((_v, i) => i !== idx);
+      markDirty("input");
       render();
       return;
     }
@@ -2684,6 +2828,7 @@ async function handleAction(button) {
           .filter((item) => item.app.trim() !== "");
         await invoke("save_app_options", { items });
         appOptions = items;
+        clearDirty("input");
         render();
         showToast("按应用设置已保存（约 2 秒内生效）");
       } catch (error) {
@@ -2728,6 +2873,7 @@ async function handleAction(button) {
         await invoke("apply_skin", { id: skinId });
         const payload = await invoke("skin_payload");
         skinState = { loaded: true, content: payload.content ?? "", source: payload.source, user_path: payload.user_path, dirty: false };
+        clearDirty("skin");
         try {
           skinPresets = await invoke("list_skins");
         } catch (_error) {
@@ -2762,6 +2908,7 @@ async function handleAction(button) {
       const content = editor ? editor.value : "";
       await invoke("save_skin", { content });
       skinState = { ...skinState, content, source: "user", dirty: false };
+      clearDirty("skin");
       render();
       showToast("皮肤已保存，候选窗与面板即时应用");
       return;
@@ -2774,6 +2921,7 @@ async function handleAction(button) {
       await invoke("reset_skin");
       const payload = await invoke("skin_payload");
       skinState = { loaded: true, content: payload.content ?? "", source: payload.source, user_path: payload.user_path, dirty: false };
+      clearDirty("skin");
       render();
       showToast("已删除自定义皮肤");
       return;
@@ -2781,6 +2929,7 @@ async function handleAction(button) {
     if (action === "reload-skin") {
       const payload = await invoke("skin_payload");
       skinState = { loaded: true, content: payload.content ?? "", source: payload.source, user_path: payload.user_path, dirty: false };
+      clearDirty("skin");
       render();
       showToast("已重新加载");
       return;
@@ -2837,6 +2986,7 @@ async function handleAction(button) {
     if (action === "phrase-add") {
       if (!Array.isArray(phraseRows)) phraseRows = [];
       phraseRows.push({ id: 0, code: "", text: "", weight: 100 });
+      markDirty("phrases");
       render();
       return;
     }
@@ -2844,6 +2994,7 @@ async function handleAction(button) {
       const index = Number(button.dataset.index);
       if (!Array.isArray(phraseRows) || Number.isNaN(index) || index < 0 || index >= phraseRows.length) return;
       phraseRows.splice(index, 1);
+      markDirty("phrases");
       render();
       return;
     }
@@ -2860,6 +3011,7 @@ async function handleAction(button) {
       try {
         const saved = await invoke("save_custom_phrases", { phrases: rows });
         phraseRows = rows;
+        clearDirty("phrases");
         render();
         if (action === "phrase-deploy") {
           showToast(`${saved}，正在重建词典…`);
@@ -2948,6 +3100,7 @@ async function handleAction(button) {
       try {
         const saved = await invoke("save_shortcuts", { shortcuts: { next_id: 0, entries } });
         shortcutsText = (saved.entries || []).map((s) => `${s.code}\t${s.label}\t${s.kind}\t${s.target}`).join("\n");
+        clearDirty("input");
         render();
         showToast(`已保存 ${saved.entries.length} 条直达`);
       } catch (error) {
