@@ -5,8 +5,9 @@
 //! 在独立进程内用控制台交互发起配对，写入共享 peers.json 后由
 //! 守护进程的重连循环自动接管连接。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use shurufa_options::{SyncActivityKind, SyncDirection};
 use sync_core::{ConfirmFn, Incoming, PairPrompt, SyncConfig, SyncService, MAX_CLIP_IMAGE_BYTES};
@@ -26,6 +27,14 @@ enum Broadcast {
 
 /// 守护进程内广播出口；`run` 模式启动后可用
 static CLIP_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<Broadcast>> = OnceLock::new();
+
+/// M10：发送中文件台账 msg_id → 原路径。FileTransferDone 失败时取回路径
+/// 生成 SendFile 重试载荷（补 M8-1b 缺口：msg_id→原路径映射）。
+static PENDING_FILE_SENDS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+
+fn pending_file_sends() -> &'static Mutex<HashMap<String, PathBuf>> {
+    PENDING_FILE_SENDS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 pub fn sync_config_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("SHURUFA_SYNC_DIR") {
@@ -254,6 +263,24 @@ fn execute_sync_retry(id: u64) {
                 Err("写入系统剪贴板失败".to_owned())
             }
         }
+        "send_file" => {
+            // M10：发送失败重试——取回原路径走既有广播通道重发
+            let path = value
+                .and_then(|v| v.get("path"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "载荷缺 path".to_owned())?;
+            let path_buf = std::path::PathBuf::from(path);
+            if !path_buf.is_file() {
+                return Err("原文件已不存在，无法重发".to_owned());
+            }
+            match CLIP_TX.get() {
+                Some(tx) => {
+                    let _ = tx.send(Broadcast::FileV3(path_buf));
+                    Ok(())
+                }
+                None => Err("同步服务未运行".to_owned()),
+            }
+        }
         other => Err(format!("未知重试类型：{other}")),
     })();
     let (ok, detail) = match result {
@@ -414,13 +441,20 @@ pub fn start_daemon() {
                             }
                             Broadcast::FileV3(path) => {
                                 match service.send_file_path(&path) {
-                                    Ok(msg_id) => crate::log_line(&format!(
-                                        "已发送 {} → 等待对端接收（msg {}）",
-                                        path.file_name()
-                                            .and_then(|n| n.to_str())
-                                            .unwrap_or("?"),
-                                        &msg_id[..8]
-                                    )),
+                                    Ok(msg_id) => {
+                                        // M10：记台账供失败重试取回原路径
+                                        pending_file_sends()
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .insert(msg_id.clone(), path.clone());
+                                        crate::log_line(&format!(
+                                            "已发送 {} → 等待对端接收（msg {}）",
+                                            path.file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or("?"),
+                                            &msg_id[..8]
+                                        ));
+                                    }
                                     Err(e) => crate::log_line(&format!(
                                         "文件发送失败 {}：{e}",
                                         path.display()
@@ -580,6 +614,11 @@ pub fn start_daemon() {
                                 Incoming::FileTransferDone { msg_id, name, ok, detail } => {
                                     if ok {
                                         let bytes = detail.unwrap_or(0);
+                                        // M10：发送成功清理台账
+                                        pending_file_sends()
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .remove(&msg_id);
                                         record_sync_activity(
                                             SyncDirection::Out,
                                             SyncActivityKind::File,
@@ -596,6 +635,17 @@ pub fn start_daemon() {
                                         ));
                                     } else {
                                         let reason = detail.err().unwrap_or_else(|| "未知".into());
+                                        // M10：取台账原路径生成 SendFile 重试载荷（一键重发）
+                                        let retry = pending_file_sends()
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .remove(&msg_id)
+                                            .and_then(|path| {
+                                                save_retry_payload(
+                                                    "send_file",
+                                                    &serde_json::json!({ "path": path }),
+                                                )
+                                            });
                                         record_sync_activity(
                                             SyncDirection::Out,
                                             SyncActivityKind::File,
@@ -603,8 +653,7 @@ pub fn start_daemon() {
                                             None,
                                             false,
                                             Some(format!("文件发送失败：{reason}")),
-                                            // 发送侧重试需 msg_id→原路径映射，数据链路待补，暂不提供
-                                            None,
+                                            retry,
                                         );
                                         crate::log_line(&format!(
                                             "文件发送失败 {name}：{reason}"
@@ -854,7 +903,33 @@ pub fn cli_unpair(fp_prefix: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::next_sync_dimensions;
+    use super::*;
+
+    #[test]
+    fn 发送台账可登记取回并清理() {
+        pending_file_sends()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        let path = PathBuf::from("C:\\tmp\\report.pdf");
+        let msg_id = "msg-abc-123".to_owned();
+        {
+            let mut ledger = pending_file_sends()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            ledger.insert(msg_id.clone(), path.clone());
+            assert_eq!(ledger.get(&msg_id), Some(&path));
+        }
+        let taken = pending_file_sends()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&msg_id);
+        assert_eq!(taken, Some(path));
+        assert!(pending_file_sends()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty());
+    }
 
     #[test]
     fn 同步缩放按比例递减且不会归零() {
