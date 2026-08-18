@@ -136,7 +136,11 @@ impl Engine {
             (api_ref.setup)(&mut traits);
             (api_ref.initialize)(&mut traits);
 
-            if (api_ref.start_maintenance)(1) != 0 {
+            // 增量部署（librime#1077）：full_check=0 只重建 mtime 变化的
+            // schema/词典，启动秒级；首装无 build 产物时 librime 仍会全量
+            // 构建，等价于 full_check=1 的首次行为。安装器预构建 + host
+            // deploy 命令已覆盖 schema 变更场景，无需每次启动全量重编译。
+            if (api_ref.start_maintenance)(0) != 0 {
                 (api_ref.join_maintenance_thread)();
             }
 
@@ -153,6 +157,16 @@ impl Engine {
         self.lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 非阻塞版 lock：引擎被其他会话占用时立即返回 None（供 try_process_key）。
+    /// 锁中毒时按阻塞路径恢复（PoisonError 内含 guard），仅 WouldBlock 视为忙。
+    fn try_lock(&self) -> Option<MutexGuard<'_, ()>> {
+        match self.lock.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+        }
     }
 
     fn api(&self) -> &ffi::RimeApi {
@@ -192,6 +206,15 @@ impl Session<'_> {
     pub fn process_key(&self, keycode: i32, mask: i32) -> bool {
         let _guard = self.engine.lock();
         unsafe { (self.engine.api().process_key)(self.id, keycode, mask) != 0 }
+    }
+
+    /// 引擎忙时的非阻塞喂键（weasel#1867 手段3 同类）：引擎锁被其他会话
+    /// 持有时**不排队等待**，立即返回 `None`，由服务端快速应答让客户端直通
+    /// 该键——避免多宿主并发时按键被锁阻塞、产生可见卡顿。锁空闲时等价于
+    /// `process_key`，返回 `Some(eaten)`。
+    pub fn try_process_key(&self, keycode: i32, mask: i32) -> Option<bool> {
+        let _guard = self.engine.try_lock()?;
+        unsafe { Some((self.engine.api().process_key)(self.id, keycode, mask) != 0) }
     }
 
     /// 读取布尔开关（如 "ascii_mode"、"simplification"）。

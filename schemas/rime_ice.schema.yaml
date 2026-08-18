@@ -13,6 +13,8 @@ schema:
     雾凇拼音核心词典，启用本地首选词学习、整句与长词补全。
   dependencies:
     - english
+    - radical_pinyin
+    - word_info
 
 switches:
   - name: ascii_mode
@@ -22,9 +24,30 @@ switches:
     states: [ 半角, 全角 ]
   - name: ascii_punct
     states: [ 。，, ．， ]
+  # Emoji（rime-ice 闲置资产，2026-08-16 启用）：输入中文词时附带
+  # emoji 候选（如 微笑 → 微笑😊）。OpenCC emoji.json 转换，数据在
+  # schemas/opencc/（emoji.json + emoji.txt + others.txt）。
+  - name: emoji
+    reset: 1
+    states: [ 😄, 无 ]
+  # 中英混输自动空格（rime-ice en_spacer，2026-08-18 引入）：上次上屏英文
+  # + 本次候选英文词 → 候选自动带前导空格（hello 后再打 world → " world"）。
+  # 默认开；开关可关。
+  - name: en_spacer
+    reset: 1
+    states: [ 空格, 无 ]
 
 engine:
   processors:
+    # 以词定字（rime-ice 同款）：候选时按 [ 取词首字、] 取词末字上屏。
+    # 脚本 schemas/lua/select_character.lua；快捷键在 key_binder 配置。
+    # 必须排在 punctuator 之前，否则 [ ] 会被标点符号映射吃掉。
+    - lua_processor@*select_character
+    # 冷词丢弃/隐藏/降频（rime-ice cold_word_drop 模块）：候选时
+    # Ctrl+D 删词（无视编码）、Ctrl+J 降频（词条放到第 4 候选位）、
+    # Ctrl+X 隐藏当前输入码下的该词。词条写进用户目录
+    # lua/cold_word_drop/*_words.lua，filter 负责生效。
+    - lua_processor@*cold_word_drop.processor
     - ascii_composer
     - recognizer
     - key_binder
@@ -36,23 +59,104 @@ engine:
   segmentors:
     - ascii_segmentor
     - matcher
+    # 辅码检字（P0 #2 剩余，rime-ice 部件拆字反查）：`uU` 前缀 + 部件码
+    # 反查汉字（如 uUbai'shao → 的）。affix_segmentor 给反查段打 tag，
+    # table_translator@radical_lookup 查 radical_pinyin 词典。
+    - affix_segmentor@radical_lookup
     - abc_segmentor
     - punct_segmentor
     - fallback_segmentor
   translators:
     - punct_translator
     - script_translator
+    # 自定义短语（P1 #6）：custom_phrase.txt 里的用户固定短语，权重 99
+    # 压过普通拼音候选置顶；只读 stabledb，改动后需重新部署生效。
+    - table_translator@custom_phrase
+    # V 模式快捷转写（rime-ice 官方 Lua 脚本）：
+    #   rq/sj/xq/dt/ts = 日期/时间/星期/ISO 时间戳；R+数字 = 金额大写；
+    #   cC+算式 = 计算器；nl = 今日农历，N+YYYYMMDD = 指定日农历。
+    # 触发码见 recognizer/patterns，脚本在 schemas/lua/。
+    - lua_translator@*date_translator
+    - lua_translator@*lunar
+    - lua_translator@*number_translator
+    - lua_translator@*calc_translator
+    # V 模式帮助（vhelp，2026-08-17 引入）：输入 vhelp → 列出全部触发码
+    # 及说明（日期/时间/金额大写/计算器/农历/辅码反查/部件辅码等）。
+    # 脚本 schemas/lua/v_help.lua；参考 rime-ice vhelp 浏览符号码的做法。
+    - lua_translator@*v_help
+    # 多时机表情推荐（M7-9，搜狗 15.9 同类）：okok→👌、aini→❤️、wanan→🌙。
+    - lua_translator@*emoji_timing
+    # Unicode 输入（rime-ice 同款，2026-08-18 引入）：U + 十六进制码点 →
+    # 对应字符（U4F60→你、U1F600→😀、U03B1→α），生僻字/emoji/特殊符号
+    # 不再依赖词库收录。脚本 schemas/lua/unicode.lua；触发前缀见
+    # recognizer/patterns/unicode（第 2 字符 U，大写不与 uU 辅码冲突）。
+    - lua_translator@*unicode
     - table_translator@english_translator
+    # 词汇别名（rime-ice 2025+「部分常用词自动展示翻译/别名/化学式/简称」）：
+    # 多个词条共享同一拼音编码，输入时一并出现（如 aerfa → 阿尔法/alpha/α/A）。
+    # 词表 schemas/word_info.dict.yaml + word_info.schema.yaml（依赖方案，随
+    # rime_ice 一起部署编译）。编码用紧凑拼音（aerfa）：table_translator 查询
+    # 走 prism 精确码命中，与 script_translator 音节图匹配不同（cn_en 同款）。
+    # initial_quality 0.5 低于拼音 1.2，别名排在拼音候选之后；
+    # enable_completion false 仅精确码命中，避免前缀联想刷屏。
+    - table_translator@word_info
+    # 辅码检字（P0 #2 剩余）：uU 前缀部件码反查，查 radical_pinyin 词典。
+    - table_translator@radical_lookup
+  filters:
+    # 错音错字提示（rime-ice corrector.lua）：输入「给予」读错的拼音
+    # （gei yu）时，候选 comment 显示正确读音（jǐ yǔ）；输入错别字
+    # （按耐）时显示正确写法（按捺）。依赖 translator 的 comment 拼音
+    # 标记（spelling_hints + comment_format 的 ［］包裹）做匹配。
+    # 必须是列表首位（先于 uniquifier，且先清理 comment 才有判断依据）。
+    - lua_filter@*corrector
+    # 英文自动大小写（rime-ice autocap_filter 同款，2026-08-17 引入）：
+    # 输入 Hello → 英文候选变 Hello；HELLo → HELLO；全小写不变。
+    # 依赖 english.schema.yaml 的 speller/algebra 大小写派生（\U/\L）
+    # 让 prism 命中任意大小写输入，本滤镜只负责按输入大小写转换文本。
+    # 位置：corrector 之后（corrector 先清理 comment 不影响英文文本）、
+    # uniquifier 之前（转换后的文本需去重）。
+    - lua_filter@*autocap_filter
+    # 冷词丢弃/隐藏/降频（配合 processor）：按用户词条表过滤候选。
+    - lua_filter@*cold_word_drop.filter
+    # Emoji（simplifier@emoji）：中文词候选附带 emoji 变体；开关在 switches。
+    - simplifier@emoji
+    # 辅码检字反查滤镜：把 radical_lookup 段的候选补上拼音注音注释。
+    - reverse_lookup_filter@radical_reverse_lookup
+    # 部件拆字辅码（rime-ice search.lua，2026-08-17 引入）：输入拼音出现
+    # 候选后，输入辅码引导符（默认 `）+ 部件码，按 radical_pinyin 词典过滤
+    # 候选（如 nihao`ren → 只留首字含 亻(ren) 部件的候选 你好/倪/伲…），
+    # 类似搜狗/微软的候选内笔画、部件筛选。namespace=radical_pinyin 即
+    # schema 反查方案（无需 search/schema 节点）。引导符见 key_binder/search
+    # 与 speller/alphabet（` 在 alphabet 不在 initials）。必须排在
+    # uniquifier 之前（过滤后去重）。
+    - lua_filter@*search@radical_pinyin
+    # 中英混输自动空格（rime-ice en_spacer，2026-08-18 引入）：英文词上屏后
+    # 再输入英文词 → 候选自动带前导空格。必须在 uniquifier 之前（shadow
+    # 候选文本带空格后去重）。开关 en_spacer（默认开）可关。
+    - lua_filter@*en_spacer
+    - uniquifier
 
 translator:
   dictionary: rime_ice
   # Rime 本地 userdb 记录用户实际选择，逐渐提升首选词。
   enable_user_dict: true
+  # 上下文调频（M7-8，搜狗 16.6 打字模型同类方向）：依据上屏上文
+  # 从 userdb 读取语境词频，对紧随其后的候选加权（如刚上屏"中国"则
+  # 输入 renmin 时"人民"更靠前）。librime ≥1.7 支持。
+  contextual_suggestions: true
   # 使用原生整句造词，提高连续拼音时的长词和短句命中率。
   enable_sentence: true
   max_sentence_length: 8
   # 完整输入较长拼音时直接提供完整词条，减少逐字选词。
   enable_word_completion: true
+  # 错音错字提示（corrector.lua）依赖：把拼音写进候选 comment 供脚本匹配。
+  # spelling_hints=8 = 候选多音节全拼 hint（librime ≥1.13）；comment_format 用
+  # 全角括号 ［］ 包裹拼音，corrector 用 ^［(.-)］$ 提取并对照纠错表。
+  spelling_hints: 8
+  always_show_comments: true
+  comment_format:
+    - xform/^/［/
+    - xform/$/］/
   # 拼音纠错（2026-08-15 实装）：librime 1.17 的编辑距离纠错（EditDistance
   # Corrector）在官方构建里被 #if 0 禁用，仅剩 NearSearchCorrector 生效——
   # 可纠正键盘相邻键错误（如 nohao→你好：i/o 相邻），转位类错误
@@ -63,6 +167,17 @@ translator:
     - xform/([nl])v/$1ü/
     - xform/([nl])ue/$1üe/
     - xform/([jqxy])v/$1u/
+
+# 自定义短语（P1 #6）：读 %APPDATA%\shurufa\rime\custom_phrase.txt，
+# 格式 `编码<TAB>词条<TAB>权重`（如 `gs\t公司\t100`）。权重 99 压过拼音
+# 候选置顶；stabledb 只读，改动后经设置页「保存并部署」重建生效。
+custom_phrase:
+  dictionary: ""
+  user_dict: custom_phrase
+  db_class: stabledb
+  enable_completion: false
+  enable_sentence: false
+  initial_quality: 99
 
 # 英文混输（搜狗/微软拼音同款）：中文输入时按前缀混排英文单词候选。
 # - abc_segmentor 把连续小写字母段标记为 abc 段，table_translator 查表；
@@ -82,8 +197,28 @@ english_translator:
   # 补全候选仍有 -1 惩罚，中文完整词（ma→吗）依然优先。
   initial_quality: 2.0
 
+# 词汇别名（rime-ice 2025+「部分常用词自动展示翻译/别名/化学式/简称」）：
+# 多个词条共享同一拼音编码，输入时一并出现（如 aerfa → 阿尔法/alpha/α/A）。
+# 词表 schemas/word_info.dict.yaml + word_info.schema.yaml（依赖方案，随
+# rime_ice 一起部署编译）。编码用紧凑拼音（aerfa）：table_translator 查询
+# 走 prism 精确码命中，与 script_translator 音节图匹配不同（cn_en 同款）。
+# initial_quality 0.5 低于拼音 1.2，别名排在拼音候选之后；
+# enable_completion false 仅精确码命中，避免前缀联想刷屏。
+word_info:
+  dictionary: word_info
+  enable_user_dict: false
+  enable_sentence: false
+  enable_completion: false
+  initial_quality: 0.5
+
 speller:
-  alphabet: zyxwvutsrqponmlkjihgfedcba
+  # 含大写字母：V 模式触发码（R/cC/N）经 recognizer 处理器在 speller 之前
+  # 截获并直接入码，但大写首字母本身仍需在 alphabet 内才能被识别为输入
+  # 起点（rime-ice 同款做法）。
+  # 末尾 `：部件拆字辅码引导符（search.lua），加入 alphabet 才能进入输入码；
+  # 但**不在** initials，避免单独成码（rime-ice 同款）。
+  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA`
+  initials: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA
   delimiter: " '"
   algebra:
     # 仅保留用户选择的 n/l 和前后鼻音模糊音，避免候选范围过度发散。
@@ -111,8 +246,89 @@ punctuator:
 
 key_binder:
   import_preset: default
+  # 以词定字快捷键（配合 lua_processor@*select_character）：
+  # [ = 取当前选中候选的首字上屏，] = 取末字上屏（搜狗/微软同款能力）。
+  select_first_character: "bracketleft"
+  select_last_character: "bracketright"
+  # 冷词丢弃快捷键（配合 cold_word_drop.processor）：候选时生效。
+  # Ctrl+D 强制删词（无视编码）；Ctrl+J 降频（词条移到第 4 候选位）；
+  # Ctrl+X 隐藏当前输入码下的该词（仅该码不再出现）。
+  drop_cand: "Control+d"
+  reduce_freq_cand: "Control+j"
+  hide_cand: "Control+x"
+  # 部件拆字辅码引导符（search.lua 自行读取此配置，非 librime 内置）：
+  # 需同时加入 speller/alphabet（` 在 alphabet 但不在 initials，避免单独成码）。
+  search: "`"
 
 recognizer:
   import_preset: default
   patterns:
     punct: "^/([0-9]+[a-z]*|[a-z]+)$"
+    # V 模式触发码（rime-ice 同款）：R+数字=金额大写；cC+算式=计算器；
+    # N+YYYYMMDD=指定日期农历。recognizer 处理器逐键截获（匹配整个输入），
+    # 数字/符号因此无需进入 speller 字母表。
+    number: "^R[0-9]+[.]?[0-9]*"
+    calculator: "^cC.+"
+    gregorian_to_lunar: "^N[0-9]{1,8}"
+    # Unicode 输入（rime-ice 同款）：U + 十六进制码点（U4f60、U1F600）。
+    # 大写 U 前缀，不与辅码检字 uU（小写 u）冲突；hex 大小写都收
+    # （rime-ice 原版只收小写 [a-f0-9]，这里放宽避免 emoji 大写 F 打不出）。
+    unicode: "^U[a-fA-F0-9]+"
+    # 辅码检字：uU 前缀 + 部件码反查汉字（uUbai'shao → 的）。
+    # 模式不含 '（与 rime-ice 一致）：matcher 先给 uU 段打 tag，
+    # affix_segmentor 负责拆前缀并把 ' 之后的部件码并入 code 段。
+    radical_lookup: "^uU[a-z]+$"
+
+# 辅码检字（P0 #2 剩余，rime-ice 部件拆字反查）：查 radical_pinyin 词典，
+# 前缀 uU 与 recognizer/patterns/radical_lookup 匹配（双字母避免影响打英文）。
+radical_lookup:
+  tag: radical_lookup
+  dictionary: radical_pinyin
+  enable_user_dict: false
+  prefix: "uU"
+  tips: "  〔拆字〕"
+  comment_format:
+    - erase/^.*$//
+
+# 辅码检字反查滤镜：给反查候选补拼音注音（来源 rime_ice 词典）。
+radical_reverse_lookup:
+  tags: [ radical_lookup ]
+  dictionary: rime_ice
+
+# Emoji（simplifier@emoji）：OpenCC 中文→emoji 转换，开关在 switches/emoji。
+# 数据 schemas/opencc/（emoji.json 引用 emoji.txt + others.txt，text 词典
+# 无需编译 .ocd2）。inherit_comment false 让 emoji 候选不显示拼音注释
+# （rime-ice 同款；corrector.lua 及反查中 emoji 的 comment 显示为空）。
+emoji:
+  option_name: emoji
+  opencc_config: emoji.json
+  inherit_comment: false
+
+# V 模式：日期时间（触发码 rq/sj/xq/dt/ts，脚本 date_translator.lua）
+date_translator:
+  date: rq        # 2026-08-16
+  time: sj        # 14:30
+  week: xq        # 星期日
+  datetime: dt    # 2026-08-16T14:30:00+08:00
+  timestamp: ts   # 秒级时间戳
+  datezh: rqzh    # 二〇二六年八月十六日
+  dateen: rqen    # 16 August 2026 / August 16, 2026
+
+# V 模式：农历（lunar.lua + lunar.db；nl=今日，N+YYYYMMDD=指定日）
+lunar: nl
+lunar_template: "{干支年}{生肖}年{俗称农历月}{农历日}"
+
+# V 模式：计算器（calc_translator.lua，前缀 cC 后接算式）
+calculator:
+  prefix: cC
+
+# 错音错字提示（corrector.lua 的 comment 模板；{comment} 替换为正确读音/写法）。
+# 命中纠错表时 comment 显示正确内容（如「给予」→ jǐ yǔ）；未命中且
+# keep_comments 关闭时清空拼音注释，保持候选干净。
+corrector: "{comment}"
+
+
+
+
+
+

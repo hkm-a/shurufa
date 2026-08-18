@@ -1,0 +1,157 @@
+# Rime dictionary - 词汇别名（Shurufa 内置，rime-ice「词汇别名」同款机制）
+# encoding: utf-8
+#
+# 部分常用词自动展示其翻译、别名、化学式、简称等（参考 rime-ice 2025+ 特性）：
+# 机制 = 多个词条共享同一个拼音编码 → 输入该编码时一并出现。
+# 例：输入 aerfa → 阿尔法（主词库）+ alpha / α / A（本词典别名）。
+#
+# 词条格式：`词<TAB>编码<TAB>权重`（权重只决定同码候选内部排序）。
+# 编码用**紧凑拼音**（aerfa 而非 a er fa）：本词典经 table_translator 挂载，
+# 查询走 prism 精确码命中（GetValue），与 script_translator 的音节图匹配
+# 不同——紧凑码才是单个 prism key（rime-ice cn_en 同款：X光\tXguang）。
+# 由 table_translator@word_info 挂载（initial_quality 0.5，排在拼音候选之后）。
+
+---
+name: word_info
+version: "2026.08.17"
+sort: by_weight
+use_preset_vocabulary: false
+...
+
+# ── 希腊字母（输入中文名拼音 → 给出希腊字母别名）──
+α	aerfa	7500
+alpha	aerfa	8000
+A	aerfa	5000
+β	beita	7500
+beta	beita	8000
+B	beita	5000
+γ	gama	7500
+gamma	gama	8000
+Γ	gama	5000
+δ	deerta	7500
+delta	deerta	8000
+Δ	deerta	5000
+ε	aipuxilong	7500
+epsilon	aipuxilong	8000
+Ε	aipuxilong	5000
+ζ	zeta	7500
+zeta	zeta	8000
+Ζ	zeta	5000
+η	yita	7500
+eta	yita	8000
+Η	yita	5000
+θ	xita	7500
+theta	xita	8000
+Θ	xita	5000
+ι	yueta	7500
+iota	yueta	8000
+Ι	yueta	5000
+κ	kapa	7500
+kappa	kapa	8000
+Κ	kapa	5000
+λ	lamuda	7500
+lambda	lamuda	8000
+Λ	lamuda	5000
+μ	miu	7500
+mu	miu	8000
+Μ	miu	5000
+ν	niu	7500
+nu	niu	8000
+Ν	niu	5000
+ξ	kexi	7500
+xi	kexi	8000
+Ξ	kexi	5000
+ο	aomikerong	7500
+omicron	aomikerong	8000
+Ο	aomikerong	5000
+π	pai	7500
+pi	pai	8000
+Π	pai	5000
+ρ	rou	7500
+rho	rou	8000
+Ρ	rou	5000
+σ	xigema	7500
+sigma	xigema	8000
+Σ	xigema	5000
+τ	tao	7500
+tau	tao	8000
+Τ	tao	5000
+υ	yupuxilong	7500
+upsilon	yupuxilong	8000
+Υ	yupuxilong	5000
+φ	fai	7500
+phi	fai	8000
+Φ	fai	5000
+χ	kai	7500
+chi	kai	8000
+Χ	kai	5000
+ψ	puxi	7500
+psi	puxi	8000
+Ψ	puxi	5000
+ω	oumiga	7500
+omega	oumiga	8000
+Ω	oumiga	5000
+
+# ── 化学式（输入中文名拼音 → 给出化学式）──
+H2O	shui	9000
+水分子	shui	8000
+CO2	eryanghuatan	9000
+O2	yangqi	9000
+氧气	yangqi	8000
+N2	danqi	9000
+氮气	danqi	8000
+H2	qingqi	9000
+氢气	qingqi	8000
+NaCl	lvhuan	9000
+氯化钠	lvhuan	8000
+H2SO4	liusuan	9000
+硫酸	liusuan	8000
+HCl	yansuan	9000
+盐酸	yansuan	8000
+CH4	jiawan	9000
+甲烷	jiawan	8000
+C2H5OH	yichun	9000
+乙醇	yichun	8000
+NH3	anqi	9000
+氨气	anqi	8000
+
+# ── 常见音译别名（输入中文 → 给出英文原名/别名）──
+Wi-Fi	wuxianwangluo	9000
+wifi	wuxianwangluo	8000
+无线网络	wuxianwangluo	7000
+bus	bashi	8000
+巴士	bashi	7000
+sofa	shafa	8000
+沙发	shafa	7000
+tank	tanke	8000
+坦克	tanke	7000
+coffee	kafei	8000
+咖啡	kafei	7000
+chocolate	qiaokeli	8000
+巧克力	qiaokeli	7000
+guitar	jita	8000
+吉他	jita	7000
+humor	youmo	8000
+幽默	youmo	7000
+logic	luoji	8000
+逻辑	luoji	7000
+radar	leida	8000
+雷达	leida	7000
+blog	boke	8000
+博客	boke	7000
+hacker	heike	8000
+黑客	heike	7000
+show	xiu	8000
+秀	xiu	7000
+bye-bye	baibai	8000
+拜拜	baibai	7000
+OK	hao	8000
+好的	hao	7000
+kg	qianke	9000
+千克	qianke	8000
+km	gongli	9000
+公里	gongli	8000
+cm	limi	9000
+厘米	limi	8000
+mm	haomi	9000
+毫米	haomi	8000

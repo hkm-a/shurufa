@@ -163,9 +163,35 @@ pub fn context_from_bridge(ctx: &ime_bridge::Context) -> Context {
     }
 }
 
+/// 超长组合防护判定（weasel#649 同类，2026-08-16）：组合输入串达到
+/// `MAX_COMPOSITION_LEN` 码时，server.rs 会在喂下一键前清空组合，让超长串
+/// 转纯字母直通，防止 librime translator 在超大音节图上爆炸（内存/CPU 暴涨
+/// 导致按键卡死）。正常整句输入（"zhonghuarenmingongheguo" 21 码）远低于
+/// 阈值，零影响。
+pub const MAX_COMPOSITION_LEN: usize = 64;
+
+/// 组合长度是否已达超长阈值（需在下一键前清空）。
+pub fn is_overlong_composition(input_len: usize) -> bool {
+    input_len >= MAX_COMPOSITION_LEN
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 超长组合防护：正常输入（21 码整句）不受影响；≥64 码才触发清空。
+    #[test]
+    fn overlong_composition_threshold() {
+        // 正常整句输入远低于阈值
+        assert!(!is_overlong_composition(0));
+        assert!(!is_overlong_composition(21)); // "zhonghuarenmingongheguo"
+        assert!(!is_overlong_composition(63));
+        // 达到/超过阈值触发
+        assert!(is_overlong_composition(64));
+        assert!(is_overlong_composition(100));
+        // 阈值本身可被消费方引用
+        assert_eq!(MAX_COMPOSITION_LEN, 64);
+    }
 
     #[test]
     fn request_roundtrip() {

@@ -1,5 +1,8 @@
 # Rust 构建产物（含 Rime 部署缓存 target/rime-user-data）
 /target/
+# 本地研究资料（IME 延迟论文 / rime 调研快照），不入库
+/ime_latency_research/
+/research_rime/
 
 # 预编译 librime 由 docs/architecture.md 记载的 release 地址获取，不入库
 /third_party/

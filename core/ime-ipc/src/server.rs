@@ -89,7 +89,31 @@ fn handle_request(
             if s.get_option("ascii_mode") != global_ascii {
                 s.set_option("ascii_mode", global_ascii);
             }
-            let eaten = s.process_key(keysym, mask);
+            // 超长组合防御（weasel#649 同类问题，2026-08-16）：误触/猫踩键盘/
+            // 粘贴等造成输入串异常超长时，librime 的 translator 在超大音节图上
+            // 查找会内存暴涨、按键明显卡顿。输入超过阈值先清空组合再喂本键，
+            // 让超长串"转纯字母直通"（与微软输入法超长转字母同思路）。
+            // 阈值 64 码远高于正常整句输入（"zhonghuarenmingongheguo" 21 码），
+            // 正常使用零影响；超长时宁可放弃组合也不让引擎爆炸。
+            if crate::is_overlong_composition(s.input().chars().count()) {
+                let _ = s.simulate("{Escape}");
+            }
+            // 引擎忙 try-lock（weasel#1867 手段3 同类）：另一宿主的会话正持锁
+            // 处理长操作时，本键不排队阻塞（排队 = 按键延迟），立即应答"未吃"
+            // + 空上下文，客户端按键直通；下一键自然重试。锁空闲时与普通路径
+            // 完全等价。并发争用极少见（正常单键持锁 <1ms），兜底保体验。
+            let eaten = match s.try_process_key(keysym, mask) {
+                Some(eaten) => eaten,
+                None => {
+                    // 引擎忙：另一宿主正持锁处理长操作，本键不排队，直通。
+                    eprintln!("[algo] 引擎忙（try-lock 失败），键 0x{keysym:X} 直通");
+                    return Response::ProcessKey {
+                        eaten: false,
+                        commit: None,
+                        context: crate::Context::default(),
+                    };
+                }
+            };
             let mut context = crate::context_from_bridge(&s.context());
             let (is_ascii, is_full_shape, _) = s.status_bits();
             context.is_ascii = is_ascii;

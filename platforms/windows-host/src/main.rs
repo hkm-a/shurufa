@@ -249,6 +249,7 @@ fn main() {
             };
             dict_update::cli_update(url);
         }
+        "deploy" => dict_update::cli_deploy(),
         "dict-rollback" => {
             // 支持 `dict-rollback --revision <rev>` 回滚到任意本地快照中的版本；
             // 不带参数时保持上一代行为。
@@ -325,6 +326,7 @@ fn main() {
                  \x20 retention       立即执行留存清理
                  \x20 relay <地址|off> 配置或关闭自托管同步中继
                  \x20 dict-update <HTTPS地址> 更新自托管云词库
+                 \x20 deploy          重新部署：重建二进制词典（方案/词库改动后）
                  \x20 dict-rollback [--revision <版本号|内置>] 回滚词库（默认上一代）
                  \x20 dict-history     列出本地可回滚的历史版本
                  \x20 dict-current    打印当前词库版本"

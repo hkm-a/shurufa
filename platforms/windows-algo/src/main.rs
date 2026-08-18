@@ -307,7 +307,20 @@ fn run_service() -> ! {
 }
 
 /// `--once` 模式：喂一串键序列打印候选（供自检/被 supervisor 拉起时冒烟）。
+///
+/// 历史坑（2026-08-16 实机复现）：Engine::init 内的 librime initialize /
+/// start_maintenance 是同步阻塞调用，若 userdb 正被常驻服务持有（leveldb
+/// LOCK），可能长时间卡住不返回——此前 `--once xiufu` 实测挂起 120s+ 不退出，
+/// 该进程锁住 shurufa-algo.exe 导致安装器写入失败。这里加 watchdog：超时后
+/// 直接 exit(1)，宁可自检失败也绝不让挂起进程长期锁文件。
 fn run_once(keys: &str) -> ! {
+    const ONCE_TIMEOUT_SECS: u64 = 90;
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(ONCE_TIMEOUT_SECS));
+        eprintln!("[algo] --once 超时（{ONCE_TIMEOUT_SECS}s），强制退出");
+        exit(1);
+    });
+
     let root = user_config_root();
     let shared = shared_data_dir();
     log(&format!("--once 模式，键序列：{keys}"));

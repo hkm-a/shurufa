@@ -31,6 +31,16 @@
 //!       "font_scale": 1.0,              // 字号倍率，0.5..=2.0 以外按 1.0 处理
 //!       "opacity": 0.96,                // 窗口整体透明度，(0,1]；>=1 不启用分层窗口
 //!       "scrollbar": true,              // 候选窗翻页滚动条（右缘 4px，按页绘制；默认开）
+//!       "padding": 12,                  // 窗口内边距（基准 px，随 DPI 缩放；0=默认）
+//!       "item_gap": 22,                 // 候选间距（基准 px；0=默认）
+//!       "label_gap": 6,                 // 序号与候选词间距（基准 px；0=默认）
+//!       "hl_pad": 7,                    // 高亮候选左右留白（基准 px；0=默认）
+//!       "row_h": 40,                    // 单候选行高（基准 px；0=默认）
+//!       "preedit_h": 26,                // preedit 区高度（基准 px；0=默认）
+//!       "abbreviate_length": 24,        // 候选超该字符数截断显示省略号（weasel
+//!                                       //   candidate_abbreviate_length 同款；0=不截断）
+//!       "show_candidate_badge": false,  // 候选来源角标（英文/emoji/日期/单字/词；
+//!                                       //   启发式分类，默认关）
 //!       "icon": "xxx"                   // 候选图标槽位（预留，本版本不渲染）
 //!     }
 //!   },
@@ -102,7 +112,7 @@ impl Default for CandidateColors {
     }
 }
 
-/// 皮肤度量：圆角、字号倍率、整体透明度 + 候选窗滚动条/图标槽位。
+/// 皮肤度量：圆角、字号倍率、整体透明度 + 间距参数 + 候选窗滚动条/图标槽位。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Metrics {
     /// 圆角半径基准像素（Win11 实际半径由 DWM 决定，此值供绘制与文档）
@@ -116,6 +126,24 @@ pub struct Metrics {
     /// 候选图标槽位（预留字段；本版本仅透传与一次性日志，不渲染）。
     /// 预留为 Copy 友好的固定槽，避免 Option<String> 破坏 Metrics/Skin 的 Copy。
     pub icon: Option<IconSlot>,
+    /// 窗口内边距（基准 px，随 DPI 缩放）；0 = 用内置默认 12。
+    pub padding: i32,
+    /// 候选间距（基准 px，随 DPI 缩放）；0 = 用内置默认 22。
+    pub item_gap: i32,
+    /// 序号与候选词间距（基准 px）；0 = 用内置默认 6。
+    pub label_gap: i32,
+    /// 高亮候选左右留白（基准 px）；0 = 用内置默认 7。
+    pub hl_pad: i32,
+    /// 单候选行高（基准 px）；0 = 用内置默认 40。
+    pub row_h: i32,
+    /// preedit 区高度（基准 px）；0 = 用内置默认 26。
+    pub preedit_h: i32,
+    /// 候选文本超过该字符数时截断显示省略号（weasel candidate_abbreviate_length
+    /// 同款；0 = 不截断）。只影响显示，上屏/选中仍用完整文本（引擎按索引提交）。
+    pub abbreviate_length: i32,
+    /// 候选来源角标（搜狗/百度来源标识同类）：按文本特征启发式分类
+    /// （英文/emoji/日期/单字/词）渲染小角标；默认关（信息价值有限，避免噪音）。
+    pub show_candidate_badge: bool,
 }
 
 impl Default for Metrics {
@@ -126,6 +154,71 @@ impl Default for Metrics {
             opacity: 1.0,
             scrollbar: true,
             icon: None,
+            padding: 0,
+            item_gap: 0,
+            label_gap: 0,
+            hl_pad: 0,
+            row_h: 0,
+            preedit_h: 0,
+            // 长候选缩写默认开（weasel candidate_abbreviate_length 同款）：
+            // 单条候选超 24 字符截断显示省略号，避免长词/日期/ID 撑爆候选行。
+            abbreviate_length: 24,
+            // 候选来源角标默认关（启发式分类信息价值有限，按需开启）。
+            show_candidate_badge: false,
+        }
+    }
+}
+
+impl Metrics {
+    // 供 shurufa-tsf 候选窗布局消费；host（#[path] 引入本模块）暂未使用
+    // 间距参数，允许 dead_code 避免跨 crate 编译告警。
+    #[allow(dead_code)]
+    /// 取有效间距值：>0 用皮肤值，否则用内置默认（调用方传入布局常量）。
+    pub fn padding_or(&self, default: i32) -> i32 {
+        if self.padding > 0 {
+            self.padding
+        } else {
+            default
+        }
+    }
+    #[allow(dead_code)]
+    pub fn item_gap_or(&self, default: i32) -> i32 {
+        if self.item_gap > 0 {
+            self.item_gap
+        } else {
+            default
+        }
+    }
+    #[allow(dead_code)]
+    pub fn label_gap_or(&self, default: i32) -> i32 {
+        if self.label_gap > 0 {
+            self.label_gap
+        } else {
+            default
+        }
+    }
+    #[allow(dead_code)]
+    pub fn hl_pad_or(&self, default: i32) -> i32 {
+        if self.hl_pad > 0 {
+            self.hl_pad
+        } else {
+            default
+        }
+    }
+    #[allow(dead_code)]
+    pub fn row_h_or(&self, default: i32) -> i32 {
+        if self.row_h > 0 {
+            self.row_h
+        } else {
+            default
+        }
+    }
+    #[allow(dead_code)]
+    pub fn preedit_h_or(&self, default: i32) -> i32 {
+        if self.preedit_h > 0 {
+            self.preedit_h
+        } else {
+            default
         }
     }
 }
@@ -236,6 +329,7 @@ impl Skin {
                 *slot = Some(CachedSkin {
                     skin,
                     source: resolved_skin_path(None),
+                    mtime: None,
                 });
                 skin
             }
@@ -247,7 +341,12 @@ impl Skin {
         SKIN_CACHE.with_borrow_mut(|slot| {
             let source = slot.as_ref().and_then(|c| c.source.clone());
             let skin = reload_from_source(source.clone());
-            *slot = Some(CachedSkin { skin, source });
+            let mtime = source.as_deref().and_then(file_mtime_len);
+            *slot = Some(CachedSkin {
+                skin,
+                source,
+                mtime,
+            });
             skin
         })
     }
@@ -256,6 +355,8 @@ impl Skin {
 struct CachedSkin {
     skin: Skin,
     source: Option<PathBuf>,
+    /// 皮肤源文件的 (mtime, 长度) 基线；None = 无源（默认皮肤）
+    mtime: Option<(std::time::SystemTime, u64)>,
 }
 
 thread_local! {
@@ -311,6 +412,14 @@ struct MetricsSection {
     opacity: Option<f32>,
     scrollbar: Option<bool>,
     icon: Option<String>,
+    padding: Option<i32>,
+    item_gap: Option<i32>,
+    label_gap: Option<i32>,
+    hl_pad: Option<i32>,
+    row_h: Option<i32>,
+    preedit_h: Option<i32>,
+    abbreviate_length: Option<i32>,
+    show_candidate_badge: Option<bool>,
 }
 
 #[derive(Default, Deserialize)]
@@ -395,6 +504,23 @@ fn build_skin(text: Option<&str>, dark: bool) -> Skin {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(IconSlot::from),
+        // 间距参数：合法范围 0..=256（0 = 用内置默认），超界回退默认。
+        padding: parse_spacing(variant.metrics.padding, fallback.metrics.padding),
+        item_gap: parse_spacing(variant.metrics.item_gap, fallback.metrics.item_gap),
+        label_gap: parse_spacing(variant.metrics.label_gap, fallback.metrics.label_gap),
+        hl_pad: parse_spacing(variant.metrics.hl_pad, fallback.metrics.hl_pad),
+        row_h: parse_spacing(variant.metrics.row_h, fallback.metrics.row_h),
+        preedit_h: parse_spacing(variant.metrics.preedit_h, fallback.metrics.preedit_h),
+        // 候选截断长度：合法范围 4..=64（0 = 不截断），超界回退默认。
+        abbreviate_length: variant
+            .metrics
+            .abbreviate_length
+            .filter(|n| *n == 0 || (4..=64).contains(n))
+            .unwrap_or(fallback.metrics.abbreviate_length),
+        show_candidate_badge: variant
+            .metrics
+            .show_candidate_badge
+            .unwrap_or(fallback.metrics.show_candidate_badge),
     };
     let shadow = Shadow {
         enabled: file.shadow.enabled.unwrap_or(fallback.shadow.enabled),
@@ -411,6 +537,11 @@ fn build_skin(text: Option<&str>, dark: bool) -> Skin {
         shadow,
         dark_mode: dark,
     }
+}
+
+/// 间距参数解析：合法 0..=256（0 = 用内置默认），其余回退 fallback。
+fn parse_spacing(value: Option<i32>, fallback: i32) -> i32 {
+    value.filter(|v| (0..=256).contains(v)).unwrap_or(fallback)
 }
 
 /// 按 Windows COLORREF 所需的 BGR 排列转换 #RRGGBB 或 #AARRGGBB。
@@ -444,13 +575,45 @@ pub fn system_dark_mode() -> bool {
 
 /// 按默认规则装载皮肤并写入线程缓存；`extra` 允许调用方注入额外的
 /// 候选文件路径（TSF DLL 用它指向 DLL 旁的 schemas 目录）。
+///
+/// 历史坑（2026-08-16 实机反馈"打字莫名卡顿"）：candidate_window::show()
+/// 每次按键都调本函数，旧实现无条件读文件 + JSON 解析 + 系统主题查询，
+/// 实测 ~1ms/次 同步磁盘 I/O，叠加热路径上的 debug_log 写文件导致每键
+/// ~3ms 阻塞。现改为**带 mtime/长度校验的缓存**：缓存存在且源文件未变化时
+/// 直接返回，热切换皮肤仍生效（文件改动才重读），每键零 I/O。
 pub fn load_with(extra: impl FnOnce() -> Option<PathBuf>) -> Skin {
     let source = resolved_skin_path(extra());
+    // 缓存命中判定：源路径一致，且文件 mtime/长度未变（或双方都无源）
+    let reuse = SKIN_CACHE.with_borrow(|slot| match slot {
+        Some(cached) if cached.source == source => match (&source, &cached.mtime) {
+            (None, _) => true, // 无源（默认皮肤）→ 复用
+            (Some(path), Some(baseline)) => {
+                file_mtime_len(path).is_some_and(|current| current == *baseline)
+            }
+            (Some(_), None) => false, // 有源但缓存无基线 → 重载
+        },
+        _ => false,
+    });
+    if reuse {
+        return SKIN_CACHE.with_borrow(|slot| slot.as_ref().expect("命中缓存").skin);
+    }
     let skin = reload_from_source(source.clone());
+    let mtime = source.as_deref().and_then(file_mtime_len);
     SKIN_CACHE.with_borrow_mut(|slot| {
-        *slot = Some(CachedSkin { skin, source });
+        *slot = Some(CachedSkin {
+            skin,
+            source,
+            mtime,
+        });
     });
     skin
+}
+
+/// 取文件 (mtime, 长度)；失败返回 None。
+fn file_mtime_len(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
+    Some((mtime, meta.len()))
 }
 
 fn reload_from_source(source: Option<PathBuf>) -> Skin {
@@ -827,7 +990,11 @@ pub fn load_candidate_colors() -> CandidateColors {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_skin, candidate_colors_from_json, CandidateColors, Metrics, Shadow, Skin};
+    use super::{
+        build_skin, candidate_colors_from_json, file_mtime_len, load_with, CandidateColors,
+        Metrics, Shadow, Skin, SKIN_CACHE,
+    };
+    use std::io::Write;
 
     const V1_JSON: &str = r##"{
         "version": 1,
@@ -981,6 +1148,40 @@ mod tests {
         // 新字段缺省：scrollbar 默认开、icon 预留为 None
         assert!(skin.metrics.scrollbar);
         assert!(skin.metrics.icon.is_none());
+        // 间距缺省全部为 0（= 用内置默认）
+        assert_eq!(skin.metrics.padding, 0);
+        assert_eq!(skin.metrics.item_gap, 0);
+        assert_eq!(skin.metrics.label_gap, 0);
+        assert_eq!(skin.metrics.hl_pad, 0);
+        assert_eq!(skin.metrics.row_h, 0);
+        assert_eq!(skin.metrics.preedit_h, 0);
+    }
+
+    #[test]
+    fn spacing_metrics_parse_and_clamp() {
+        let text = r##"{
+            "version": 2,
+            "light": { "metrics": {
+                "padding": 16, "item_gap": 28, "label_gap": 8,
+                "hl_pad": 9, "row_h": 48, "preedit_h": 30
+            } },
+            "dark": { "metrics": { "padding": 999, "item_gap": -5 } }
+        }"##;
+        let skin = build_skin(Some(text), false);
+        assert_eq!(skin.metrics.padding, 16);
+        assert_eq!(skin.metrics.item_gap, 28);
+        assert_eq!(skin.metrics.label_gap, 8);
+        assert_eq!(skin.metrics.hl_pad, 9);
+        assert_eq!(skin.metrics.row_h, 48);
+        assert_eq!(skin.metrics.preedit_h, 30);
+        // 超界/负值回退默认（0）
+        let dark = build_skin(Some(text), true);
+        assert_eq!(dark.metrics.padding, 0);
+        assert_eq!(dark.metrics.item_gap, 0);
+        // or_* 助手：0 用内置默认，>0 用皮肤值
+        assert_eq!(skin.metrics.padding_or(12), 16);
+        assert_eq!(skin.metrics.row_h_or(40), 48);
+        assert_eq!(dark.metrics.padding_or(12), 12);
     }
 
     #[test]
@@ -1010,5 +1211,63 @@ mod tests {
         skin.candidate.background = 0x0018_1818;
         let (track, _) = super::scrollbar_colors(&skin);
         assert_eq!(track, 0x0030_3030);
+    }
+
+    /// 皮肤缓存行为（2026-08-16 卡顿修复新增）：mtime/长度未变时复用缓存
+    /// （每键零 I/O），文件改动后才重读——热切换皮肤语义保持不变。
+    #[test]
+    fn load_with_reuses_cache_until_file_changes() {
+        // 临时皮肤文件（v2 最小合法内容）；颜色取值仅用于区分两次内容，
+        // 具体 COLORREF 取决于系统主题（light/dark 变体），只断言"内容可区分"。
+        let dir = std::env::temp_dir().join(format!("shurufa-skin-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("skin.json");
+        let write = |text: &str| {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(text.as_bytes()).unwrap();
+        };
+        let json_a = r##"{"version":2,"light":{"candidate":{"background":"#111111"}},"dark":{"candidate":{"background":"#222222"}}}"##;
+        // json_b 与 json_a 长度不同（改一个色值长度为 8 位 AARRGGBB），
+        // 保证 mtime 粒度内也能靠 len 区分——避免同 mtime+同 len 误命中
+        let json_b = r##"{"version":2,"light":{"candidate":{"background":"#FF333333"}},"dark":{"candidate":{"background":"#444444"}}}"##;
+        write(json_a);
+        // 清空 thread-local 缓存，从文件首次加载
+        SKIN_CACHE.with(|c| *c.borrow_mut() = None);
+        let extra = || Some(path.clone());
+        let s1 = load_with(extra);
+        let bg_a = s1.candidate.background;
+        // mtime/长度未变 → 复用缓存（load_with 不再触发重载）
+        let s2 = load_with(extra);
+        assert_eq!(
+            s2.candidate.background, bg_a,
+            "缓存命中：内容应与首次加载一致（json_a 的某变体）"
+        );
+        // 改动文件内容（长度不同）→ 应重载
+        write(json_b);
+        let s3 = load_with(extra);
+        assert_ne!(
+            s3.candidate.background, bg_a,
+            "文件改动后应重读 json_b（背景色应变化）"
+        );
+        // 再命中缓存
+        let s4 = load_with(extra);
+        assert_eq!(s4.candidate.background, s3.candidate.background);
+        // 清理
+        let _ = std::fs::remove_dir_all(&dir);
+        SKIN_CACHE.with(|c| *c.borrow_mut() = None);
+    }
+
+    /// file_mtime_len：正常返回 (mtime, len)，缺文件返回 None。
+    #[test]
+    fn file_mtime_len_reports_metadata() {
+        let dir = std::env::temp_dir().join(format!("shurufa-mtime-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t.json");
+        std::fs::write(&p, "hello").unwrap();
+        let got = file_mtime_len(&p);
+        assert!(got.is_some(), "存在的文件应返回 (mtime, len)");
+        assert_eq!(got.unwrap().1, 5, "长度应为 5 字节");
+        assert!(file_mtime_len(&dir.join("missing.json")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

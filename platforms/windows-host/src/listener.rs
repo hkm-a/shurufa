@@ -147,6 +147,10 @@ pub fn run(store: ClipboardStore) -> Result<()> {
                     crate::ai_panel::polish_selection();
                     continue;
                 }
+                if id == crate::ai_panel::TRANSLATE_HOTKEY_ID {
+                    crate::ai_panel::translate_selection();
+                    continue;
+                }
                 if id == crate::onscreen_kbd::HOTKEY_ID {
                     crate::onscreen_kbd::toggle();
                     continue;

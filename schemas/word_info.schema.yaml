@@ -1,0 +1,67 @@
+# 词汇别名依赖方案（Shurufa 内置，rime-ice「词汇别名」同款机制）
+# encoding: utf-8
+#
+# 本方案**不进入** default.yaml 的 schema_list（不会出现在方案切换器里），
+# 只作为 rime_ice 的 schema/dependencies 存在：librime 部署器按
+# dependencies 编译本方案的主词典，生成 word_info.table.bin / word_info.prism.bin，
+# 供 rime_ice 的 table_translator@word_info 加载。
+#
+# 功能：部分常用词自动展示其翻译、别名、化学式、简称等——多个词条共享
+# 同一个拼音编码，输入该编码时一并出现（如 aerfa → 阿尔法 / alpha / α / A）。
+schema:
+  schema_id: word_info
+  name: 词汇别名
+  version: "2026.08.17"
+  author:
+    - Shurufa
+  description: |
+    词汇别名词典（约 120 条）：希腊字母、化学式、常见音译别名。
+    输入中文名拼音时给出翻译/别名/化学式/简称候选。
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - table_translator
+  filters:
+    - uniquifier
+
+translator:
+  dictionary: word_info
+  enable_user_dict: false
+  enable_sentence: false
+  enable_completion: false
+  initial_quality: 1.0
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+  delimiter: " '"
+  algebra:
+    # 编码即紧凑拼音（aerfa）：table_translator 查询走 prism 精确码命中
+    # （GetValue 单 key 匹配），与 script_translator 的音节图匹配不同，
+    # 因此词典码不能带空格分隔（rime-ice cn_en 同款：X光\tXguang）。
+    # 不做任何转换，输入什么就查什么。
+    - derive/^([a-z]+)$/$1/
+
+punctuator:
+  import_preset: symbols
+
+key_binder:
+  import_preset: default
+
+recognizer:
+  import_preset: default

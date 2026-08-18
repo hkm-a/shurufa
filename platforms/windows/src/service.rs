@@ -5,6 +5,7 @@
 //! 同步回文档与候选窗。引擎不在本进程内 —— 用户词库锁冲突由此消除。
 
 use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use windows::core::{implement, Interface, Ref, Result, BOOL, GUID};
@@ -21,7 +22,7 @@ use windows_core::IUnknownImpl;
 
 use shurufa_options::ImeOptions;
 
-use crate::candidate_window::CandidateUi;
+use crate::candidate_window::{CandidatePanelMode, CandidateUi, PositionMode};
 use crate::composition::edit_session;
 use crate::ipc_client::ImeClient;
 use crate::keys;
@@ -49,8 +50,9 @@ pub(crate) fn remap_tab_key(keysym: i32, shift: bool, has_breaks: bool) -> Optio
 pub struct Inner {
     thread_mgr: Option<ITfThreadMgr>,
     client_id: u32,
-    /// 经 IPC 的引擎会话客户端（懒连接）。
-    client: ImeClient,
+    /// 经 IPC 的引擎会话客户端（懒连接）。Arc<Mutex> 供候选条右键菜单
+    /// 钩子与活动组合共用同一会话（新连接会建新会话，空组合无法删词）。
+    client: Arc<Mutex<ImeClient>>,
     composition: Option<ITfComposition>,
     ui: CandidateUi,
     /// 仅用于排障日志：本进程是否已收到过按键
@@ -74,6 +76,14 @@ pub struct Inner {
     /// 模式切回中文（输入体验 bug，用户打 "Hello" 打一个 H 就变中文组字）。
     /// 改为按下仅挂起，切不切由后续按键/松开判定。
     shift_toggle_pending: bool,
+    /// 输入位置缓存（weasel#1867 手段6 同类）：组合对象未变时复用上次
+    /// 锚点，跳过每键 GetActiveView/GetTextExt 的 COM 往返。组合对象
+    /// 每次 StartComposition 都是新指针，同一组合会话内指针不变。
+    last_comp_ptr: Option<*mut core::ffi::c_void>,
+    last_anchor: Option<POINT>,
+    /// 按应用选项跟踪（weasel app_options）：记录当前前台应用与
+    /// 进入被覆盖应用前的 ascii_mode 快照，应用切换时恢复。
+    app_ascii: AppAsciiState,
 }
 
 /// Shift 按住时长阈值：超过即视长按（→ 大写视觉提示），否则按既有的
@@ -134,6 +144,23 @@ pub struct TextService {
 ///
 /// 任何一环 API 失败都按"安全"处理（保守错杀），避免在未知状态下吞按键。
 fn is_secure_desktop() -> bool {
+    match foreground_path() {
+        None => true,
+        Some(path) => {
+            let lower = path.to_ascii_lowercase();
+            const SECURE: &[&str] = &[
+                "\\logonui.exe",
+                "\\consent.exe",
+                "\\securesystemfolder",
+                "\\credentialuibroker.exe",
+            ];
+            SECURE.iter().any(|p| lower.ends_with(p))
+        }
+    }
+}
+
+/// 前台窗口所在进程的完整路径（小写）。
+fn foreground_path() -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -144,15 +171,15 @@ fn is_secure_desktop() -> bool {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.0.is_null() {
-            return true;
+            return None;
         }
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == 0 {
-            return true;
+            return None;
         }
         let Ok(proc_handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return true;
+            return None;
         };
         let mut buf = [0u16; 512];
         let mut len = buf.len() as u32;
@@ -164,27 +191,132 @@ fn is_secure_desktop() -> bool {
         );
         let _ = CloseHandle(proc_handle);
         if got.is_err() {
-            return true;
+            return None;
         }
         let path = String::from_utf16_lossy(&buf[..len as usize]);
-        let lower = path.to_ascii_lowercase();
-        const SECURE: &[&str] = &[
-            "\\logonui.exe",
-            "\\consent.exe",
-            "\\securesystemfolder",
-            "\\credentialuibroker.exe",
-        ];
-        SECURE.iter().any(|p| lower.ends_with(p))
+        Some(path.to_ascii_lowercase())
     }
+}
+
+/// 前台窗口所在进程的可执行文件名（小写，如 "windowsterminal.exe"）。
+/// 用于按应用选项（app_options）的前台应用判定。任何一步 API 失败
+/// 返回 None（保守：宁可不触发覆盖，也不误判）。
+fn foreground_app_name() -> Option<String> {
+    foreground_path().map(|path| path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned())
+}
+
+/// 按应用选项（weasel app_options）的前台应用跟踪状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AppAsciiState {
+    /// 最近一次识别到的前台应用（小写文件名）；None = 尚未识别。
+    current_app: Option<String>,
+    /// 进入"被覆盖应用"那一刻的全局 ascii_mode 快照；离开该应用时恢复。
+    /// None = 当前应用没有被覆盖（或快照尚未建立）。
+    snapshot: Option<bool>,
+}
+
+impl AppAsciiState {
+    pub(crate) fn new() -> Self {
+        Self {
+            current_app: None,
+            snapshot: None,
+        }
+    }
+}
+
+/// 按应用 ascii_mode 覆盖的决策结果（纯函数输出；执行由 Inner 完成）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AppAsciiAction {
+    /// 切到被覆盖的应用：把引擎 ascii_mode 设为覆盖值，并记录进入前快照。
+    ApplyOverride { value: bool },
+    /// 离开被覆盖的应用：恢复进入前快照（若快照存在）。
+    RestoreSnapshot { value: bool },
+    /// 应用没变或没有覆盖：不动作。
+    NoAction,
+}
+
+/// 纯函数：根据前台应用变化与覆盖表，推下一步按应用 ascii_mode 动作。
+///
+/// 规则（weasel app_options 语义）：
+/// - 应用没变（old == new）⇒ NoAction（不打扰同应用内的手动切换）；
+/// - 新应用有覆盖 ⇒ ApplyOverride（快照在调用方保存，见下方返回语义）；
+/// - 新应用无覆盖 且 旧应用有覆盖（即刚离开被覆盖应用）⇒ RestoreSnapshot；
+/// - 新应用无覆盖 且 旧应用也无覆盖 ⇒ NoAction（纯切换，不动作）。
+///
+/// `overrides` 是 app_options 映射（进程名小写 → 选项）；`had_snapshot` 表示
+/// 调用方是否在旧应用上保存过快照（= 旧应用曾被覆盖）。返回 `ApplyOverride`
+/// 时调用方必须保存当前 ascii_mode 为快照；返回 `RestoreSnapshot` 时调用方
+/// 必须用返回的 value 恢复并清空快照。
+pub(crate) fn decide_app_ascii(
+    old_app: &Option<String>,
+    new_app: &Option<String>,
+    overrides: &std::collections::BTreeMap<String, shurufa_options::AppOption>,
+    had_snapshot: bool,
+) -> AppAsciiAction {
+    if old_app == new_app || new_app.is_none() {
+        return AppAsciiAction::NoAction;
+    }
+    let new_override = new_app
+        .as_ref()
+        .and_then(|n| overrides.get(n))
+        .and_then(|o| o.ascii_mode);
+    match new_override {
+        Some(value) => AppAsciiAction::ApplyOverride { value },
+        None if had_snapshot => AppAsciiAction::RestoreSnapshot { value: false },
+        None => AppAsciiAction::NoAction,
+    }
+}
+
+/// 仅测试可见：直接解析前台进程名（不依赖真实前台窗口）。
+#[cfg(test)]
+fn app_name_from_path(path: &str) -> Option<String> {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    Some(name.to_ascii_lowercase())
+}
+
+/// vim 的"回 normal 模式键"（weasel RimeWithWeasel.cpp:274-287 同款）：
+/// Esc，或 Ctrl+C / Ctrl+[。这些键按下时，vim_mode 应用应切回英文直输，
+/// 让 vim/emacs 拿到按键（否则输入法会留在中文态吃掉后续 normal 键）。
+pub(crate) fn is_vim_normal_mode_key(vk: u32, ctrl: bool) -> bool {
+    const VK_ESCAPE: u32 = 0x1B;
+    const VK_C: u32 = 0x43;
+    const VK_OPEN_BRACKET: u32 = 0xDB;
+    vk == VK_ESCAPE || (ctrl && (vk == VK_C || vk == VK_OPEN_BRACKET))
+}
+
+/// 纯函数：当前应用是否启用了 vim_mode（weasel app_options vim_mode）。
+/// `overrides` 为 app_options 映射；当前应用无条目或字段为 None 时返回
+/// false（跟随全局，不启用）。
+pub(crate) fn app_vim_mode_enabled(
+    app: &Option<String>,
+    overrides: &std::collections::BTreeMap<String, shurufa_options::AppOption>,
+) -> bool {
+    app.as_ref()
+        .and_then(|name| overrides.get(name))
+        .and_then(|opt| opt.vim_mode)
+        .unwrap_or(false)
 }
 
 impl TextService {
     pub fn new() -> Self {
+        let client = Arc::new(Mutex::new(ImeClient::new()));
+        // 候选条右键菜单的引擎动作钩子：与活动组合共用同一会话客户端。
+        // 闭包持有 Arc，服务实例生命周期内有效；同一 TSF UI 线程上
+        // wnd_proc 与 handle_key 顺序执行，锁零争用。
+        {
+            let shared = Arc::clone(&client);
+            crate::candidate_window::set_engine_simulate(Box::new(move |keys| {
+                shared
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .simulate(keys)
+            }));
+        }
         TextService {
             inner: RefCell::new(Inner {
                 thread_mgr: None,
                 client_id: 0,
-                client: ImeClient::new(),
+                client,
                 composition: None,
                 ui: CandidateUi::new(),
                 saw_first_key: false,
@@ -194,6 +326,9 @@ impl TextService {
                 shift_down_at_ms: None,
                 caps_visual: false,
                 shift_toggle_pending: false,
+                last_comp_ptr: None,
+                last_anchor: None,
+                app_ascii: AppAsciiState::new(),
             }),
         }
     }
@@ -225,6 +360,68 @@ impl Inner {
         }
     }
 
+    /// 按应用选项（weasel app_options）：前台应用变化时，按覆盖表应用
+    /// ascii_mode 覆盖（进入被覆盖应用）或恢复快照（离开被覆盖应用）。
+    ///
+    /// 只在应用真的变化时动作（decide_app_ascii 判定）；同应用内用户手动
+    /// Shift 切换不受打扰。读取引擎当前 ascii_mode 走 IPC（get_option），
+    /// 覆盖/恢复走 set_option。
+    fn apply_app_override(&mut self) {
+        let Some(new_app) = foreground_app_name() else {
+            return;
+        };
+        let had_snapshot = self.app_ascii.snapshot.is_some();
+        let action = decide_app_ascii(
+            &self.app_ascii.current_app,
+            &Some(new_app.clone()),
+            &self.opts.app_options,
+            had_snapshot,
+        );
+        match action {
+            AppAsciiAction::ApplyOverride { value } => {
+                // 进入被覆盖应用：记录进入前的 ascii_mode 为快照，再应用覆盖。
+                let before = self
+                    .client
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_option("ascii_mode")
+                    .unwrap_or(false);
+                self.app_ascii.snapshot = Some(before);
+                self.app_ascii.current_app = Some(new_app.clone());
+                if self
+                    .client
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_option("ascii_mode", value)
+                {
+                    crate::debug_log(&format!(
+                        "按应用选项：{new_app} 应用 ascii_mode={value}（快照 {before}）"
+                    ));
+                }
+            }
+            AppAsciiAction::RestoreSnapshot { value } => {
+                // 离开被覆盖应用：恢复进入前的快照，并清空状态。
+                let was = self.app_ascii.snapshot.take();
+                self.app_ascii.current_app = Some(new_app.clone());
+                if let Some(snap) = was {
+                    if self
+                        .client
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .set_option("ascii_mode", snap)
+                    {
+                        crate::debug_log(&format!(
+                            "按应用选项：离开被覆盖应用，恢复 ascii_mode={snap}（原覆盖值 {value}）"
+                        ));
+                    }
+                }
+            }
+            AppAsciiAction::NoAction => {
+                self.app_ascii.current_app = Some(new_app);
+            }
+        }
+    }
+
     /// 结束文档侧残留的 TSF 组合（切换中英文/标点/全角前的收尾，
     /// 否则残留组合会把后续按键吃进去）。
     fn end_pending_composition(&mut self, context: &ITfContext) {
@@ -239,6 +436,12 @@ impl Inner {
         }
     }
 
+    /// 模式切换反馈：在输入锚点附近弹出 toast（候选窗不可见时的反馈通道，
+    /// 微信/搜狗模式提示同类；无锚点落主屏底部居中）。
+    fn toast_mode(&self, text: &str) {
+        crate::toast::show(text, self.last_anchor);
+    }
+
     /// 喂键给引擎并同步文档/候选窗；返回该键是否被输入法吃掉。
     fn handle_key(
         &mut self,
@@ -251,6 +454,36 @@ impl Inner {
         let shift = modifiers & keys::MASK_SHIFT != 0;
         let ctrl = modifiers & keys::MASK_CONTROL != 0;
         let alt = modifiers & keys::MASK_ALT != 0;
+
+        // 按应用选项（weasel app_options）：前台应用变化时按覆盖表应用
+        // ascii_mode 覆盖 / 恢复快照。只在应用真的变化时动作，同应用内的
+        // 手动 Shift 切换不受打扰。
+        self.apply_app_override();
+
+        // vim 模式（weasel app_options vim_mode 同款，2026-08-18 引入）：
+        // 该应用配置 vim_mode 后，无组合时按 vim 的"回 normal 模式键"
+        // （Esc / Ctrl+C / Ctrl+[）自动切英文直输——vim/emacs/终端才能
+        // 拿到这些键进入 normal 模式（否则输入法留在中文态吃掉后续
+        // j/k/l 等 normal 键）。有组合时跳过：Esc 由引擎取消组合（与
+        // weasel 的 !handled 判定等价），不抢不切。
+        if self.composition.is_none()
+            && is_vim_normal_mode_key(vk, ctrl)
+            && app_vim_mode_enabled(&self.app_ascii.current_app.clone(), &self.opts.app_options)
+            && self
+                .client
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_option("ascii_mode")
+                == Some(false)
+            && self
+                .client
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_option("ascii_mode", true)
+        {
+            crate::debug_log("vim_mode：Esc/Ctrl+C/Ctrl+[ 回 normal 模式，切英文直输");
+            self.toast_mode("英文直输");
+        }
 
         // Shift 单独按下：挂起中/英切换（不立即切），收尾残留组合，并记录
         // 按下时刻。吃掉该键，否则系统会走默认中英文切换，导致双触发。
@@ -284,10 +517,20 @@ impl Inner {
             self.shift_toggle_pending = false;
             if !shift {
                 self.shift_down_at_ms = None;
-                if let Some(is_ascii) = self.client.toggle_ascii() {
+                if let Some(is_ascii) = self
+                    .client
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .toggle_ascii()
+                {
                     crate::debug_log(&format!(
                         "Shift 挂起结算（后续按键无 Shift）：ascii={is_ascii}"
                     ));
+                    self.toast_mode(if is_ascii {
+                        "英文直输"
+                    } else {
+                        "中文输入"
+                    });
                 }
             } else {
                 crate::debug_log("Shift 挂起取消（后续按键带 Shift，视为组合键）");
@@ -297,9 +540,21 @@ impl Inner {
         // 吃掉该键后系统不再翻转大写灯（OnTestKeyDown 已声明接管）。
         if vk == KeyboardAndMouse::VK_CAPITAL.0 as u32 && self.opts.capslock_to_english {
             self.end_pending_composition(context);
-            if self.client.get_option("ascii_mode") == Some(false) {
-                let is_ascii = self.client.toggle_ascii().unwrap_or(false);
+            if self
+                .client
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_option("ascii_mode")
+                == Some(false)
+            {
+                let is_ascii = self
+                    .client
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .toggle_ascii()
+                    .unwrap_or(false);
                 crate::debug_log(&format!("CapsLock 切英文直输：ascii={is_ascii}"));
+                self.toast_mode("英文直输");
             }
             return true;
         }
@@ -311,22 +566,73 @@ impl Inner {
             && self.opts.shift_space_full_shape
             && self.composition.is_none()
         {
-            let current = self.client.get_option("full_shape").unwrap_or(false);
+            let current = self
+                .client
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_option("full_shape")
+                .unwrap_or(false);
             let next = !current;
-            let ok = self.client.set_option("full_shape", next);
+            let ok = self
+                .client
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_option("full_shape", next);
             crate::debug_log(&format!(
                 "Shift+Space 切换全/半角：full_shape={next} ok={ok}"
             ));
+            self.toast_mode(if next { "全角" } else { "半角" });
             return true;
         }
         // Ctrl+.：切换中/英标点（ascii_punct）。必须放在 Ctrl/Alt 直通判断之前。
         if vk == 0xBE && ctrl && !alt && self.opts.ctrl_period_ascii_punct {
             self.end_pending_composition(context);
-            let current = self.client.get_option("ascii_punct").unwrap_or(false);
+            let current = self
+                .client
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_option("ascii_punct")
+                .unwrap_or(false);
             let next = !current;
-            let ok = self.client.set_option("ascii_punct", next);
+            let ok = self
+                .client
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_option("ascii_punct", next);
             crate::debug_log(&format!("Ctrl+. 切换中/英标点：ascii_punct={next} ok={ok}"));
+            self.toast_mode(if next { "英文标点" } else { "中文标点" });
             return true;
+        }
+        // 符号配对（微信输入法同类，默认关）：中文态、无组合时按配对键 →
+        // 插入配对符号并把光标居中（`(` → `()` 光标中间）。必须放在
+        // Shift+可打印键分支之前——US 键盘上 ( [ { 是 Shift+数字/括号，
+        // 否则会被那个分支截胡只插入单个字符。默认关避免与 IDE 自动补全
+        // 冲突；仅在 ascii_mode=false（中文态）时生效。
+        if self.opts.symbol_pairing
+            && self.composition.is_none()
+            && !ctrl
+            && !alt
+            && self
+                .client
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_option("ascii_mode")
+                == Some(false)
+        {
+            if let Some(keysym) = keys::vk_to_keysym(vk, shift) {
+                if let Some((pair, cursor)) = symbol_pair_for(keysym) {
+                    let client_id = self.client_id;
+                    let _ = edit_session(client_id, context, |ec| unsafe {
+                        insert_paired(context, ec, pair, cursor)
+                    });
+                    crate::debug_log(&format!(
+                        "符号配对：{} → {}（光标 {cursor}）",
+                        char::from_u32(keysym as u32).unwrap_or('?'),
+                        pair
+                    ));
+                    return true;
+                }
+            }
         }
         // Shift+可打印字符（大写字母/上档符号）：直接上屏，不进 rime。
         // 中文态打 "Hello 世界" 的 H（Shift+H）必须立即上屏，否则 rime 会把它
@@ -366,6 +672,8 @@ impl Inner {
             if vk == KeyboardAndMouse::VK_TAB.0 as u32 && self.composition.is_some() {
                 let live_breaks = self
                     .client
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
                     .context()
                     .map(|ctx| !crate::candidate_window::syllable_breaks(&ctx.preedit).is_empty())
                     .unwrap_or(false);
@@ -381,7 +689,9 @@ impl Inner {
         };
         // R2.1 打点起点：必须在 process_key 之前（含引擎 IPC + 算法 + commit 全程），
         // 否则量到的只是"写文本"一段，对于 commit 路径（快路径）误差大。
-        let probe_q0 = if std::env::var_os("SHURUFA_LATENCY_LOG").is_some() {
+        // 2026-08-16 起默认开启（debug_log 已改内存缓冲，零 I/O）；卡顿排查时
+        // 直接分析日志 LAT 行。设 SHURUFA_DISABLE_LATENCY_LOG=1 可关闭。
+        let probe_q0 = if std::env::var_os("SHURUFA_DISABLE_LATENCY_LOG").is_none() {
             let mut q = 0i64;
             unsafe {
                 let _ = windows::Win32::System::Performance::QueryPerformanceCounter(&mut q);
@@ -391,7 +701,12 @@ impl Inner {
             None
         };
 
-        let Some((eaten, commit, ctx)) = self.client.process_key(keysym, modifiers) else {
+        let Some((eaten, commit, ctx)) = self
+            .client
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .process_key(keysym, modifiers)
+        else {
             // 引擎连接失败：把当前按键作为原字符落入文档，避免“只能输入英文”。
             let _ = self.fallback_commit(context, vk, shift);
             crate::debug_log("引擎 IPC 不可用，按键直通");
@@ -462,14 +777,42 @@ impl Inner {
                     comp.EndComposition(ec)?;
                 }
 
-                // 3. 候选窗：跟随组合文本位置
+                // 3. 候选窗：跟随组合文本位置（或按位置策略固定）
                 if has_preedit && !ctx.candidates.is_empty() {
-                    let anchor = composition_slot
-                        .as_ref()
-                        .and_then(|comp| composition_anchor(context, comp, ec));
-                    ui.show(&ctx, anchor);
+                    let position = PositionMode::from_option(&self.opts.candidate_position);
+                    let panel_mode =
+                        CandidatePanelMode::from_option(&self.opts.candidate_panel_mode);
+                    // 固定模式无需锚点：直接复用缓存或清空，跳过 COM 往返。
+                    let anchor = if position == PositionMode::Follow {
+                        match composition_slot.as_ref() {
+                            Some(comp) => {
+                                let ptr = Interface::as_raw(comp);
+                                if self.last_comp_ptr == Some(ptr) {
+                                    self.last_anchor
+                                } else {
+                                    let anchor = composition_anchor(context, comp, ec);
+                                    self.last_comp_ptr = Some(ptr);
+                                    self.last_anchor = anchor;
+                                    anchor
+                                }
+                            }
+                            None => {
+                                self.last_comp_ptr = None;
+                                self.last_anchor = None;
+                                None
+                            }
+                        }
+                    } else {
+                        // 固定模式：不需要组合位置，清空缓存避免误复用
+                        self.last_comp_ptr = None;
+                        self.last_anchor = None;
+                        None
+                    };
+                    ui.show(&ctx, anchor, position, panel_mode);
                 } else {
                     ui.hide();
+                    self.last_comp_ptr = None;
+                    self.last_anchor = None;
                 }
                 Ok(())
             }
@@ -483,7 +826,10 @@ impl Inner {
 
     fn abort_composition(&mut self) {
         // 清空引擎侧组合状态；文档侧组合由 TSF 生命周期回调负责
-        self.client.simulate("{Escape}");
+        self.client
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .simulate("{Escape}");
         self.composition = None;
         self.ui.hide();
     }
@@ -535,8 +881,18 @@ impl Inner {
                 // 按下时已收尾残留组合，这里只切换引擎态。
                 self.shift_toggle_pending = false;
                 crate::debug_log(&format!("Shift 短按松开：结算中英文切换（held={held}ms）"));
-                if let Some(is_ascii) = self.client.toggle_ascii() {
+                if let Some(is_ascii) = self
+                    .client
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .toggle_ascii()
+                {
                     crate::debug_log(&format!("  ascii={is_ascii}"));
+                    self.toast_mode(if is_ascii {
+                        "英文直输"
+                    } else {
+                        "中文输入"
+                    });
                 }
                 let _ = sink;
                 let _ = context;
@@ -577,6 +933,43 @@ unsafe fn insert_text(context: &ITfContext, ec: u32, text: &str) -> Result<()> {
     range.Collapse(ec, TF_ANCHOR_END)?;
     set_selection(context, ec, &range)?;
     Ok(())
+}
+
+/// 符号配对表：keysym → (配对文本, 光标位置 UTF-16 码元数)。
+/// 覆盖常见开括号/引号；光标居中（如 "()" 光标在 1 处）。
+const SYMBOL_PAIRS: &[(i32, (&str, usize))] = &[
+    // '(' U+0028 / ')' U+0029
+    (0x0028, ("()", 1)),
+    // '[' U+005B / ']' U+005D
+    (0x005B, ("[]", 1)),
+    // '{' U+007B / '}' U+007D
+    (0x007B, ("{}", 1)),
+    // '《' U+300A / '》' U+300B
+    (0x300A, ("《》", 1)),
+];
+
+/// 插入配对符号并把光标居中（微信输入法"符号配对"同款）。
+/// 只插入一对文本 + SetSelection 光标到中间，纯 TSF 落盘，无引擎交互。
+unsafe fn insert_paired(context: &ITfContext, ec: u32, pair: &str, cursor: usize) -> Result<()> {
+    let insert: ITfInsertAtSelection = context.cast()?;
+    let utf16: Vec<u16> = pair.encode_utf16().collect();
+    let range = insert.InsertTextAtSelection(ec, INSERT_TEXT_AT_SELECTION_FLAGS(0), &utf16)?;
+    // 光标移到 pair 的 cursor 位置（UTF-16 码元数）：先从起点（TF_ANCHOR_START）
+    // 向右移 cursor 个码元。与 set_composition_text 的 ShiftStart 同法。
+    range.Collapse(ec, TfAnchor(0))?;
+    let mut actual = 0i32;
+    let haltcond = windows::Win32::UI::TextServices::TF_HALTCOND::default();
+    range.ShiftEnd(ec, cursor as i32, &mut actual, &haltcond)?;
+    set_selection(context, ec, &range)?;
+    Ok(())
+}
+
+/// 纯函数：按 keysym 查符号配对；命中返回 (配对文本, 光标位置)。
+pub(crate) fn symbol_pair_for(keysym: i32) -> Option<(&'static str, usize)> {
+    SYMBOL_PAIRS
+        .iter()
+        .find(|(k, _)| *k == keysym)
+        .map(|(_, pair)| *pair)
 }
 
 /// 在插入点建立新组合。
@@ -676,6 +1069,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             }
         }
         inner.ui.destroy();
+        crate::toast::destroy();
         Ok(())
     }
 }
@@ -687,7 +1081,11 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
 }
 
 impl ITfKeyEventSink_Impl for TextService_Impl {
-    fn OnSetFocus(&self, _foreground: BOOL) -> Result<()> {
+    fn OnSetFocus(&self, foreground: BOOL) -> Result<()> {
+        // 焦点离开应用时收起 toast，避免提示残留在其它应用上
+        if !foreground.as_bool() {
+            crate::toast::hide();
+        }
         Ok(())
     }
 
@@ -798,8 +1196,9 @@ impl ITfCompositionSink_Impl for TextService_Impl {
 #[cfg(test)]
 mod tests {
     use super::{
-        decide_shift_release, input_scheme_differs, is_long_press, remap_tab_key,
-        ShiftReleaseAction, SHIFT_LONG_PRESS_MS,
+        app_name_from_path, app_vim_mode_enabled, decide_app_ascii, decide_shift_release,
+        input_scheme_differs, is_long_press, is_vim_normal_mode_key, remap_tab_key,
+        symbol_pair_for, AppAsciiAction, ShiftReleaseAction, SHIFT_LONG_PRESS_MS,
     };
 
     /// watcher 唯一的条件判定：只在 input_scheme 真正变化时才打"方案变化"日志；
@@ -889,5 +1288,166 @@ mod tests {
         // 有断点：Tab → Right，Shift+Tab → Left（1 char/音节步进取自 Rime cursor）
         assert_eq!(remap_tab_key(XK_TAB, false, true), Some(XK_RIGHT));
         assert_eq!(remap_tab_key(XK_TAB, true, true), Some(XK_LEFT));
+    }
+
+    /// 前台进程名解析：取路径最后一段、小写化（与 options.json 键一致）。
+    #[test]
+    fn app_name_from_path_取文件名并小写() {
+        assert_eq!(
+            app_name_from_path(r"C:\Windows\System32\WindowsTerminal.exe"),
+            Some("windowsterminal.exe".to_owned())
+        );
+        assert_eq!(
+            app_name_from_path(r"/usr/bin/code"),
+            Some("code".to_owned())
+        );
+        assert_eq!(
+            app_name_from_path("notepad.exe"),
+            Some("notepad.exe".to_owned())
+        );
+    }
+
+    /// decide_app_ascii 状态机：应用变化 + 覆盖表 → 动作。
+    /// - 应用没变 → NoAction（不打扰同应用手动切换）
+    /// - 切到有覆盖的应用 → ApplyOverride
+    /// - 离开被覆盖应用（有快照）→ RestoreSnapshot
+    /// - 切到无覆盖应用且无快照 → NoAction（纯切换）
+    #[test]
+    fn app_ascii_decision_全覆盖语义() {
+        use shurufa_options::AppOption;
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert(
+            "windowsterminal.exe".to_owned(),
+            AppOption {
+                ascii_mode: Some(true),
+                vim_mode: None,
+            },
+        );
+        overrides.insert(
+            "code.exe".to_owned(),
+            AppOption {
+                ascii_mode: Some(false),
+                vim_mode: None,
+            },
+        );
+
+        let none = None;
+        let terminal = Some("windowsterminal.exe".to_owned());
+        let code = Some("code.exe".to_owned());
+        let chrome = Some("chrome.exe".to_owned());
+
+        // 1) 应用没变 → 不动作
+        assert_eq!(
+            decide_app_ascii(&terminal, &terminal, &overrides, false),
+            AppAsciiAction::NoAction
+        );
+        // 2) 首次识别（old=None）到被覆盖应用 → 应用覆盖
+        assert_eq!(
+            decide_app_ascii(&none, &terminal, &overrides, false),
+            AppAsciiAction::ApplyOverride { value: true }
+        );
+        // 3) 有覆盖应用之间切换：以新应用覆盖为准
+        assert_eq!(
+            decide_app_ascii(&terminal, &code, &overrides, true),
+            AppAsciiAction::ApplyOverride { value: false }
+        );
+        // 4) 离开被覆盖应用（有快照）→ 恢复快照
+        assert_eq!(
+            decide_app_ascii(&code, &chrome, &overrides, true),
+            AppAsciiAction::RestoreSnapshot { value: false }
+        );
+        // 5) 无覆盖应用之间切换（无快照）→ 不动作
+        assert_eq!(
+            decide_app_ascii(&chrome, &Some("explorer.exe".to_owned()), &overrides, false),
+            AppAsciiAction::NoAction
+        );
+        // 6) 前台识别失败（new=None）→ 不动作（宁可不触发）
+        assert_eq!(
+            decide_app_ascii(&terminal, &none, &overrides, true),
+            AppAsciiAction::NoAction
+        );
+        // 7) 覆盖表里该应用无 ascii_mode（None 字段）→ 视同无覆盖
+        let mut empty_override = std::collections::BTreeMap::new();
+        empty_override.insert(
+            "a.exe".to_owned(),
+            AppOption {
+                ascii_mode: None,
+                vim_mode: None,
+            },
+        );
+        assert_eq!(
+            decide_app_ascii(&none, &Some("a.exe".to_owned()), &empty_override, false),
+            AppAsciiAction::NoAction
+        );
+    }
+
+    /// vim 模式回 normal 模式键（weasel RimeWithWeasel.cpp 同款）：Esc /
+    /// Ctrl+C / Ctrl+[ 命中；其余键（含 Ctrl+V、单独 C、Ctrl+Shift+C）不命中。
+    #[test]
+    fn vim_normal_mode_key_判定() {
+        assert!(is_vim_normal_mode_key(0x1B, false)); // Esc
+        assert!(is_vim_normal_mode_key(0x43, true)); // Ctrl+C
+        assert!(is_vim_normal_mode_key(0xDB, true)); // Ctrl+[
+        assert!(!is_vim_normal_mode_key(0x43, false)); // 单独 C
+        assert!(!is_vim_normal_mode_key(0x56, true)); // Ctrl+V
+        assert!(!is_vim_normal_mode_key(0xDB, false)); // 单独 [
+        assert!(!is_vim_normal_mode_key(0x0D, false)); // Enter
+    }
+
+    /// app_vim_mode_enabled：仅当前应用在覆盖表且 vim_mode=true 时启用；
+    /// 无条目 / vim_mode=None / 未识别前台应用一律 false（跟随全局）。
+    #[test]
+    fn app_vim_mode_覆盖语义() {
+        use shurufa_options::AppOption;
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert(
+            "vim.exe".to_owned(),
+            AppOption {
+                ascii_mode: Some(true),
+                vim_mode: Some(true),
+            },
+        );
+        overrides.insert(
+            "chrome.exe".to_owned(),
+            AppOption {
+                ascii_mode: Some(true),
+                vim_mode: None,
+            },
+        );
+
+        let vim = Some("vim.exe".to_owned());
+        let chrome = Some("chrome.exe".to_owned());
+        let other = Some("notepad.exe".to_owned());
+        let none = None;
+
+        // 1) 匹配且 vim_mode=true → 启用
+        assert!(app_vim_mode_enabled(&vim, &overrides));
+        // 2) 匹配但 vim_mode=None → 不启用（只配置了 ascii_mode 的应用不受影响）
+        assert!(!app_vim_mode_enabled(&chrome, &overrides));
+        // 3) 无覆盖条目 → 不启用
+        assert!(!app_vim_mode_enabled(&other, &overrides));
+        // 4) 前台识别失败 → 不启用（宁可不触发）
+        assert!(!app_vim_mode_enabled(&none, &overrides));
+        // 5) 空覆盖表 → 不启用
+        assert!(!app_vim_mode_enabled(
+            &vim,
+            &std::collections::BTreeMap::new()
+        ));
+    }
+
+    /// 符号配对表（微信输入法同类）：四个开括号 → (配对文本, 光标位置)。
+    /// 光标位置 = 1（UTF-16 码元，落在两个字符之间）。
+    #[test]
+    fn symbol_pair_lookup_覆盖常见开括号() {
+        assert_eq!(symbol_pair_for(0x0028), Some(("()", 1))); // (
+        assert_eq!(symbol_pair_for(0x005B), Some(("[]", 1))); // [
+        assert_eq!(symbol_pair_for(0x007B), Some(("{}", 1))); // {
+        assert_eq!(symbol_pair_for(0x300A), Some(("《》", 1))); // 《
+                                                                // 不配对的键：普通字母/闭合括号/其它符号一律 None（透传默认路径）
+        assert_eq!(symbol_pair_for(0x0041), None); // A
+        assert_eq!(symbol_pair_for(0x0029), None); // )
+        assert_eq!(symbol_pair_for(0x0020), None); // 空格
+        assert_eq!(symbol_pair_for(0x300B), None); // 》
+        assert_eq!(symbol_pair_for(0xFFFF), None); // 未知 keysym
     }
 }

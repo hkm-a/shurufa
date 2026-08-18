@@ -936,3 +936,50 @@ h3 { margin-bottom: 5px; font-size: var(--font-h3); font-weight: 600; }
 .stats-line { fill: none; stroke: var(--brand-500); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .stats-line-area { fill: var(--accent-tinted-bg); }
 .stats-line-today { fill: var(--brand-500); stroke: var(--surface-1); stroke-width: 2; }
+
+/* 自定义短语编辑器（P1 #6） */
+.phrase-grid-header { display: grid; grid-template-columns: 1fr 2fr 90px 40px; gap: 10px; padding: 4px 2px 8px; color: var(--text-3); font-size: 12px; letter-spacing: .04em; }
+.phrase-row { display: grid; grid-template-columns: 1fr 2fr 90px 40px; gap: 10px; align-items: center; margin-bottom: 8px; }
+.phrase-row input { width: 100%; padding: 8px 10px; border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 8px; background: var(--bg-2, rgba(127,127,127,.08)); color: var(--text-1); font-size: 14px; }
+.phrase-row input:focus { outline: 2px solid var(--accent, #1b9e77); outline-offset: 1px; }
+.phrase-row .icon-action { justify-self: center; }
+.phrase-empty { padding: 14px 2px; }
+
+/* 符号面板（P1 #11） */
+.symbol-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.symbol-tab { padding: 5px 12px; border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 14px; background: transparent; color: var(--text-2); font-size: 13px; cursor: pointer; }
+.symbol-tab.active { background: var(--accent, #1b9e77); border-color: var(--accent, #1b9e77); color: #fff; }
+.symbol-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 8px; }
+.symbol-cell { min-height: 40px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 8px; background: var(--bg-2, rgba(127,127,127,.08)); color: var(--text-1); font-size: 18px; cursor: pointer; transition: transform .08s, background .12s; }
+.symbol-cell:hover { background: var(--accent-soft, rgba(27,158,119,.15)); transform: scale(1.06); }
+.symbol-cell:active { transform: scale(.94); }
+/* Tier 11 增强：符号面板搜索框 */
+.symbol-search { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 10px; background: var(--bg-2, rgba(127,127,127,.06)); color: var(--text-1); font-size: 14px; outline: none; margin-bottom: 12px; }
+.symbol-search:focus { border-color: var(--accent, #1b9e77); box-shadow: 0 0 0 3px var(--accent-soft, rgba(27,158,119,.15)); }
+.symbol-search::placeholder { color: var(--text-3, rgba(127,127,127,.6)); }
+/* Tier 8 增强：符号面板滚动区（分类多了，网格超高时滚动不撑破面板） */
+.symbol-scroll { max-height: 380px; overflow-y: auto; margin-right: -4px; padding-right: 4px; }
+.symbol-empty { color: var(--text-3, rgba(127,127,127,.6)); font-size: 13px; text-align: center; padding: 24px 0; grid-column: 1 / -1; }
+/* Tier 8 增强：emoji 肤色选择条（搜狗「肤色多选及记忆」同款） */
+.symbol-tone-strip { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding: 8px 12px; border-radius: 12px; background: var(--bg-2, rgba(127,127,127,.08)); }
+.symbol-tone-label { font-size: 12px; color: var(--text-3, rgba(127,127,127,.7)); margin-right: 2px; }
+.symbol-tone { width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 8px; background: transparent; font-size: 18px; cursor: pointer; transition: transform .08s, background .12s, border-color .12s; }
+.symbol-tone:hover { transform: scale(1.08); }
+.symbol-tone.active { border-color: var(--accent, #1b9e77); background: var(--accent-soft, rgba(27,158,119,.15)); }
+
+/* 按应用选项（weasel app_options）面板 */
+.app-option-fields { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.app-option-fields input[type="text"], .app-option-name {
+  border: 1px solid var(--border-1);
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: var(--surface-2);
+  color: var(--text-1);
+  font-size: 13px;
+  width: 260px;
+  outline: none;
+}
+.app-option-name:focus { border-color: var(--brand-400); box-shadow: 0 0 0 3px var(--focus-ring); }
+.app-option-toggle { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--text-2); cursor: pointer; }
+.app-option-toggle .switch { margin: 0; }
+.panel-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 4px; }

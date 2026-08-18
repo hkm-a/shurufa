@@ -15,6 +15,7 @@ mod keys;
 mod registry;
 mod service;
 mod skin;
+mod toast;
 
 use std::ffi::c_void;
 use std::path::PathBuf;
@@ -48,29 +49,83 @@ pub fn dll_path() -> PathBuf {
 
 /// 轻量排障日志：写入 %TEMP%\shurufa-tsf.log（AppContainer 有各自的
 /// TEMP，均可写）。失败静默——日志不能反过来影响输入法。
-/// 整行一次性写出，避免多进程并发追加时互相穿插。
+///
+/// 历史坑（2026-08-16 实机反馈"打字莫名卡顿"）：旧实现每次调用同步
+/// OpenOptions::append + write_all，而每键热路径（service.rs 的"键 vk=…"与
+/// candidate_window.rs 的"cand show"）每键写 2 次文件 ≈ 1.8ms，叠加
+/// ui.show() 重读皮肤 ~1ms，快速打字时每键 ~3ms 同步磁盘 I/O；且多宿主进程
+/// 并发 append 同一文件存在锁竞争，磁盘抖动时单次可飙到数十 ms——表现为
+/// "莫名其妙"的间歇卡顿。
+/// 现改为**内存缓冲 + 后台节流落盘**：热路径只 push 进 Vec（微秒级零 I/O），
+/// 后台线程每 500ms 或满 200 行一次性整批写入（单次 write_all 仍保持整行
+/// 不穿插）。缓冲上限 5000 行，日志风暴时丢最旧保内存。计划外进程退出至多
+/// 丢最后 500ms 日志，对排障可接受（与 MRU 后台节流同理）。
 pub fn debug_log(msg: &str) {
-    use std::io::Write;
-    static EXE_NAME: OnceLock<String> = OnceLock::new();
-    let exe = EXE_NAME.get_or_init(|| {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "?".into())
-    });
-    let path = std::env::temp_dir().join("shurufa-tsf.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    let line = {
+        static EXE_NAME: OnceLock<String> = OnceLock::new();
+        let exe = EXE_NAME.get_or_init(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "?".into())
+        });
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let line = format!("[{ts}] [{exe}:{}] {msg}\n", std::process::id());
-        let _ = f.write_all(line.as_bytes());
+        format!("[{ts}] [{exe}:{}] {msg}\n", std::process::id())
+    };
+    let mut guard = LOG_BUF.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.len() >= 5000 {
+        // 日志风暴保护：丢最旧 1/4，保留最近行（排障时最近的最有用）
+        let keep = 3750;
+        let drop_count = guard.len() - keep;
+        guard.drain(0..drop_count);
     }
+    guard.push(line);
+    drop(guard);
+    spawn_log_flusher();
+}
+
+/// 日志缓冲（模块级共享：debug_log push，后台线程 flush）。
+/// const Mutex：零初始化、无 OnceLock 空锁风险；首次使用即就绪。
+static LOG_BUF: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// 落盘线程只启动一次的标志。
+static FLUSHER_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 后台日志落盘线程：每 500ms 取走缓冲一次性写盘。只在本进程首次
+/// debug_log 时启动一次；写失败静默（下次再试）。
+fn spawn_log_flusher() {
+    use std::io::Write;
+    if FLUSHER_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("shurufa-log-flusher".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // 取走缓冲：热路径只短暂持锁做 take，落盘在锁外完成
+            let batch = {
+                let mut guard = LOG_BUF.lock().unwrap_or_else(|p| p.into_inner());
+                if guard.is_empty() {
+                    continue;
+                }
+                std::mem::take(&mut *guard)
+            };
+            if batch.is_empty() {
+                continue;
+            }
+            let path = std::env::temp_dir().join("shurufa-tsf.log");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let joined = batch.concat();
+                let _ = f.write_all(joined.as_bytes());
+            }
+        })
+        .ok();
 }
 
 #[no_mangle]

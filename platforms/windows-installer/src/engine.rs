@@ -32,14 +32,149 @@ const DEFAULT_IME_REG_KEY: &str = r"HKCU\Control Panel\International\User Profil
 /// 单条外部命令执行上限（防 WinRT/PowerShell 偶发挂起导致安装流程卡死）。
 const CMD_TIMEOUT_SECS: u64 = 60;
 
+/// IFEO 高优先级注册表基路径（进程名追加其后，如 `...\shurufa-algo.exe`）。
+/// 用途（2026-08-16，weasel#1250 同类问题）：Windows 功耗管理会把空闲的
+/// 算法服务压到 0.5-1GHz，按键后频率爬升慢 → 选词"莫名其妙卡顿"。在
+/// IFEO PerfOptions 写 CpuPriorityClass=3 (High)，让 algo/host 每次启动自动
+/// 以高优先级运行——**无需进程自身提权**，保持普通用户运行（提权进程创建的
+/// IPC 管道会拒绝普通应用，见 stop_process 注释的历史坑），安装器以管理员
+/// 写 HKLM 注册表即可全局生效。
+const IFEO_ROOT: &str =
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options";
+/// 需要高优先级的进程（安装时写入 / 卸载时清除）。
+const HIGH_PRIORITY_PROCS: [&str; 2] = ["shurufa-algo.exe", "shurufa-host.exe"];
+
+/// 给指定进程写 IFEO 高优先级（CpuPriorityClass=3=High）。需管理员权限
+/// （安装器已提权）。返回值：成功/失败日志由调用方处理。
+fn set_high_priority(name: &str) -> Result<(), String> {
+    let key = format!(r"{IFEO_ROOT}\{name}\PerfOptions");
+    run_cmd(
+        "reg.exe",
+        &[
+            "add",
+            &key,
+            "/v",
+            "CpuPriorityClass",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "3",
+            "/f",
+        ],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("设置 {name} 高优先级失败：{e}"))
+}
+
+/// 清除指定进程的 IFEO 高优先级配置（卸载时还原系统默认）。
+fn clear_high_priority(name: &str) {
+    let key = format!(r"{IFEO_ROOT}\{name}\PerfOptions");
+    let _ = run_cmd("reg.exe", &["delete", &key, "/v", "CpuPriorityClass", "/f"]);
+    // 子键空了就删掉整个 PerfOptions（避免留空壳）
+    let _ = run_cmd("reg.exe", &["delete", &key, "/f"]);
+    let _ = run_cmd(
+        "reg.exe",
+        &["delete", &format!(r"{IFEO_ROOT}\{name}"), "/f"],
+    );
+}
+
 use std::os::windows::process::CommandExt;
 
 /// 尽力而为步骤（目标进程可能本就不在），结果不判定成败。
+///
+/// 历史坑（2026-08-16 实机复现）：单发一次 `taskkill /f /im` 不够——
+/// - `shurufa-algo.exe --once xiufu` 挂起时，taskkill 报"没有运行实例"（按
+///   PID 找不到）但进程实际存活并锁住 exe，安装器步骤 2 写入持续失败；
+/// - 安装器杀掉 algo 后，host 的 supervise/自启动逻辑可能在 1-2s 内把它重新
+///   拉起，写入时又撞上文件锁。
+///
+/// 因此这里做"多轮 杀 → 确认"：taskkill 后轮询 tasklist 直到目标全部消失，
+/// 顽固进程再用 WMI Terminate 兜底，全部超时后仍继续（后续写文件的重试循环
+/// 还会再杀一次并等待解锁）。
 fn stop_process(name: &str) {
-    let _ = Command::new("taskkill.exe")
-        .args(["/f", "/im", name])
+    const ROUNDS: u32 = 3;
+    const VERIFY_MS: u64 = 250;
+
+    let taskkill = |extra: &[&str]| {
+        let mut args = vec!["/f"];
+        args.extend_from_slice(extra);
+        args.push("/im");
+        args.push(name);
+        let _ = Command::new("taskkill.exe")
+            .args(&args)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    };
+
+    for round in 0..ROUNDS {
+        taskkill(&[]);
+        // 轮询确认：目标进程全部消失才算这一轮成功
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        loop {
+            if !process_exists(name) {
+                return; // 已全部退出
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(VERIFY_MS));
+        }
+        if round + 1 == ROUNDS {
+            break;
+        }
+        // 未退干净：WMI Terminate 兜底（对 taskkill 看不见的挂起进程有效）
+        let _ = run_cmd(
+            POWERSHELL,
+            &[
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &format!(
+                    "Get-CimInstance Win32_Process -Filter \"Name='{name}'\" | ForEach-Object {{ Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null }}"
+                ),
+            ],
+        );
+    }
+}
+
+/// 轮询确认指定名字的进程是否还存在（tasklist 逐行比对，区分大小写不敏感）。
+fn process_exists(name: &str) -> bool {
+    let out = Command::new("tasklist.exe")
+        .args(["/fo", "csv", "/nh"])
         .creation_flags(CREATE_NO_WINDOW)
-        .output();
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    out.lines().any(|line| {
+        line.to_ascii_lowercase()
+            .contains(&name.to_ascii_lowercase())
+    })
+}
+
+/// 等待文件不再被独占锁定（可写）。进程被杀后句柄释放需要时间，
+/// 轮询尝试以写模式打开，超时返回（是否成功由后续写入决定）。
+fn wait_file_unlocked(path: &Path, timeout: std::time::Duration) {
+    use std::io::ErrorKind;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match fs::OpenOptions::new().write(true).open(path) {
+            Ok(f) => {
+                drop(f);
+                return;
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    ErrorKind::PermissionDenied | ErrorKind::WouldBlock
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            _ => return,
+        }
+    }
 }
 
 /// 关键步骤：失败返回 Err（上层中止并弹窗）。带 60s 超时，超时强杀并报错。
@@ -291,6 +426,127 @@ fn start_host(target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 安装后引擎预热（2026-08-16，weasel#1250 同类问题）：经命名管道向算法
+/// 服务做一次真实 IPC 往返（CreateSession + ToggleAscii），把"首键成本"
+/// （会话创建、词典加载、首次候选生成）移到安装收尾，用户第一次输入即已
+/// 就绪，同时验证管道连通。失败非致命（服务可能仍在启动，由 host 接管）。
+///
+/// 用 kernel32 extern 直调（windows-sys 0.52 未导出 ReadFile/WriteFile）。
+fn warmup_algo_service(target: &Path) {
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            sec: *const std::ffi::c_void,
+            disp: u32,
+            flags: u32,
+            tmpl: *mut std::ffi::c_void,
+        ) -> isize;
+        fn SetNamedPipeHandleState(
+            pipe: isize,
+            mode: *const u32,
+            max_count: *const u32,
+            name: *const u16,
+        ) -> i32;
+        fn WriteFile(
+            file: isize,
+            buf: *const u8,
+            n: u32,
+            written: *mut u32,
+            ov: *mut std::ffi::c_void,
+        ) -> i32;
+        fn ReadFile(
+            file: isize,
+            buf: *mut u8,
+            n: u32,
+            read: *mut u32,
+            ov: *mut std::ffi::c_void,
+        ) -> i32;
+        fn CloseHandle(h: isize) -> i32;
+    }
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const OPEN_EXISTING: u32 = 3;
+    const INVALID_HANDLE: isize = -1;
+    const PIPE_READMODE_MESSAGE: u32 = 2;
+
+    let pipe_name: Vec<u16> = "\\\\.\\pipe\\shurufa-algo".encode_utf16().collect();
+    unsafe {
+        // algo 由 host supervise 拉起，需要一点时间；轮询等待管道就绪
+        // （最多 8 秒，覆盖首轮会话/词典初始化），就绪后才预热。
+        let mut handle = INVALID_HANDLE;
+        for _ in 0..16 {
+            handle = CreateFileW(
+                pipe_name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            );
+            if handle != INVALID_HANDLE {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        if handle == INVALID_HANDLE {
+            log_append(target, "  预热：8s 内算法服务未就绪（跳过，host 会接管）");
+            return;
+        }
+        SetNamedPipeHandleState(
+            handle,
+            &PIPE_READMODE_MESSAGE,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
+
+        // 帧：4 字节小端长度前缀 + JSON 体（消息模式单写单读即一帧）
+        fn roundtrip(handle: isize, json: &str) -> bool {
+            unsafe {
+                let body = json.as_bytes();
+                let mut frame = Vec::with_capacity(4 + body.len());
+                frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+                frame.extend_from_slice(body);
+                let mut written: u32 = 0;
+                if WriteFile(
+                    handle,
+                    frame.as_ptr(),
+                    frame.len() as u32,
+                    &mut written,
+                    std::ptr::null_mut(),
+                ) == 0
+                {
+                    return false;
+                }
+                let mut buf = [0u8; 65_536];
+                let mut read: u32 = 0;
+                if ReadFile(
+                    handle,
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    &mut read,
+                    std::ptr::null_mut(),
+                ) == 0
+                {
+                    return false;
+                }
+                read >= 4
+            }
+        }
+
+        let ok = roundtrip(handle, r#"{"CreateSession":{}}"#)
+            && roundtrip(handle, r#"{"ToggleAscii":{}}"#);
+        CloseHandle(handle);
+        if ok {
+            log_append(target, "  ✓ 引擎预热完成（会话已就绪）");
+        } else {
+            log_append(target, "  预热：IPC 往返异常（服务可能仍在启动，跳过）");
+        }
+    }
+}
+
 /// 清理旧安装（确保"一台机器只有一个版本"）：
 /// - 旧版默认目录 %ProgramData%\shurufa（SetShellVarContext all 时代的安装位置）
 /// - 卸载注册表里记录的其它安装位置（用户改过安装目录的旧版本）
@@ -387,10 +643,10 @@ pub fn run_install(
                 fs::create_dir_all(parent)
                     .map_err(|e| format!("创建目录 {} 失败：{e}", parent.display()))?;
             }
-            for attempt in 1..=5 {
+            for attempt in 1..=6 {
                 match fs::write(&dest, data) {
                     Ok(()) => return Ok(()),
-                    Err(e) if attempt < 5 => {
+                    Err(e) if attempt < 6 => {
                         log_append(
                             target,
                             &format!(
@@ -398,7 +654,15 @@ pub fn run_install(
                                 dest.display()
                             ),
                         );
-                        std::thread::sleep(std::time::Duration::from_millis(600 * attempt as u64));
+                        // 失败多为运行中的宿主/算法进程锁住 exe：先再杀一轮，
+                        // 再等待文件句柄释放，然后重试（对抗 supervise 重新拉起）。
+                        if dest_name.ends_with(".exe") || dest_name.ends_with(".dll") {
+                            stop_process("shurufa-algo.exe");
+                            stop_process("shurufa-host.exe");
+                            stop_process("Shurufa.exe");
+                        }
+                        wait_file_unlocked(&dest, std::time::Duration::from_secs(4));
+                        std::thread::sleep(std::time::Duration::from_millis(300 * attempt as u64));
                     }
                     Err(e) => {
                         log_append(target, &format!("✗ 写入 {} 失败：{e}", dest.display()));
@@ -520,10 +784,22 @@ pub fn run_install(
         .into_owned();
     write_uninstall_registry(dir, &exe)?;
 
+    // 8.5 高优先级（IFEO PerfOptions）：algo/host 以 High 优先级运行，抗
+    // Windows 功耗降频导致的"首键/选词莫名卡顿"（见 set_high_priority 注释）。
+    for proc_name in HIGH_PRIORITY_PROCS {
+        match set_high_priority(proc_name) {
+            Ok(()) => log_append(target, &format!("  ✓ {proc_name} 高优先级已设置")),
+            Err(e) => log_append(target, &format!("  ⚠ {e}")),
+        }
+    }
+
     // 9. 启动宿主与 ctfmon
     emit_step(app, 88, "正在启动后台服务…");
     log_append(target, "步骤 9/10 启动宿主与 ctfmon");
     start_host(target)?;
+    // 引擎预热：内部会轮询等待 algo 就绪后做一次 IPC 往返，
+    // 把首键成本（会话/词典加载）移到安装收尾
+    warmup_algo_service(target);
 
     // 10. 终态验证
     emit_step(app, 95, "正在验证安装…");
@@ -635,6 +911,11 @@ pub fn run_uninstall() -> Result<(), String> {
         "reg.exe",
         &["delete", &format!("HKLM\\{UNINSTALL_REG_KEY}"), "/f"],
     );
+
+    // 清理安装时写入的 IFEO 高优先级配置（还原系统默认）
+    for proc_name in HIGH_PRIORITY_PROCS {
+        clear_high_priority(proc_name);
+    }
 
     // 快捷方式
     let _ = fs::remove_file(

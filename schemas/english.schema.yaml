@@ -45,11 +45,32 @@ translator:
   initial_quality: 1.0
 
 speller:
-  alphabet: zyxwvutsrqponmlkjihgfedcba
+  # 含大写：英文自动大小写（autocap_filter）要求大写字母可入码，
+  # 与 rime-ice melt_eng 的 alphabet 一致（ZYXWVUTSRQPONMLKJIHGFEDCBA）。
+  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA
   delimiter: " '"
   algebra:
     # 英文整词即编码：不做任何转换，输入什么就查什么。
     - derive/^([a-z]+)$/$1/
+    # 英文自动大小写（rime-ice melt_eng 同款派生规则）：给每个英文编码
+    # 派生大小写变体，使输入 Hello / HELLO / HELLo 也能命中词典。
+    # librime 在构建 prism 时对词表全量应用 algebra 生成所有变体编码，
+    # autocap_filter 再按输入大小写转换候选文本。
+    # 注意：boost::regex 替换串里 \U/\L 作用于其后的全部文本，因此
+    # 每条规则的 pattern 只匹配要转换的那一段（如 ^. 只匹配首字符），
+    # 未匹配部分原样保留（与 rime-ice melt_eng 完全一致）。
+    - derive/^.{4,}$/\L$0/   # 4 位以上派生全小写（兜底规范化）
+    - derive/^.+$/\U$0/      # 全大写变体 HELLO
+    - derive/^./\U$0/        # 首字母大写变体 Hello
+    - derive/^([a-z]{2})/\U$1/  # 前 2 位大写 HEllo
+    - derive/^([a-z]{3})/\U$1/  # 前 3 位大写 HELlo
+    - derive/^([a-z]{4})/\U$1/  # 前 4 位大写 HELLo
+    - derive/^([a-z]{5})/\U$1/  # 前 5 位大写 HELLO
+    - derive/^([a-z]{6})/\U$1/
+    - derive/^([a-z]{7})/\U$1/
+    - derive/^([a-z]{8})/\U$1/
+    - derive/^([a-z]{9})/\U$1/
+    - derive/^([a-z]{10})/\U$1/
 
 punctuator:
   import_preset: symbols

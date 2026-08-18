@@ -260,7 +260,6 @@ impl D2dCore {
             target.Clear(Some(&br.background.GetColor()));
 
             let padding = v.padding as f32;
-            let row_top = (v.padding + v.preedit_h) as f32;
             let row_h = v.row_h as f32;
             let preedit_h = v.preedit_h as f32;
             let radius = v.skin.metrics.radius.max(0) as f32;
@@ -302,7 +301,13 @@ impl D2dCore {
             let hl_pad = v.hl_pad as f32;
             let comment_gap = crate::candidate_window::scale(2, v.dpi) as f32;
             for it in &v.items {
-                let end = it.x as f32 + it.label_w as f32 + label_gap + it.text_w as f32;
+                // 多行面板：行顶随 item.row 偏移（单行恒 0）。
+                let row_top = (v.padding + v.preedit_h) as f32 + it.row as f32 * row_h;
+                let end = it.x as f32
+                    + it.label_w as f32
+                    + label_gap
+                    + it.text_w as f32
+                    + it.badge_w as f32;
                 if it.highlighted {
                     let hl = D2D1_ROUNDED_RECT {
                         rect: D2D_RECT_F {
@@ -355,11 +360,33 @@ impl D2dCore {
                     },
                 );
 
+                // 候选来源角标（show_candidate_badge）：主文本右侧小字角标。
+                if let Some(badge) = it.source_badge {
+                    let bx = it.x as f32
+                        + it.label_w as f32
+                        + label_gap
+                        + it.pure_text_w as f32
+                        + comment_gap;
+                    draw_text(
+                        target,
+                        fmt_s,
+                        &br.label,
+                        badge,
+                        D2D_RECT_F {
+                            left: bx,
+                            top: row_top,
+                            right: bx + it.badge_w as f32,
+                            bottom: row_top + row_h,
+                        },
+                    );
+                }
+
                 if !it.comment.is_empty() {
                     let cx = it.x as f32
                         + it.label_w as f32
                         + label_gap
                         + it.pure_text_w as f32
+                        + it.badge_w as f32
                         + comment_gap;
                     draw_text(
                         target,
@@ -379,12 +406,16 @@ impl D2dCore {
             // ===== 翻页滚动条（皮肤开启且多页时；纯视觉，布局宽度已在 show() 预留）=====
             if crate::candidate_window::scrollbar_active(v) {
                 let track_w = crate::candidate_window::scrollbar_width(v);
-                let item_w = v
-                    .items
-                    .iter()
-                    .map(|it| it.label_w + v.label_gap + it.text_w + v.hl_pad * 2)
-                    .max()
-                    .unwrap_or(crate::candidate_window::scale(96, v.dpi));
+                let rows = crate::candidate_window::panel_row_count(&v.items);
+                let item_w = if rows > 1 {
+                    rows * v.row_h
+                } else {
+                    v.items
+                        .iter()
+                        .map(|it| it.label_w + v.label_gap + it.text_w + it.badge_w + v.hl_pad * 2)
+                        .max()
+                        .unwrap_or(crate::candidate_window::scale(96, v.dpi))
+                };
                 if let Some(geo) = crate::skin::scrollbar_geo(
                     rc.right,
                     rc.bottom,

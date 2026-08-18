@@ -33,7 +33,7 @@ fn main() {
         if let Some(word) = seq.strip_prefix("pk:") {
             let mut final_ctx = None;
             for ch in word.chars() {
-                if !ch.is_ascii_alphabetic() {
+                if !ch.is_ascii_graphic() {
                     continue;
                 }
                 let resp = send(

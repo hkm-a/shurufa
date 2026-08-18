@@ -39,6 +39,62 @@ pub struct ImeOptions {
     /// `default_input_scheme` 与 [`validate_input_scheme`]。
     #[serde(default = "default_input_scheme")]
     pub input_scheme: String,
+    /// 候选窗位置策略（P1 #10）：follow（默认，跟随光标）/ bottom_right /
+    /// bottom_left（固定屏幕角落）。TSF 每键热读，改动约 2 秒内生效。
+    #[serde(default = "default_candidate_position")]
+    pub candidate_position: String,
+    /// 候选面板模式（M7，搜狗 16.3b 候选条/多行候选同类）：single（默认，
+    /// 单行候选条）/ multi（多行候选面板，↓ 键唤出）。TSF 每键热读，改动
+    /// 约 2 秒内生效。多行布局随 M7 逐步落地，选项层先行。
+    #[serde(default = "default_candidate_panel_mode")]
+    pub candidate_panel_mode: String,
+    /// 按应用选项（weasel app_options 同款，2026-08-17 引入）：进程名
+    /// （小写，如 "windowsterminal.exe"）→ 该应用下的输入法行为覆盖。
+    /// 支持 ascii_mode（进入该应用自动切英文直输，离开恢复）与 vim_mode
+    /// （该应用按 vim 回 normal 模式键时自动切英文，2026-08-18 引入）；
+    /// 空表 = 全部应用走全局行为。TSF 在前台应用变化时应用覆盖。
+    #[serde(default)]
+    pub app_options: std::collections::BTreeMap<String, AppOption>,
+    /// 符号配对（微信输入法同类，2026-08-18 引入）：中文态、无组合时按
+    /// `(` `[` `{` `《` 自动补配对符并把光标居中（`()` `[]` `{}` `《》`）。
+    /// 默认关（避免与 IDE 自动补全/括号高亮冲突；微信默认同样关闭）。
+    #[serde(default = "default_symbol_pairing")]
+    pub symbol_pairing: bool,
+}
+
+/// 符号配对默认值：关闭（微信输入法默认同样关闭，避免与应用冲突）。
+pub fn default_symbol_pairing() -> bool {
+    false
+}
+
+/// 单个应用的输入法行为覆盖（weasel app_options 同款）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AppOption {
+    /// 进入该应用自动切英文直输（true）；离开该应用恢复进入前的状态。
+    /// None = 不覆盖（跟随全局）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ascii_mode: Option<bool>,
+    /// vim 模式（weasel app_options vim_mode 同款，2026-08-18 引入）：
+    /// 该应用下无组合时按 vim 的"回 normal 模式键"（Esc / Ctrl+C /
+    /// Ctrl+[）自动切英文直输，让 vim / emacs / 终端拿到这些键；
+    /// 有组合时由引擎先处理（Esc 取消组合），不抢不切。None = 不覆盖。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vim_mode: Option<bool>,
+}
+
+/// 候选窗位置策略默认值：跟随光标（Fcitx5/微软拼音默认行为一致）。
+pub fn default_candidate_position() -> String {
+    "follow".to_owned()
+}
+
+/// 候选面板模式默认值：单行候选条（现行布局；多行面板待 M7 布局落地）。
+pub fn default_candidate_panel_mode() -> String {
+    "single".to_owned()
+}
+
+/// 候选面板模式合法值："single"（单行候选条）| "multi"（多行候选面板）。
+pub fn validate_candidate_panel_mode(s: &str) -> bool {
+    matches!(s, "single" | "multi")
 }
 
 /// 设置中心"通用"页字段一览。 serde 双端兼容：老 JSON 无 `general` 键时
@@ -63,6 +119,14 @@ pub struct GeneralSettings {
     /// Ctrl+Shift+W AI 帮写热键开关（listener.rs 接线预留，见 wave 4）
     #[serde(default = "t")]
     pub enable_ai_hotkey: bool,
+    /// Ctrl+Shift+T 划词翻译热键开关（2026-08-18 引入，微信/搜狗划词翻译同类）。
+    /// 选中文本后按热键 → AI 翻译成中文/英文，回车覆盖选区。
+    #[serde(default = "t")]
+    pub enable_translate_hotkey: bool,
+    /// 悬浮球/控制中心窗口不透明度（%，30..=100；搜狗 16.1 状态栏不透明度同类）。
+    /// 由设置中心读取并 `setOpacity` 应用；保存路径统一钳位。
+    #[serde(default = "default_ball_opacity")]
+    pub ball_opacity: u8,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -77,6 +141,14 @@ fn default_history_max() -> u32 {
     500
 }
 
+fn default_ball_opacity() -> u8 {
+    100
+}
+
+/// 悬浮球不透明度允许区间（下限 30% 保证始终可见可点）
+pub const BALL_OPACITY_MIN: u8 = 30;
+pub const BALL_OPACITY_MAX: u8 = 100;
+
 /// 历史最大条数允许区间
 pub const HISTORY_MAX_MIN: u32 = 50;
 pub const HISTORY_MAX_LIMIT: u32 = 2000;
@@ -90,6 +162,8 @@ impl Default for GeneralSettings {
             history_max_entries: default_history_max(),
             enable_polish_hotkey: true,
             enable_ai_hotkey: true,
+            enable_translate_hotkey: true,
+            ball_opacity: default_ball_opacity(),
         }
     }
 }
@@ -100,17 +174,22 @@ impl GeneralSettings {
         self.history_max_entries = self
             .history_max_entries
             .clamp(HISTORY_MAX_MIN, HISTORY_MAX_LIMIT);
+        self.ball_opacity = self.ball_opacity.clamp(BALL_OPACITY_MIN, BALL_OPACITY_MAX);
         self
     }
 }
 
-/// AI 帮写 / 划词润色热键开关的统一入口（enable_polish_hotkey,
-/// enable_ai_hotkey）。windows-host 的 listener.rs 在启动时读取一次，
-/// 之后每 2 秒轮询（SetTimer + refresh_hotkey_gates）——设置中心开关
-/// 即改即存，约 2 秒内在宿主侧热生效，无需重启进程。
-pub fn hotkey_gates() -> (bool, bool) {
+/// AI 帮写 / 划词润色 / 划词翻译热键开关的统一入口（enable_polish_hotkey,
+/// enable_ai_hotkey, enable_translate_hotkey）。windows-host 的 listener.rs
+/// 在启动时读取一次，之后每 2 秒轮询（SetTimer + refresh_hotkey_gates）——
+/// 设置中心开关即改即存，约 2 秒内在宿主侧热生效，无需重启进程。
+pub fn hotkey_gates() -> (bool, bool, bool) {
     let g = load().general;
-    (g.enable_polish_hotkey, g.enable_ai_hotkey)
+    (
+        g.enable_polish_hotkey,
+        g.enable_ai_hotkey,
+        g.enable_translate_hotkey,
+    )
 }
 
 fn t() -> bool {
@@ -180,6 +259,10 @@ impl Default for ImeOptions {
             general: GeneralSettings::default(),
             speech: SpeechSettings::default(),
             input_scheme: default_input_scheme(),
+            candidate_position: default_candidate_position(),
+            candidate_panel_mode: default_candidate_panel_mode(),
+            app_options: std::collections::BTreeMap::new(),
+            symbol_pairing: default_symbol_pairing(),
         }
     }
 }
@@ -939,6 +1022,60 @@ mod tests {
         assert!(parsed.speech.enabled);
         assert!(parsed.speech.hotkey_enabled);
         assert_eq!(parsed.speech.max_session_secs, 120);
+    }
+
+    #[test]
+    fn 按应用选项_缺省空表且写读往返() {
+        // 老版本 JSON 无 app_options：空表
+        let parsed: ImeOptions = serde_json::from_str(r#"{"shift_switch_cn_en":true}"#).unwrap();
+        assert!(parsed.app_options.is_empty());
+        // 写读往返：windowsterminal 自动英文
+        let dir = temp_dir("options-app");
+        let path = path_in(&dir);
+        let opts = ImeOptions {
+            app_options: [(
+                "windowsterminal.exe".to_owned(),
+                AppOption {
+                    ascii_mode: Some(true),
+                    vim_mode: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..ImeOptions::default()
+        };
+        save_to(&path, &opts).unwrap();
+        let back = load_from(&path);
+        assert_eq!(
+            back.app_options.get("windowsterminal.exe"),
+            Some(&AppOption {
+                ascii_mode: Some(true),
+                vim_mode: None
+            })
+        );
+        // 缺字段的 AppOption 默认不覆盖
+        let parsed: ImeOptions = serde_json::from_str(r#"{"app_options":{"a.exe":{}}}"#).unwrap();
+        assert_eq!(parsed.app_options.get("a.exe"), Some(&AppOption::default()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn 符号配对_缺省关闭且写读往返() {
+        // 默认关（微信同类：避免与 IDE 自动补全冲突）
+        assert!(!ImeOptions::default().symbol_pairing);
+        let parsed: ImeOptions = serde_json::from_str(r#"{"shift_switch_cn_en":true}"#).unwrap();
+        assert!(!parsed.symbol_pairing);
+        // 开启后写读往返
+        let dir = temp_dir("options-symbol");
+        let path = path_in(&dir);
+        let opts = ImeOptions {
+            symbol_pairing: true,
+            ..ImeOptions::default()
+        };
+        save_to(&path, &opts).unwrap();
+        let back = load_from(&path);
+        assert!(back.symbol_pairing);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

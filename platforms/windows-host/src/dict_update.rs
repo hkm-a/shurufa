@@ -68,6 +68,19 @@ pub fn cli_update(manifest_url: &str) {
     }
 }
 
+/// 重新部署（重建二进制词典）：手动改动 schemas/ 下的方案/词库后，
+/// 无需重装即可让算法服务吃到新配置。只编译、不动用户词典。
+pub fn cli_deploy() {
+    let schema_dir = schema_dir();
+    match rebuild(&schema_dir) {
+        Ok(()) => println!("重新部署完成：词典已重建。"),
+        Err(error) => {
+            eprintln!("重新部署失败：{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// 打印当前词库版本（无 `.current-revision` 时为发布自带的内置版本）。
 pub fn cli_current() {
     match read_current_revision(&schema_dir()) {
@@ -713,12 +726,17 @@ fn ensure_deployer(schema_dir: &Path) -> Result<PathBuf, String> {
 
 fn rebuild(schema_dir: &Path) -> Result<(), String> {
     let deployer = ensure_deployer(schema_dir)?;
+    // 部署输出写到用户数据目录（%APPDATA%\shurufa\rime）：安装目录 schemas 只读，
+    // 算法服务启动时同样部署到 user_data_dir，二进制产物与运行路径一致。
+    let user_dir = user_rime_dir();
+    fs::create_dir_all(&user_dir).map_err(|e| format!("创建用户词典目录失败: {e}"))?;
+    let build_dir = user_dir.join("build");
     let status = std::process::Command::new(deployer)
         .args([
             "--build",
             &schema_dir.to_string_lossy(),
-            &schema_dir.to_string_lossy(),
-            &schema_dir.join("build").to_string_lossy(),
+            &user_dir.to_string_lossy(),
+            &build_dir.to_string_lossy(),
         ])
         .status()
         .map_err(|e| format!("启动词典编译器失败: {e}"))?;
@@ -726,6 +744,15 @@ fn rebuild(schema_dir: &Path) -> Result<(), String> {
         return Err("词库编译失败".into());
     }
     Ok(())
+}
+
+/// 用户词典根目录（与 algo 的 user_config_root()/rime 保持一致）。
+fn user_rime_dir() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("shurufa")
+        .join("rime")
 }
 
 #[cfg(test)]

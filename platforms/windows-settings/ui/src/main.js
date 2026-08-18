@@ -84,6 +84,8 @@ const pages = [
   { id: "history", label: "历史", icon: "clipboard-list" },
   { id: "dictionary", label: "词库", icon: "book-open-text" },
   { id: "scheme", label: "方案", icon: "circle-dot" },
+  { id: "phrases", label: "短语", icon: "list-plus" },
+  { id: "symbols", label: "符号", icon: "smile-plus" },
   { id: "skin", label: "皮肤", icon: "palette" },
   { id: "sync", label: "跨设备", icon: "monitor-smartphone" },
   { id: "settings", label: "偏好", icon: "sliders-horizontal" }
@@ -134,6 +136,196 @@ let dictionaryHistoryList = [];
 let typingStats = null;
 // 皮肤编辑器：null=未加载；dirty=待保存；error=JSON 解析失败时给用户的提示
 let skinState = { loaded: false, content: "", source: "none", user_path: "", dirty: false };
+// 自定义短语（P1 #6）：编辑器行数据；null=未加载。
+let phraseRows = null;
+// 用户词库（P1 #12）：userdb 列表；null=未加载。
+let userdbList = null;
+// 按应用选项（weasel app_options）：进程名 → 自动英文直输；null=未加载。
+let appOptions = null;
+// 符号面板（P1 #11）：当前选中分类（null=全部；"recent"=最近使用）。
+let activeSymbolCat = null;
+// 符号面板搜索（Tier 11，搜狗/微信 emoji 面板搜索同款）：非空时显示
+// 跨分类搜索结果（符号字符匹配 + 关键词索引 + 分类名匹配）。
+let symbolQuery = "";
+// emoji 肤色（Tier 8，搜狗 6.24.1「肤色多选及记忆」同款）：null=默认；
+// 否则为修饰符码点（🏻🏼🏽🏾🏿），应用到手势类 emoji，本地持久化。
+let emojiTone = loadEmojiTone();
+// Emoji 引擎开关状态（直连算法服务读取）。
+let engineOptionEmoji = true;
+// 中英混输自动空格（librime switch en_spacer）；读取失败默认开。
+let engineOptionEnSpacer = true;
+
+// 符号面板分类数据：文本符号取自 rime-ice symbols_v.yaml 常用子集；
+// emoji 分类与颜文字为 Tier 8 新增（搜狗 6.24.1「emoji 面板优化：分类、
+// 肤色多选及记忆、新增颜文字」同类）。点击复制到剪贴板。
+const SYMBOL_CATEGORIES = [
+  { id: "common", label: "常用", symbols: ["，", "。", "、", "；", "：", "？", "！", "…", "·", "—", "～", "『", "』", "「", "」", "《", "》", "（", "）", "【", "】", "￥", "＄", "％", "＃", "＆", "＊"] },
+  { id: "arrow", label: "箭头", symbols: ["↑", "↓", "←", "→", "↕", "↔", "↖", "↗", "↙", "↘", "↩", "↪", "↺", "↻", "⇒", "⇐", "⇑", "⇓", "⇔", "➜", "➡", "➤", "⟶", "⟵"] },
+  { id: "math", label: "数学", symbols: ["±", "÷", "×", "∈", "∏", "∑", "≠", "≤", "≥", "≡", "≈", "∞", "√", "∠", "⊥", "∥", "∪", "∩", "∈", "∉", "⊂", "⊃", "∧", "∨", "⊕", "⊗", "∴", "∵"] },
+  { id: "currency", label: "货币", symbols: ["￥", "¥", "＄", "$", "￡", "£", "€", "₩", "₪", "₫", "₭", "₮", "₱", "₹", "₺", "₨", "﷼", "¢", "¤"] },
+  { id: "unit", label: "单位", symbols: ["℃", "℉", "°", "‰", "‱", "％", "㎜", "㎝", "㎞", "㎡", "㎏", "㎎", "㎐", "㏄", "㏈", "㏒"] },
+  { id: "punct", label: "标点", symbols: ["、", "。", "「", "」", "『", "』", "【", "】", "〈", "〉", "《", "》", "〖", "〗", "〔", "〕", "〘", "〙", "〜", "〰", "〃"] },
+  { id: "face", label: "表情", symbols: ["😀", "😁", "😂", "🤣", "😊", "😇", "🙂", "😉", "😍", "😘", "😗", "😋", "😛", "😜", "🤪", "😝", "🤗", "🤭", "🤫", "🤔", "🤨", "😐", "😶", "😏", "😒", "🙄", "😌", "😔", "😪", "🤤", "😴", "😷", "🤒", "🤕", "🤢", "🤮", "🤧", "🥵", "🥶", "🥴", "😵", "🤯", "🤠", "🥳", "😎", "🤓", "🧐", "😕", "😟", "🙁", "😮", "😯", "😲", "😳", "🥺", "😢", "😭", "😱", "😖", "😣", "😤", "😡", "😠", "🤬", "😈", "👿", "💀", "💩", "🤡", "👻", "👽", "🤖", "🎃"] },
+  { id: "hand", label: "手势", symbols: ["👍", "👎", "👏", "🙏", "💪", "✋", "🤙", "👌", "🤝", "🙌", "👐", "🤲", "👊", "✊", "🤛", "🤜", "☝", "✌", "🤞", "🤟", "🤘", "👈", "👉", "👆", "👇", "🫰", "🫶", "✍", "🖐", "👋"] },
+  { id: "animal", label: "动物", symbols: ["🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷", "🐸", "🐵", "🐔", "🐧", "🐦", "🦆", "🦅", "🦉", "🐺", "🐗", "🐴", "🦄", "🐝", "🐛", "🦋", "🐌", "🐞", "🐢", "🐍", "🦎", "🐙", "🦑", "🦐", "🦀", "🐠", "🐟", "🐬", "🐳", "🦈", "🦓", "🦍", "🐘", "🦒", "🐕", "🐈"] },
+  { id: "life", label: "生活", symbols: ["🍎", "🍊", "🍋", "🍌", "🍉", "🍇", "🍓", "🍑", "🍍", "🥝", "🍅", "🥑", "🥕", "🌽", "🍞", "🥐", "🧀", "🍖", "🍔", "🍟", "🍕", "🌮", "🥗", "🍲", "☕", "🍵", "🧋", "🍺", "🍷", "🥂", "🍰", "🎂", "🍦", "🍿", "🏠", "🏡", "🏢", "🏥", "🏫", "🏪", "🏔", "🌋", "🗻", "🌊", "🏖", "⛺", "🚗", "🚕", "🚌", "🚲", "✈", "🚀", "🚢", "🚉", "🚦", "⛽", "⚽", "🏀", "🏈", "⚾", "🎾", "🏐", "🏓", "🏸", "⛳", "🏹", "🎣", "🎿", "🏊", "🚴", "🏋", "🎮", "🎲", "🎯", "🎨", "🎬", "🎤", "🎧", "🎹", "🎸", "🎺", "🥁", "🎻", "📱", "💻", "⌨", "🖥", "📷", "🎥", "📺", "📻", "⏰", "📅", "📌", "📎", "✂", "🔑", "🔒", "🔓", "💡", "🔋", "💰", "💎", "🎁", "🎈", "🎉", "🎊", "🏆", "🥇", "🥈", "🥉", "🛒", "🛍", "🧸"] },
+  { id: "heart", label: "爱心", symbols: ["❤", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "❣", "💕", "💞", "💓", "💗", "💖", "💘", "💝", "💟", "💌", "💢", "💤", "💦", "✨", "⭐", "🌟", "💫", "🔥", "💥", "🌈", "☀", "☁", "⛅", "🌙", "☔", "❄", "⚡"] },
+  { id: "kaomoji", label: "颜文字", symbols: ["(◕‿◕)", "(≧∇≦)ﾉ", "(´･ω･`)", "(￣▽￣)~*", "(∩´∀`)∩", "＼(^o^)／", "( ͡° ͜ʖ ͡°)", "¯\\_(ツ)_/¯", "(╯°□°)╯︵ ┻━┻", "┬─┬ ノ( ゜-゜ノ)", "(ノಠ益ಠ)ノ彡┻━┻", "(ﾉ>ω<)ﾉ", "(｡•̀ᴗ-)✧", "(づ｡◕‿‿◕｡)づ", "(◣_◢)", "(´▽`ʃ♡ƪ)", "(≧◡≦)", "(｡◕‿◕｡)", "(ง •̀_•́)ง", "ᕙ(⇀‸↼‶)ᕗ", "(๑•̀ㅂ•́)و✧", "( •̀ᴗ•́ )و", "✧(≖ ◡ ≖✿)", "(°ロ°)!" ] },
+  { id: "weather", label: "天气", symbols: ["☀", "☁", "⛅", "⛈", "☂", "☔", "☃", "⛄", "⛇", "☼", "☾", "☽", "🌙", "⭐", "🌈"] },
+  { id: "music", label: "音乐", symbols: ["♪", "♫", "♬", "♩", "♭", "♯", "♮", "𝄞", "𝄡", "𝄢"] },
+  { id: "chess", label: "棋牌", symbols: ["♔", "♕", "♖", "♗", "♘", "♙", "♠", "♥", "♣", "♦", "♤", "♡", "♧", "♢", "🀄"] },
+  { id: "zodiac", label: "星座", symbols: ["♈", "♉", "♊", "♋", "♌", "♍", "♎", "♏", "♐", "♑", "♒", "♓"] }
+];
+// emoji 肤色修饰符（U+1F3FB..U+1F3FF，搜狗「肤色多选」同款）；点击切换全局肤色。
+const EMOJI_TONES = ["🏻", "🏼", "🏽", "🏾", "🏿"];
+// 支持肤色变体的基础 emoji（单码点手势类）。ZWJ 组合（如 🧑💻）与多人组合
+// 未列入——变体规则复杂（需按位置插入修饰符），当前实现只覆盖最高频的手势。
+const TONE_CAPABLE = new Set([
+  "👍", "👎", "👏", "🙏", "💪", "✋", "🤙", "👌", "🤝", "🙌", "👐", "🤲",
+  "👊", "✊", "🤛", "🤜", "☝", "✌", "🤞", "🤟", "🤘", "👈", "👉", "👆",
+  "👇", "🫰", "🫶", "✍", "🖐", "👋",
+]);
+// emoji 分类 id 集合：这些分类显示肤色选择条。
+const EMOJI_CATS = new Set(["face", "hand", "animal", "life", "heart"]);
+
+function isEmojiCat(id) {
+  return EMOJI_CATS.has(id);
+}
+
+// 应用当前肤色：TONE_CAPABLE 的手势类 emoji 追加修饰符（如 👍 + 🏻 = 👍🏻）；
+// 非手势类原样返回。
+function emojiWithTone(s) {
+  return emojiTone && TONE_CAPABLE.has(s) ? s + emojiTone : s;
+}
+
+// ---- 符号面板搜索（Tier 11，搜狗/微信 emoji 面板搜索同款）----
+// 常用 emoji 关键词索引：中文名 / 拼音 / 英文名 → emoji。精选 ~120 条
+// 最高频的 emoji（表情/手势/动物/食物/爱心/生活），让"输 weixiao 出 😊"
+// 这类面板内查找成立。文本符号与颜文字按字符本身匹配（无名称元数据）。
+const EMOJI_SEARCH_INDEX = [
+  // 表情
+  ["微笑", "weixiao", "smile", "😊"], ["大笑", "daxiao", "laugh", "😂"], ["笑哭", "xiaoku", "joy", "🤣"],
+  ["开心", "kaixin", "happy", "😄"], ["喜欢", "xihuan", "love", "😍"], ["亲吻", "qinwen", "kiss", "😘"],
+  ["调皮", "tiaopi", "playful", "😜"], ["酷", "ku", "cool", "😎"], ["思考", "sikao", "think", "🤔"],
+  ["哭", "ku", "cry", "😭"], ["生气", "shengqi", "angry", "😡"], ["困", "kun", "sleepy", "😴"],
+  ["生病", "shengbing", "sick", "🤒"], ["恶心", "exin", "vomit", "🤢"], ["震惊", "zhenjing", "shock", "😱"],
+  ["晕", "yun", "dizzy", "😵"], ["魔鬼", "mogui", "devil", "😈"], ["骷髅", "kugu", "skull", "💀"],
+  ["鬼", "gui", "ghost", "👻"], ["外星人", "waixingren", "alien", "👽"], ["机器人", "jiqiren", "robot", "🤖"],
+  // 手势
+  ["赞", "zan", "thumbsup", "👍"], ["踩", "cai", "thumbsdown", "👎"], ["鼓掌", "guzhang", "clap", "👏"],
+  ["祈祷", "qidao", "pray", "🙏"], ["谢谢", "xiexie", "thanks", "🙏"], ["感恩", "ganen", "grateful", "🙏"], ["肌肉", "jirou", "muscle", "💪"], ["挥手", "huishou", "wave", "👋"],
+  ["拳头", "quantou", "fist", "👊"], ["击掌", "jizhang", "highfive", "🙌"], ["比心", "bixin", "heart", "🫶"],
+  ["抱拳", "baoquan", "folded", "🤝"], ["握手", "woshou", "handshake", "🤝"], ["耶", "ye", "victory", "✌"],
+  // 动物
+  ["狗", "gou", "dog", "🐶"], ["猫", "mao", "cat", "🐱"], ["老鼠", "laoshu", "mouse", "🐭"],
+  ["兔子", "tuzi", "rabbit", "🐰"], ["狐狸", "huli", "fox", "🦊"], ["熊", "xiong", "bear", "🐻"],
+  ["熊猫", "xiongmao", "panda", "🐼"], ["老虎", "laohu", "tiger", "🐯"], ["狮子", "shizi", "lion", "🦁"],
+  ["牛", "niu", "cow", "🐮"], ["猪", "zhu", "pig", "🐷"], ["青蛙", "qingwa", "frog", "🐸"],
+  ["猴子", "houzi", "monkey", "🐵"], ["鸡", "ji", "chicken", "🐔"], ["企鹅", "qie", "penguin", "🐧"],
+  ["蝴蝶", "hudie", "butterfly", "🦋"], ["蜜蜂", "mifeng", "bee", "🐝"], ["乌龟", "wugui", "turtle", "🐢"],
+  ["蛇", "she", "snake", "🐍"], ["章鱼", "zhangyu", "octopus", "🐙"], ["鱼", "yu", "fish", "🐟"],
+  ["鲸鱼", "jingyu", "whale", "🐳"], ["鲨鱼", "shayu", "shark", "🦈"], ["大象", "daxiang", "elephant", "🐘"],
+  // 食物
+  ["苹果", "pingguo", "apple", "🍎"], ["橘子", "juzi", "orange", "🍊"], ["柠檬", "ningmeng", "lemon", "🍋"],
+  ["香蕉", "xiangjiao", "banana", "🍌"], ["西瓜", "xigua", "watermelon", "🍉"], ["葡萄", "putao", "grape", "🍇"],
+  ["草莓", "caomei", "strawberry", "🍓"], ["桃", "tao", "peach", "🍑"], ["菠萝", "boluo", "pineapple", "🍍"],
+  ["番茄", "fanqie", "tomato", "🍅"], ["牛油果", "niuyouguo", "avocado", "🥑"], ["玉米", "yumi", "corn", "🌽"],
+  ["面包", "mianbao", "bread", "🍞"], ["奶酪", "nailao", "cheese", "🧀"], ["汉堡", "hanbao", "burger", "🍔"],
+  ["薯条", "shutiao", "fries", "🍟"], ["披萨", "pisa", "pizza", "🍕"], ["沙拉", "shala", "salad", "🥗"],
+  ["火锅", "huoguo", "hotpot", "🍲"], ["咖啡", "kafei", "coffee", "☕"], ["茶", "cha", "tea", "🍵"],
+  ["啤酒", "pijiu", "beer", "🍺"], ["蛋糕", "dangao", "cake", "🎂"], ["冰淇淋", "bingqilin", "icecream", "🍦"],
+  // 爱心
+  ["心", "xin", "heart", "❤"], ["红心", "hongxin", "redheart", "❤"], ["爱心", "aixin", "loveheart", "💕"],
+  ["破碎", "posui", "broken", "💔"], ["火花", "huohua", "fire", "🔥"], ["星星", "xingxing", "star", "⭐"],
+  ["彩虹", "caihong", "rainbow", "🌈"], ["闪电", "shandian", "bolt", "⚡"], ["雪", "xue", "snow", "❄"],
+  ["太阳", "taiyang", "sun", "☀"], ["月亮", "yueliang", "moon", "🌙"], ["雨", "yu", "rain", "☔"],
+  // 生活
+  ["房子", "fangzi", "house", "🏠"], ["车", "che", "car", "🚗"], ["飞机", "feiji", "plane", "✈"],
+  ["火箭", "huojian", "rocket", "🚀"], ["轮船", "lunchuan", "ship", "🚢"], ["足球", "zuqiu", "soccer", "⚽"],
+  ["篮球", "lanqiu", "basketball", "🏀"], ["乒乓球", "pingpang", "tabletennis", "🏓"], ["游戏", "youxi", "game", "🎮"],
+  ["骰子", "touzi", "dice", "🎲"], ["音乐", "yinyue", "music", "🎵"], ["吉他", "jita", "guitar", "🎸"],
+  ["相机", "xiangji", "camera", "📷"], ["电话", "dianhua", "phone", "📱"], ["电脑", "diannao", "computer", "💻"],
+  ["钱", "qian", "money", "💰"], ["钻石", "zuanshi", "diamond", "💎"], ["礼物", "liwu", "gift", "🎁"],
+  ["气球", "qiqiu", "balloon", "🎈"], ["奖杯", "jiangbei", "trophy", "🏆"], ["金币", "jinbi", "medal", "🥇"],
+  ["购物", "gouwu", "shopping", "🛒"], ["玩具熊", "wanjuxiong", "teddy", "🧸"], ["蜡烛", "lazhu", "candle", "🕯"],
+];
+
+/// 搜索当前词：返回 (符号, 分类名) 列表，去重。
+/// 匹配规则：关键词索引（中文名/拼音/英文名，忽略大小写）+ 符号字符包含 +
+/// 分类名包含。结果按「索引命中优先、其余按原顺序」排列，符号去重。
+function searchSymbols(query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const hits = [];
+  const seen = new Set();
+  const push = (s, label) => {
+    if (seen.has(s)) return;
+    seen.add(s);
+    hits.push({ symbol: s, label });
+  };
+  // 1) 关键词索引命中（最高优先）：weixiao/微笑 → 😊
+  for (const entry of EMOJI_SEARCH_INDEX) {
+    for (let i = 0; i < entry.length - 1; i++) {
+      if (entry[i].toLowerCase().includes(q)) {
+        push(emojiWithTone(entry[entry.length - 1]), "emoji");
+        break;
+      }
+    }
+  }
+  // 2) 符号字符包含 + 分类名包含：全部分类扫描
+  for (const cat of SYMBOL_CATEGORIES) {
+    const labelHit = cat.label.toLowerCase().includes(q);
+    for (const s of cat.symbols) {
+      const charHit = s.toLowerCase().includes(q);
+      if (charHit || labelHit) push(emojiWithTone(s), cat.label);
+    }
+  }
+  return hits;
+}
+
+// ---- 本地持久化（最近使用 / 肤色记忆）----
+const RECENT_KEY = "shurufa.symbolRecents";
+const TONE_KEY = "shurufa.emojiTone";
+const RECENT_CAP = 30;
+
+function loadRecents() {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter((s) => typeof s === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecent(symbol) {
+  try {
+    const recents = loadRecents().filter((s) => s !== symbol);
+    recents.unshift(symbol);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(recents.slice(0, RECENT_CAP)));
+  } catch {
+    /* localStorage 不可用时静默降级（最近使用不持久化，功能其余部分照常） */
+  }
+}
+
+function loadEmojiTone() {
+  try {
+    const t = localStorage.getItem(TONE_KEY);
+    return EMOJI_TONES.includes(t) ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveEmojiTone(tone) {
+  try {
+    if (tone) localStorage.setItem(TONE_KEY, tone);
+    else localStorage.removeItem(TONE_KEY);
+  } catch {
+    /* 静默降级 */
+  }
+}
 // 预设皮肤列表（schemas/skins-index.json）；banner 为一次性成功/失败提示
 let skinPresets = [];
 let skinPresetBanner = null;
@@ -167,6 +359,8 @@ const PAGE_SIZES = {
   history: { width: 520, height: 640 },
   dictionary: { width: 500, height: 600 },
   scheme: { width: 480, height: 600 },
+  phrases: { width: 560, height: 640 },
+  symbols: { width: 560, height: 640 },
   skin: { width: 560, height: 700 },
   sync: { width: 480, height: 560 },
   settings: { width: 500, height: 660 }
@@ -230,6 +424,7 @@ async function refreshMenuData() {
     refreshTypingStats().catch(() => { typingStats = null; }),
     refreshSchemes().catch(() => {}),
     refreshImeOptions().catch(() => { imeOptions = null; }),
+    refreshAppOptions().catch(() => { appOptions = null; }),
     refreshHistory().catch(() => { historyEntries = []; }),
     invoke("list_skins").then((v) => { skinPresets = v; }).catch(() => {}),
     refreshImeMode() // 条上中/英指示随菜单刷新
@@ -532,6 +727,7 @@ function submenuHtml(id) {
   }
   if (id === "help") {
     return `
+      <button class="submenu-item" data-menu-act="redeploy"><span class="submenu-label">重新部署方案（重建词典）</span></button>
       <button class="submenu-item" data-menu-act="data-dir"><span class="submenu-label">打开数据目录</span></button>
       <button class="submenu-item" data-menu-act="system-ime"><span class="submenu-label">系统输入法设置</span></button>
       <div class="submenu-divider"></div>
@@ -770,6 +966,17 @@ async function menuHelpAction(act) {
     }
     return;
   }
+  // 重新部署：同步等待宿主编译结果，成功/失败都带回具体消息
+  if (act === "redeploy") {
+    try {
+      const msg = await invoke("redeploy_dictionaries");
+      await applyMode("bar");
+      showToast(msg);
+    } catch (error) {
+      showToast(String(error), true);
+    }
+    return;
+  }
   const map = {
     "data-dir": ["open_data_directory", "已打开本地数据目录"],
     "system-ime": ["open_system_settings", "已打开 Windows 输入法设置"],
@@ -850,6 +1057,16 @@ app.addEventListener("input", (event) => {
   search?.setSelectionRange(historyQuery.length, historyQuery.length);
 });
 
+// 符号面板搜索（Tier 11）：实时过滤，重渲染后恢复焦点与光标位置。
+app.addEventListener("input", (event) => {
+  if (event.target.id !== "symbol-search") return;
+  symbolQuery = event.target.value;
+  render();
+  const search = document.querySelector("#symbol-search");
+  search?.focus();
+  search?.setSelectionRange(symbolQuery.length, symbolQuery.length);
+});
+
 function statusPill() {
   const running = dashboard.service_status === "运行中";
   return `<span class="status-pill ${running ? "online" : "idle"}"><span></span>${dashboard.service_status}</span>`;
@@ -905,6 +1122,17 @@ function inputPage() {
       <article class="setting-panel">
         <div class="setting-row selected"><div class="row-icon"><i data-lucide="circle-dot"></i></div><div><h3>${escapeHtml(schemeLabel)}输入</h3><p>${escapeHtml(schemeDesc)}</p></div><button class="outline-action" data-page="scheme"><i data-lucide="keyboard"></i>切换方案</button></div>
         <div class="divider"></div>
+        <div class="setting-row"><div class="row-icon dim"><i data-lucide="panel-top"></i></div><div><h3>候选窗位置</h3><p>跟随输入光标，或固定屏幕角落（改动约 2 秒内生效）</p></div><div class="row-side"><select data-general-field="candidate_position" aria-label="候选窗位置">${[
+          ["follow", "跟随光标"],
+          ["bottom_right", "固定右下角"],
+          ["bottom_left", "固定左下角"]
+        ].map(([v, label]) => `<option value="${v}"${(generalSettings?.candidate_position || "follow") === v ? " selected" : ""}>${label}</option>`).join("")}</select></div></div>
+        <div class="divider"></div>
+        <div class="setting-row"><div class="row-icon dim"><i data-lucide="rows-3"></i></div><div><h3>候选面板</h3><p>单行候选条，或多行候选面板（按 ↓ 唤出，搜狗 16.3b 同款；多行布局随 M7 落地）</p></div><div class="row-side"><select data-general-field="candidate_panel_mode" aria-label="候选面板模式">${[
+          ["single", "单行候选条"],
+          ["multi", "多行候选面板"]
+        ].map(([v, label]) => `<option value="${v}"${(generalSettings?.candidate_panel_mode || "single") === v ? " selected" : ""}>${label}</option>`).join("")}</select></div></div>
+        <div class="divider"></div>
         <div class="setting-row"><div class="row-icon dim"><i data-lucide="sparkles"></i></div><div><h3>候选与历史</h3><p>使用 Ctrl+Shift+V 呼出剪贴板历史</p></div><button class="outline-action" data-page="history"><i data-lucide="clipboard-list"></i>管理历史</button></div>
       </article>
       <article class="hint-card"><i data-lucide="lightbulb"></i><p>后台服务负责剪贴板历史与跨设备同步。它会以隐藏窗口运行。语音转写（Ctrl+Shift+S）当前为 dev-stub。</p></article>
@@ -943,6 +1171,19 @@ function dictionaryPage() {
   const historyBlock = history.length
     ? `<div class="setting-row"><div class="row-icon"><i data-lucide="history"></i></div><div><h3>回滚到指定版本</h3><p>最多保留最近 5 个本地快照；选好后点右侧按钮</p></div><div class="row-side"><select id="dict-rollback-target">${options}</select><button class="outline-action" data-action="rollback-dictionary-to"><i data-lucide="arrow-up-right"></i>回滚到所选</button></div></div>`
     : `<div class="setting-row"><div class="row-icon dim"><i data-lucide="history"></i></div><div><h3>回滚到指定版本</h3><p>暂无本地历史快照（更新一次后即会出现）</p></div><span class="row-state">空</span></div>`;
+  // 用户词库管理（P1 #12）：列出 userdb + 导出/清空
+  const userdbs = Array.isArray(userdbList) ? userdbList : [];
+  const userdbRows = userdbs.length
+    ? userdbs.map((u) => `
+      <div class="setting-row">
+        <div class="row-icon"><i data-lucide="database"></i></div>
+        <div><h3>${escapeHtml(u.name)}</h3><p>${(u.size_bytes / 1024).toFixed(1)} KB · 本地学习记录${u.backups ? ` · ${u.backups} 份备份` : ""}</p></div>
+        <div class="row-side">
+          <button class="outline-action" data-action="export-userdb" data-name="${escapeHtml(u.name)}"><i data-lucide="download"></i>导出</button>
+          <button class="outline-action danger-action" data-action="clear-userdb" data-name="${escapeHtml(u.name)}"><i data-lucide="trash-2"></i>清空</button>
+        </div>
+      </div>`).join("")
+    : `<div class="setting-row"><div class="row-icon dim"><i data-lucide="database"></i></div><div><h3>用户词库</h3><p>读取中…</p></div></div>`;
   return `
     <section class="page settings-page">
       <header class="page-header"><div><p class="eyebrow">DICTIONARY</p><h1>词库</h1></div></header>
@@ -953,7 +1194,12 @@ function dictionaryPage() {
         <div class="divider"></div>
         <div class="setting-row"><div class="row-icon"><i data-lucide="shield-check"></i></div><div><h3>本地校验</h3><p>下载完成后校验内容，再替换本地词典</p></div><span class="row-state">已保护</span></div>
       </article>
-      <article class="hint-card"><i data-lucide="info"></i><p>更新完成后，重启输入法即可应用新词库。</p></article>
+      <article class="setting-panel dictionary-panel">
+        <div class="setting-row"><div class="row-icon teal"><i data-lucide="database"></i></div><div><h3>用户词库（本地学习记录）</h3><p>导出可备份「用词习惯」；清空会重置该词库的调频与自造词</p></div></div>
+        <div class="divider"></div>
+        ${userdbRows}
+      </article>
+      <article class="hint-card"><i data-lucide="info"></i><p>更新完成后，重启输入法即可应用新词库。清空用户词库前会自动导出备份到数据目录 userdb-backups/。</p></article>
     </section>`;
 }
 
@@ -979,15 +1225,67 @@ function imeOptionsPanel() {
     ["shift_switch_cn_en", "Shift 切换中英文", "按下 Shift 即在中文/英文直输之间切换"],
     ["shift_space_full_shape", "Shift+空格 切换全角/半角", "无组合时切换空格与字母的全/半角"],
     ["ctrl_period_ascii_punct", "Ctrl+. 切换中文/英文标点", "收尾当前组合后切换标点全/半角"],
-    ["capslock_to_english", "CapsLock 直接输入英文", "按下 CapsLock 即切到英文直输（再按 Shift 回中文）"]
+    ["capslock_to_english", "CapsLock 直接输入英文", "按下 CapsLock 即切到英文直输（再按 Shift 回中文）"],
+    ["symbol_pairing", "符号配对（微信输入法同类）", "中文态输入 ( [ { 《 自动补配对符并光标居中；默认关，避免与 IDE 自动补全冲突"]
   ];
+  // 引擎开关（librime switch，非 shurufa 选项）：Emoji + 中英混输空格。
+  const engineRows = [
+    {
+      key: "emoji",
+      icon: "smile",
+      title: "Emoji 候选",
+      desc: "输入中文词时附带 emoji（微笑 → 😊）",
+      checked: engineOptionEmoji,
+    },
+    {
+      key: "en_spacer",
+      icon: "space",
+      title: "中英混输自动空格",
+      desc: "英文词上屏后再输入英文词自动加空格（hello 后 world → hello world）",
+      checked: engineOptionEnSpacer,
+    },
+  ]
+    .map(
+      (row) => `<div class="setting-row">
+      <div class="row-icon"><i data-lucide="${row.icon}"></i></div>
+      <label class="setting-toggle"><div><h3>${row.title}</h3><p>${row.desc}</p></div></label>
+      <label class="switch"><input type="checkbox" data-engine-option="${row.key}" ${row.checked ? "checked" : ""} /><span></span></label>
+    </div>`
+    )
+    .join(`<div class="divider"></div>`);
   const rows = items
     .map(([key, title, desc]) => {
       const checked = imeOptions[key] ? "checked" : "";
       return `<div class="setting-row"><div class="row-icon"><i data-lucide="circle-dot"></i></div><label class="setting-toggle"><div><h3>${title}</h3><p>${desc}</p></div></label><label class="switch"><input type="checkbox" data-ime-option="${key}" ${checked} /><span></span></label></div>`;
     })
     .join(`<div class="divider"></div>`);
-  return `<article class="setting-panel ime-options-panel"><div class="panel-heading"><div class="row-icon blue"><i data-lucide="keyboard"></i></div><div><h3>输入选项</h3><p>全部对正在输入的应用热生效，延迟约 2 秒</p></div></div>${rows}</article>`;
+  return `<article class="setting-panel ime-options-panel"><div class="panel-heading"><div class="row-icon blue"><i data-lucide="keyboard"></i></div><div><h3>输入选项</h3><p>全部对正在输入的应用热生效，延迟约 2 秒</p></div></div>${rows}<div class="divider"></div>${engineRows}</article>`;
+}
+
+// 按应用选项（weasel app_options）：进程名 → 自动英文直输 / vim 模式。
+// 自动英文：进入匹配的应用自动切英文（终端/IDE 常用），离开恢复。
+// vim 模式（weasel vim_mode 同款）：该应用下按 vim 回 normal 模式键
+// （Esc / Ctrl+C / Ctrl+[）自动切英文，让 vim/emacs 拿到按键。
+function appOptionsPanel() {
+  const list = appOptions ?? [];
+  const rows = list.map(
+    (item, i) => `<div class="setting-row app-option-row" data-index="${i}">
+      <div class="row-icon"><i data-lucide="app-window"></i></div>
+      <div class="app-option-fields">
+        <input class="app-option-name" value="${escapeHtml(item.app)}" placeholder="app.exe（进程名，小写）" aria-label="进程名" />
+        <label class="app-option-toggle"><span>自动英文直输</span><label class="switch"><input type="checkbox" class="app-option-ascii" ${item.ascii_mode ? "checked" : ""} /><span></span></label></label>
+        <label class="app-option-toggle"><span>vim 模式</span><label class="switch"><input type="checkbox" class="app-option-vim" ${item.vim_mode ? "checked" : ""} /><span></span></label></label>
+      </div>
+      <button class="icon-action" data-action="remove-app-option" data-index="${i}" aria-label="删除"><i data-lucide="trash-2"></i></button>
+    </div>`
+  ).join("");
+  const empty = list.length === 0 ? `<div class="setting-row"><div class="row-icon dim"><i data-lucide="info"></i></div><div><h3>还没有按应用设置</h3><p>添加后，进入该应用自动切英文直输（终端 / IDE 常用）或启用 vim 模式（vim / emacs 回 normal 模式自动切英文），离开恢复</p></div></div>` : "";
+  return `<article class="setting-panel app-options-panel">
+    <div class="panel-heading"><div class="row-icon violet"><i data-lucide="app-window"></i></div><div><h3>按应用输入法行为</h3><p>进程名匹配时生效：自动英文直输 / vim 模式（weasel app_options 同款），离开恢复</p></div></div>
+    ${rows || empty}
+    <div class="divider"></div>
+    <div class="panel-actions"><button class="outline-action" data-action="add-app-option"><i data-lucide="plus"></i>添加应用</button><button class="primary-action compact" data-action="save-app-options"><i data-lucide="save"></i>保存</button></div>
+  </article>`;
 }
 
 function settingsPage() {
@@ -1008,6 +1306,7 @@ function settingsPage() {
     <section class="page settings-page">
       <header class="page-header"><div><p class="eyebrow">PREFERENCES</p><h1>偏好</h1></div></header>
       ${imeOptionsPanel()}
+      ${appOptionsPanel()}
       <article class="setting-panel">
         <div class="panel-heading"><div class="row-icon teal"><i data-lucide="layout-grid"></i></div><div><h3>悬浮条</h3><p>控制中心以悬浮条常驻桌面，点 logo 或 ⊞ 展开菜单</p></div></div>
         <div class="setting-row">
@@ -1088,6 +1387,18 @@ function generalPage() {
       </article>
 
       <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="blend"></i></div><div><h3>外观</h3><p>悬浮球与控制中心窗口透明度（搜狗 16.1 状态栏不透明度同类）</p></div></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="circle-dot"></i></div>
+          <div>
+            <h3>悬浮球不透明度 <output id="general-opacity-label">${g.ball_opacity ?? 100}</output>%</h3>
+            <input type="range" min="30" max="100" step="5" value="${g.ball_opacity ?? 100}" data-general-field="ball_opacity" data-range-label="#general-opacity-label" data-range-suffix="%" />
+            <p class="field-note">范围 30% - 100%，改动即时生效</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="setting-panel">
         <div class="panel-heading"><div class="row-icon blue"><i data-lucide="keyboard"></i></div><div><h3>快捷键</h3><p>面板唤起热键（取消勾选即不再注册，wave 4 起生效）</p></div></div>
         <div class="setting-row">
           <div class="row-icon"><i data-lucide="sparkles"></i></div>
@@ -1099,6 +1410,12 @@ function generalPage() {
           <div class="row-icon"><i data-lucide="sparkles"></i></div>
           <label class="setting-toggle"><div><h3>Ctrl+Shift+W AI 帮写</h3><p>打开 AI 帮写面板</p></div></label>
           <label class="switch"><input type="checkbox" data-general-field="enable_ai_hotkey" ${g.enable_ai_hotkey ? "checked" : ""} /><span></span></label>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="languages"></i></div>
+          <label class="setting-toggle"><div><h3>Ctrl+Shift+T 划词翻译</h3><p>选中文本后调 AI 翻译成中文（原文中文则译英文），回车覆盖选区</p></div></label>
+          <label class="switch"><input type="checkbox" data-general-field="enable_translate_hotkey" ${g.enable_translate_hotkey ? "checked" : ""} /><span></span></label>
         </div>
       </article>
 
@@ -1266,6 +1583,8 @@ function pageTemplate() {
     case "stats": return statsPage();
     case "history": return historyPage();
     case "dictionary": return dictionaryPage();
+    case "phrases": return phrasesPage();
+    case "symbols": return symbolsPage();
     case "skin": return skinPage();
     case "sync": return syncPage();
     case "settings": return settingsPage();
@@ -1332,6 +1651,121 @@ async function refreshSchemes() {
   } catch (_error) {
     schemeCurrent = "pinyin";
   }
+}
+
+// 自定义短语编辑器（P1 #6）：编码/词条/权重三列表格。
+// 加载（read_custom_phrases）→ 编辑 → 保存（save_custom_phrases）→
+// 重建（redeploy_dictionaries）四步分离，避免误触触发重编译。
+async function refreshPhrases() {
+  try {
+    phraseRows = await invoke("read_custom_phrases");
+  } catch (_error) {
+    phraseRows = [];
+  }
+  if (uiMode === "page" && activePage === "phrases") render();
+}
+
+function phrasesPage() {
+  const rows = phraseRows === null
+    ? []
+    : phraseRows;
+  const rowHtml = rows.length
+    ? rows.map((p, i) => `
+      <div class="phrase-row" data-phrase-row="${i}">
+        <input class="phrase-code" data-phrase-field="code" value="${escapeAttr(p.code)}" placeholder="编码（如 gs）" spellcheck="false">
+        <input class="phrase-text" data-phrase-field="text" value="${escapeAttr(p.text)}" placeholder="词条（如 公司）">
+        <input class="phrase-weight" data-phrase-field="weight" type="number" min="1" max="999" value="${p.weight ?? 100}" title="权重越大越靠前">
+        <button class="icon-action" data-action="phrase-remove" data-index="${i}" title="删除该条"><i data-lucide="trash-2"></i></button>
+      </div>`).join("")
+    : `<p class="field-note phrase-empty">还没有自定义短语。添加后保存并部署即可在输入时置顶命中。</p>`;
+  return `
+    <section class="page settings-page">
+      <header class="page-header"><div><p class="eyebrow">PHRASES</p><h1>自定义短语</h1></div><span class="status-pill info">${rows.length} 条</span></header>
+      <p class="skin-note">固定短语置顶于普通拼音候选之前。编码用拼音简写，如 <code>gs</code> → 公司、<code>wz</code> → 位置。格式：<code>编码 &lt;Tab&gt; 词条 &lt;Tab&gt; 权重</code>，保存在 <code>%APPDATA%\\shurufa\\rime\\custom_phrase.txt</code>。</p>
+      <article class="setting-panel">
+        <div class="phrase-grid-header"><span>编码</span><span>词条</span><span>权重</span><span></span></div>
+        <div id="phrase-rows">${rowHtml}</div>
+        <div class="field-action">
+          <button class="outline-action" data-action="phrase-add"><i data-lucide="plus"></i>添加条目</button>
+          <button class="primary-action" data-action="phrase-save"><i data-lucide="save"></i>保存</button>
+          <button class="outline-action" data-action="phrase-deploy"><i data-lucide="refresh-cw"></i>保存并部署</button>
+        </div>
+      </article>
+    </section>`;
+}
+
+function escapeAttr(value) {
+  return String(value ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// 符号面板（P1 #11 + Tier 8/11 增强）：分类标签 + 符号网格，点击复制到剪贴板。
+// Tier 8（搜狗 6.24.1 方向）：emoji 分类（表情/手势/动物/生活/爱心）、颜文字、
+// 肤色选择条（应用到手势类 emoji，本地记忆）与最近使用页签。
+// Tier 11（搜狗/微信 emoji 面板搜索同款）：顶部搜索框跨分类实时过滤——
+// 关键词索引（中文名/拼音/英文名 → emoji）+ 符号字符匹配 + 分类名匹配。
+// 文本符号数据来自 rime-ice symbols_v.yaml 常用子集（见 SYMBOL_CATEGORIES）。
+function symbolsPage() {
+  const cats = SYMBOL_CATEGORIES;
+  const recents = loadRecents();
+  const q = (symbolQuery || "").trim();
+  // 搜索态：跨分类平铺结果，隐藏分类页签与肤色条
+  if (q) {
+    const hits = searchSymbols(q);
+    const grid = hits
+      .map(
+        (h) => `<button class="symbol-cell" data-symbol-copy="${escapeAttr(h.symbol)}" title="点击复制 ${escapeAttr(h.symbol)}（${escapeAttr(h.label)}）">${escapeHtml(h.symbol)}</button>`
+      )
+      .join("");
+    return `
+      <section class="page settings-page">
+        <header class="page-header"><div><p class="eyebrow">SYMBOLS</p><h1>符号</h1></div><span class="status-pill info">${hits.length} 个</span></header>
+        <p class="skin-note">点击符号复制到剪贴板，再到目标位置粘贴。输入时也可用 <code>/</code> 前缀直接打出（如 /fh 商标符号、/1 数字符号）。</p>
+        <article class="setting-panel">
+          <input id="symbol-search" class="symbol-search" type="search" value="${escapeAttr(symbolQuery)}" placeholder="搜索：微笑 / weixiao / 😊 / 分类名…" aria-label="搜索符号" autofocus />
+          <div class="symbol-scroll"><div class="symbol-grid">${grid || `<p class="symbol-empty">没有匹配「${escapeHtml(q)}」的符号——试试 微笑 / weixiao / 箭头 / 心</p>`}</div></div>
+        </article>
+        <article class="hint-card"><i data-lucide="info"></i><p>搜索支持中文名（微笑）、拼音（weixiao）、英文（smile）与符号本身；命中后点击即复制。</p></article>
+      </section>`;
+  }
+  const current = activeSymbolCat || cats[0].id;
+  const cat = cats.find((c) => c.id === current) || cats[0];
+  const recentTab = recents.length
+    ? `<button class="symbol-tab${current === "recent" ? " active" : ""}" data-symbol-cat="recent">最近</button>`
+    : "";
+  const tabs =
+    recentTab +
+    cats
+      .map((c) => `<button class="symbol-tab${c.id === current ? " active" : ""}" data-symbol-cat="${c.id}">${escapeHtml(c.label)}</button>`)
+      .join("");
+  // 最近使用页签：点击过的符号（含已应用肤色的 emoji）排在最前，去重保留 30 个
+  const shown = current === "recent" ? recents : cat.symbols.map(emojiWithTone);
+  const grid = shown
+    .map((s) => `<button class="symbol-cell" data-symbol-copy="${escapeAttr(s)}" title="点击复制 ${escapeAttr(s)}">${escapeHtml(s)}</button>`)
+    .join("");
+  // 肤色选择条（搜狗「肤色多选及记忆」同款）：仅在 emoji 分类显示；
+  // 默认 + 5 档肤色，选中即应用到手势类 emoji 并持久化。
+  const toneStrip = isEmojiCat(cat.id)
+    ? `<div class="symbol-tone-strip" title="肤色记忆（搜狗同款）：选中的肤色应用到手势类 emoji，点击后记住">
+        <span class="symbol-tone-label">肤色</span>
+        <button class="symbol-tone${!emojiTone ? " active" : ""}" data-symbol-tone="" title="默认肤色">✋</button>
+        ${EMOJI_TONES.map(
+          (t) => `<button class="symbol-tone${emojiTone === t ? " active" : ""}" data-symbol-tone="${t}" title="肤色 ${t}">✋${t}</button>`
+        ).join("")}
+      </div>`
+    : "";
+  const count = current === "recent" ? recents.length : cat.symbols.length;
+  return `
+    <section class="page settings-page">
+      <header class="page-header"><div><p class="eyebrow">SYMBOLS</p><h1>符号</h1></div><span class="status-pill info">${count} 个</span></header>
+      <p class="skin-note">点击符号复制到剪贴板，再到目标位置粘贴。输入时也可用 <code>/</code> 前缀直接打出（如 /fh 商标符号、/1 数字符号）。</p>
+      <article class="setting-panel">
+        <input id="symbol-search" class="symbol-search" type="search" value="${escapeAttr(symbolQuery)}" placeholder="搜索：微笑 / weixiao / 😊 / 分类名…" aria-label="搜索符号" />
+        <div class="symbol-tabs">${tabs}</div>
+        ${toneStrip}
+        <div class="symbol-scroll"><div class="symbol-grid">${grid || `<p class="symbol-empty">还没有最近使用的符号——点几个试试</p>`}</div></div>
+      </article>
+      <article class="hint-card"><i data-lucide="info"></i><p>文本符号取自 rime-ice 官方 symbols_v.yaml；emoji 分类 + 颜文字 + 肤色记忆 + 搜索为面板增强。最近使用的符号自动排在「最近」页签，本地保存。</p></article>
+    </section>`;
 }
 
 function skinPage() {
@@ -1723,6 +2157,23 @@ function render() {
       void handleAction(button);
     };
   });
+  // 引擎开关（emoji 等 librime switch）：change 即写算法服务
+  app.querySelectorAll("input[data-engine-option]").forEach((input) => {
+    input.onchange = () => {
+      const key = input.dataset.engineOption;
+      if (!key) return;
+      invoke("engine_option_set", { name: key, value: input.checked })
+        .then(() => {
+          if (key === "emoji") engineOptionEmoji = input.checked;
+          if (key === "en_spacer") engineOptionEnSpacer = input.checked;
+          showToast(input.checked ? "已开启" : "已关闭（正在输入的应用约 2 秒生效）");
+        })
+        .catch((error) => {
+          input.checked = !input.checked;
+          showToast(String(error), true);
+        });
+    };
+  });
   // 四项输入选项：change 即存，不做提交按钮
   app.querySelectorAll("input[data-ime-option]").forEach((input) => {
     input.onchange = () => {
@@ -1747,8 +2198,10 @@ function render() {
     // range 实时更新旁边的 output 文本（不打扰正在拖动的手）
     if (input.type === "range") {
       input.addEventListener("input", () => {
-        const label = document.querySelector("#general-history-max-label");
-        if (label) label.textContent = input.value;
+        const label = input.dataset.rangeLabel
+          ? document.querySelector(input.dataset.rangeLabel)
+          : document.querySelector("#general-history-max-label");
+        if (label) label.textContent = input.value + (input.dataset.rangeSuffix || "");
       });
     }
     input.onchange = () => {
@@ -1783,6 +2236,10 @@ function render() {
       invoke("save_general_settings", { s: next })
         .then(() => {
           generalSettings = next;
+          // M7-7：不透明度改动即时应用（options.json 持久化，重启不丢）。
+          if (key === "ball_opacity") {
+            void getCurrentWindow().setOpacity((next.ball_opacity ?? 100) / 100);
+          }
           showToast("已保存");
         })
         .catch((error) => {
@@ -1900,10 +2357,27 @@ async function refreshHistory() {
 
 async function refreshImeOptions() {
   imeOptions = await invoke("ime_options");
+  // Emoji / 中英混输空格是引擎开关，从算法服务单独读取
+  try {
+    engineOptionEmoji = await invoke("engine_option_get", { name: "emoji" });
+  } catch (_error) {
+    engineOptionEmoji = true;
+  }
+  try {
+    engineOptionEnSpacer = await invoke("engine_option_get", { name: "en_spacer" });
+  } catch (_error) {
+    engineOptionEnSpacer = true;
+  }
+}
+
+async function refreshAppOptions() {
+  appOptions = await invoke("app_options");
 }
 
 async function refreshGeneralSettings() {
   generalSettings = await invoke("get_general_settings");
+  // M7-7：悬浮球/控制中心窗口不透明度（搜狗 16.1 状态栏不透明度同类）。
+  void getCurrentWindow().setOpacity((generalSettings.ball_opacity ?? 100) / 100);
 }
 
 async function refreshSpeechSettings() {
@@ -1925,6 +2399,11 @@ async function refreshDictionaryInfo() {
 
 async function refreshTypingStats() {
   typingStats = await invoke("typing_stats");
+}
+
+// 用户词库（P1 #12）：拉取 userdb 列表。
+async function refreshUserdbs() {
+  userdbList = await invoke("list_userdbs");
 }
 
 async function navigateTo(page) {
@@ -1975,6 +2454,20 @@ async function navigateTo(page) {
       schemeList = null;
       showToast(String(error), true);
     }
+  } else if (page === "phrases") {
+    try {
+      await refreshPhrases();
+    } catch (error) {
+      phraseRows = null;
+      showToast(String(error), true);
+    }
+  } else if (page === "dictionary") {
+    try {
+      await refreshDictionaryInfo();
+      await refreshUserdbs();
+    } catch (error) {
+      showToast(String(error), true);
+    }
   } else if (page === "skin") {
     try {
       const payload = await invoke("skin_payload");
@@ -1987,12 +2480,6 @@ async function navigateTo(page) {
       skinPresets = await invoke("list_skins");
     } catch (_error) {
       skinPresets = [];
-    }
-  } else if (page === "dictionary") {
-    try {
-      await refreshDictionaryInfo();
-    } catch (_error) {
-      // 失败时 dictionaryPage 内已做兜底
     }
   }
   await applyMode("page");
@@ -2017,6 +2504,36 @@ async function handleAction(button) {
       "refresh-history": [undefined, undefined, "历史已刷新"],
       refresh: [undefined, undefined, "后台状态已刷新"]
     };
+    if (action === "add-app-option") {
+      appOptions = [...(appOptions ?? []), { app: "", ascii_mode: true }];
+      render();
+      return;
+    }
+    if (action === "remove-app-option") {
+      const idx = Number(button.dataset.index);
+      appOptions = (appOptions ?? []).filter((_v, i) => i !== idx);
+      render();
+      return;
+    }
+    if (action === "save-app-options") {
+      try {
+        const rows = [...document.querySelectorAll(".app-options-panel .app-option-row")];
+        const items = rows
+          .map((row) => ({
+            app: row.querySelector(".app-option-name")?.value ?? "",
+            ascii_mode: row.querySelector(".app-option-ascii")?.checked ?? false,
+            vim_mode: row.querySelector(".app-option-vim")?.checked ?? false
+          }))
+          .filter((item) => item.app.trim() !== "");
+        await invoke("save_app_options", { items });
+        appOptions = items;
+        render();
+        showToast("按应用设置已保存（约 2 秒内生效）");
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
     if (action === "set-default-ime" || action === "clear-default-ime") {
       try {
         await invoke(action === "set-default-ime" ? "set_default_ime" : "clear_default_ime");
@@ -2147,6 +2664,103 @@ async function handleAction(button) {
       } catch (error) {
         showToast(String(error), true);
       }
+      return;
+    }
+    if (action === "phrase-add") {
+      if (!Array.isArray(phraseRows)) phraseRows = [];
+      phraseRows.push({ id: 0, code: "", text: "", weight: 100 });
+      render();
+      return;
+    }
+    if (action === "phrase-remove") {
+      const index = Number(button.dataset.index);
+      if (!Array.isArray(phraseRows) || Number.isNaN(index) || index < 0 || index >= phraseRows.length) return;
+      phraseRows.splice(index, 1);
+      render();
+      return;
+    }
+    if (action === "phrase-save" || action === "phrase-deploy") {
+      // 从 DOM 收集当前行数据（编辑后的值以 DOM 为准）
+      const rows = [];
+      document.querySelectorAll("[data-phrase-row]").forEach((rowEl) => {
+        const code = rowEl.querySelector("[data-phrase-field=code]")?.value ?? "";
+        const text = rowEl.querySelector("[data-phrase-field=text]")?.value ?? "";
+        const weightRaw = rowEl.querySelector("[data-phrase-field=weight]")?.value ?? "";
+        const weight = weightRaw === "" ? undefined : Number(weightRaw);
+        if (code.trim() && text.trim()) rows.push({ id: 0, code: code.trim(), text: text.trim(), weight });
+      });
+      try {
+        const saved = await invoke("save_custom_phrases", { phrases: rows });
+        phraseRows = rows;
+        render();
+        if (action === "phrase-deploy") {
+          showToast(`${saved}，正在重建词典…`);
+          try {
+            const result = await invoke("redeploy_dictionaries");
+            showToast(result);
+          } catch (deployError) {
+            showToast(String(deployError), true);
+          }
+        } else {
+          showToast(`${saved}（保存后需「保存并部署」或重启输入法生效）`);
+        }
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "export-userdb") {
+      const name = String(button.dataset.name || "");
+      if (!name) return;
+      try {
+        const result = await invoke("export_userdb", { name });
+        await refreshUserdbs().catch(() => {});
+        render();
+        showToast(result);
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "clear-userdb") {
+      const name = String(button.dataset.name || "");
+      if (!name) return;
+      if (!window.confirm(`清空用户词库「${name}」？会重置该词库的调频与自造词（先自动备份）。`)) {
+        render();
+        return;
+      }
+      try {
+        const result = await invoke("clear_userdb", { name });
+        await refreshUserdbs().catch(() => {});
+        render();
+        showToast(result);
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "symbol-copy") {
+      const symbol = String(button.dataset.symbolCopy || "");
+      if (!symbol) return;
+      try {
+        await navigator.clipboard.writeText(symbol);
+        saveRecent(symbol); // 记忆最近使用（搜狗「记忆功能」同款）
+        showToast(`已复制「${symbol}」`);
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "symbol-cat") {
+      activeSymbolCat = String(button.dataset.symbolCat || "common");
+      render();
+      return;
+    }
+    if (action === "symbol-tone") {
+      const tone = String(button.dataset.symbolTone || "");
+      emojiTone = tone && EMOJI_TONES.includes(tone) ? tone : null;
+      saveEmojiTone(emojiTone);
+      render();
       return;
     }
     const [command, args, success, delay] = actions[action];

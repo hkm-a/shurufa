@@ -290,6 +290,272 @@ async fn update_dictionary() -> Result<String, String> {
     launch_host(&["dict-update", "rime-ice"]).await
 }
 
+/// 重新部署：调用宿主重建二进制词典（手动改动 schemas/ 方案或词库后，
+/// 无需重装即可生效）。同步等待结果并把宿主 stdout/退出码带回给前端。
+#[tauri::command]
+async fn redeploy_dictionaries() -> Result<String, String> {
+    let executable = sibling_exe("shurufa-host.exe");
+    run_blocking(move || {
+        let output = Command::new(&executable)
+            .args(["deploy"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|error| format!("无法启动后台宿主：{error}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if output.status.success() {
+            Ok(if stdout.is_empty() {
+                "重新部署完成".to_owned()
+            } else {
+                stdout
+            })
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            Err(format!(
+                "重新部署失败（退出码 {}）：{}",
+                output.status.code().unwrap_or(-1),
+                if stderr.is_empty() { stdout } else { stderr }
+            ))
+        }
+    })
+    .await
+}
+
+/// 自定义短语文件路径：%APPDATA%\shurufa\rime\custom_phrase.txt
+/// （与 algo 的 user 数据目录一致；schemas 目录的 build 产物也从这里读）。
+fn custom_phrase_path() -> PathBuf {
+    app_data_dir().join("rime").join("custom_phrase.txt")
+}
+
+/// 读取自定义短语列表（P1 #6）。行格式 `编码<TAB>词条<TAB>权重`；
+/// 注释（# 开头）与空行保留原样，编辑后整体写回。
+#[tauri::command]
+fn read_custom_phrases() -> Result<Vec<CustomPhraseDto>, String> {
+    let path = custom_phrase_path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) if !path.exists() => return Ok(Vec::new()),
+        Err(e) => return Err(format!("读取自定义短语失败：{e}")),
+    };
+    let mut out = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // 行格式：词汇<Tab>编码<Tab>权重（词在前；权重可选）
+        let mut parts = trimmed.split('\t');
+        let text = parts.next().unwrap_or("").trim().to_owned();
+        let code = parts.next().unwrap_or("").trim().to_owned();
+        let weight = parts.next().unwrap_or("").trim().to_owned();
+        if code.is_empty() || text.is_empty() {
+            continue;
+        }
+        out.push(CustomPhraseDto {
+            id: idx,
+            code,
+            text,
+            weight: weight.parse::<u32>().ok(),
+        });
+    }
+    Ok(out)
+}
+
+/// 保存自定义短语列表（P1 #6）：整体写回 custom_phrase.txt 并返回提示；
+/// 是否重建词典由前端再调 redeploy_dictionaries（保存与部署分离，
+/// 避免误操作直接触发重编译）。文件格式：`词汇<Tab>编码<Tab>权重`
+/// （词在前，与 rime-ice 官方 custom_phrase.txt 一致）+ 表头指令。
+#[tauri::command]
+fn save_custom_phrases(phrases: Vec<CustomPhraseDto>) -> Result<String, String> {
+    let path = custom_phrase_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
+    }
+    let mut buf = String::from(
+        "# Rime table\n# coding: utf-8\n#@/db_name\tcustom_phrase.txt\n#@/db_type\ttabledb\n\n",
+    );
+    let mut count = 0usize;
+    for p in phrases {
+        // 丢弃空行；权重缺省 100
+        if p.code.trim().is_empty() || p.text.trim().is_empty() {
+            continue;
+        }
+        let weight = p.weight.unwrap_or(100).min(999);
+        buf.push_str(&format!(
+            "{}\t{}\t{}\n",
+            p.text.trim(),
+            p.code.trim(),
+            weight
+        ));
+        count += 1;
+    }
+    std::fs::write(&path, buf).map_err(|e| format!("写入自定义短语失败：{e}"))?;
+    Ok(format!("已保存 {count} 条自定义短语"))
+}
+
+/// 自定义短语条目（设置页编辑器用）。
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct CustomPhraseDto {
+    /// 行号（编辑用锚点；保存时忽略）
+    #[serde(default)]
+    id: usize,
+    /// 编码（拼音，如 gs）
+    code: String,
+    /// 词条（如 公司）
+    text: String,
+    /// 权重（可选，默认 100；越大越靠前）
+    #[serde(default)]
+    weight: Option<u32>,
+}
+
+/// 用户词库（userdb）条目：名称 + 大小 + 备份目录。
+#[derive(serde::Serialize, Clone, Debug)]
+struct UserdbDto {
+    /// userdb 目录名（不含 .userdb 后缀）
+    name: String,
+    /// 目录总大小（字节）
+    size_bytes: u64,
+    /// 已存在备份数
+    backups: usize,
+}
+
+/// rime 用户数据目录（与 algo 一致）。
+fn rime_user_dir() -> PathBuf {
+    app_data_dir().join("rime")
+}
+
+/// 用户词库备份根目录。
+fn userdb_backup_dir() -> PathBuf {
+    app_data_dir().join("userdb-backups")
+}
+
+/// 列出用户词库（P1 #12）：遍历 rime 目录下的 *.userdb 目录，
+/// 报告名称/大小/备份数。不解析 leveldb 内容（格式非公开）。
+#[tauri::command]
+fn list_userdbs() -> Result<Vec<UserdbDto>, String> {
+    let rime_dir = rime_user_dir();
+    if !rime_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&rime_dir).map_err(|e| format!("读取 rime 目录失败：{e}"))?
+    {
+        let entry = entry.map_err(|e| format!("读取目录项失败：{e}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".userdb") || !entry.path().is_dir() {
+            continue;
+        }
+        let size_bytes = dir_size(&entry.path());
+        let backups = backup_count(&name);
+        out.push(UserdbDto {
+            name: name.trim_end_matches(".userdb").to_owned(),
+            size_bytes,
+            backups,
+        });
+    }
+    Ok(out)
+}
+
+/// 导出用户词库（P1 #12）：把 userdb 目录复制到备份区（带时间戳），
+/// 返回备份路径。引擎下次启动会重新加载原 userdb，复制是安全快照。
+#[tauri::command]
+fn export_userdb(name: String) -> Result<String, String> {
+    // 防路径穿越：只允许纯字母数字下划线的 userdb 名
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err("无效的用户词库名".into());
+    }
+    let src = rime_user_dir().join(format!("{name}.userdb"));
+    if !src.is_dir() {
+        return Err(format!("用户词库「{name}」不存在"));
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup_root = userdb_backup_dir();
+    let dest = backup_root.join(format!("{name}-{stamp}.userdb"));
+    std::fs::create_dir_all(&backup_root).map_err(|e| format!("创建备份目录失败：{e}"))?;
+    copy_dir(&src, &dest).map_err(|e| format!("导出失败：{e}"))?;
+    Ok(format!("已导出到 {}", dest.display()))
+}
+
+/// 清空用户词库（P1 #12）：删除 userdb 目录，重置本地学习记录；
+/// 引擎下次启动自动重建空词库。删除前自动导出备份（防误删）。
+#[tauri::command]
+fn clear_userdb(name: String) -> Result<String, String> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err("无效的用户词库名".into());
+    }
+    let src = rime_user_dir().join(format!("{name}.userdb"));
+    if !src.is_dir() {
+        return Err(format!("用户词库「{name}」不存在"));
+    }
+    // 先备份再删
+    export_userdb(name.clone())?;
+    std::fs::remove_dir_all(&src).map_err(|e| format!("清空用户词库失败：{e}"))?;
+    Ok(format!("已清空「{name}」，原数据已备份"))
+}
+
+/// 目录总大小（递归求和）。
+fn dir_size(dir: &std::path::Path) -> u64 {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| {
+                    let p = e.path();
+                    if p.is_dir() {
+                        dir_size(&p)
+                    } else {
+                        e.metadata().map(|m| m.len()).unwrap_or(0)
+                    }
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// 递归复制目录。
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// 某 userdb 的已有备份数。
+fn backup_count(name: &str) -> usize {
+    let backup_root = userdb_backup_dir();
+    std::fs::read_dir(&backup_root)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with(&format!("{name}-"))
+                        && e.path().is_dir()
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 #[tauri::command]
 async fn open_system_settings() -> Result<String, String> {
     run_blocking(|| {
@@ -387,6 +653,7 @@ struct ImeOptionsDto {
     shift_space_full_shape: bool,
     ctrl_period_ascii_punct: bool,
     capslock_to_english: bool,
+    symbol_pairing: bool,
 }
 
 impl From<ImeOptions> for ImeOptionsDto {
@@ -396,6 +663,7 @@ impl From<ImeOptions> for ImeOptionsDto {
             shift_space_full_shape: o.shift_space_full_shape,
             ctrl_period_ascii_punct: o.ctrl_period_ascii_punct,
             capslock_to_english: o.capslock_to_english,
+            symbol_pairing: o.symbol_pairing,
         }
     }
 }
@@ -410,6 +678,7 @@ impl From<ImeOptionsDto> for ImeOptions {
             shift_space_full_shape: d.shift_space_full_shape,
             ctrl_period_ascii_punct: d.ctrl_period_ascii_punct,
             capslock_to_english: d.capslock_to_english,
+            symbol_pairing: d.symbol_pairing,
             ..ImeOptions::default()
         }
     }
@@ -422,16 +691,77 @@ fn ime_options() -> ImeOptionsDto {
 
 #[tauri::command]
 fn save_ime_options(opts: ImeOptionsDto) -> Result<(), String> {
-    // 走 modify 而非 save：只覆盖 4 个热键开关，磁盘上的 general 等其他字段原样保留。
+    // 走 modify 而非 save：只覆盖热键开关 + 符号配对，磁盘上的 general 等
+    // 其他字段原样保留。
     shurufa_options::modify(|current| ImeOptions {
         shift_switch_cn_en: opts.shift_switch_cn_en,
         shift_space_full_shape: opts.shift_space_full_shape,
         ctrl_period_ascii_punct: opts.ctrl_period_ascii_punct,
         capslock_to_english: opts.capslock_to_english,
+        symbol_pairing: opts.symbol_pairing,
         ..current.clone()
     })
     .map(|_| ())
     .map_err(|error| format!("保存输入选项失败：{error}"))
+}
+
+// ---------------------------------------------------------------------------
+// 按应用选项（weasel app_options，2026-08-17）：进程名 → ascii_mode / vim_mode
+// ---------------------------------------------------------------------------
+
+/// 单条按应用选项（与 `AppOption` 对应）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct AppOptionDto {
+    /// 进程名（小写，如 "windowsterminal.exe"）。
+    app: String,
+    /// 进入该应用自动切英文直输（true）。
+    ascii_mode: bool,
+    /// vim 模式（weasel vim_mode 同款，2026-08-18 引入）：该应用下无组合时
+    /// 按 vim 的"回 normal 模式键"（Esc / Ctrl+C / Ctrl+[）自动切英文。
+    /// None = 未配置（老数据/未勾选），不覆盖。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vim_mode: Option<bool>,
+}
+
+#[tauri::command]
+fn app_options() -> Vec<AppOptionDto> {
+    shurufa_options::load()
+        .app_options
+        .into_iter()
+        .filter_map(|(app, opt)| {
+            opt.ascii_mode.map(|ascii_mode| AppOptionDto {
+                app,
+                ascii_mode,
+                vim_mode: opt.vim_mode,
+            })
+        })
+        .collect()
+}
+
+/// 全量保存按应用选项（modify 保留其它字段）。
+#[tauri::command]
+fn save_app_options(items: Vec<AppOptionDto>) -> Result<(), String> {
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<String, shurufa_options::AppOption> = BTreeMap::new();
+    for item in items {
+        let app = item.app.trim().to_ascii_lowercase();
+        if app.is_empty() {
+            continue;
+        }
+        map.insert(
+            app,
+            shurufa_options::AppOption {
+                ascii_mode: Some(item.ascii_mode),
+                vim_mode: item.vim_mode,
+            },
+        );
+    }
+    shurufa_options::modify(|current| ImeOptions {
+        app_options: map,
+        ..current.clone()
+    })
+    .map(|_| ())
+    .map_err(|error| format!("保存按应用选项失败：{error}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -448,10 +778,40 @@ struct GeneralSettingsDto {
     history_max_entries: u32,
     enable_polish_hotkey: bool,
     enable_ai_hotkey: bool,
+    /// Ctrl+Shift+T 划词翻译热键开关（2026-08-18 引入，微信/搜狗划词翻译同类）。
+    #[serde(default = "default_true_dto")]
+    enable_translate_hotkey: bool,
     /// wave 4 新增：当前方案 id（"pinyin" | "double_pinyin" | "wubi" | "cangjie"）。
     /// 序列化时即从 options.json 读取；不参与保存 —— 方案有专属 set_input_scheme 命令。
     #[serde(default = "default_scheme_for_dto")]
     input_scheme: String,
+    /// 候选窗位置策略（P1 #10）："follow" | "bottom_right" | "bottom_left"。
+    /// 随通用页保存（与 input_scheme 不同，走通用保存通道）。
+    #[serde(default = "default_candidate_position_dto")]
+    candidate_position: String,
+    /// 候选面板模式（M7，搜狗 16.3b 同类）："single"（单行候选条）| "multi"
+    /// （多行候选面板，↓ 唤出）。随通用页保存，与 candidate_position 同通道。
+    #[serde(default = "default_candidate_panel_mode_dto")]
+    candidate_panel_mode: String,
+    /// 悬浮球不透明度（%，30..=100；搜狗 16.1 状态栏不透明度同类）。
+    #[serde(default = "default_ball_opacity_dto")]
+    ball_opacity: u8,
+}
+
+fn default_candidate_position_dto() -> String {
+    "follow".to_owned()
+}
+
+fn default_candidate_panel_mode_dto() -> String {
+    "single".to_owned()
+}
+
+fn default_ball_opacity_dto() -> u8 {
+    100
+}
+
+fn default_true_dto() -> bool {
+    true
 }
 
 fn default_scheme_for_dto() -> String {
@@ -473,8 +833,12 @@ impl From<GeneralSettings> for GeneralSettingsDto {
             history_max_entries: g.history_max_entries,
             enable_polish_hotkey: g.enable_polish_hotkey,
             enable_ai_hotkey: g.enable_ai_hotkey,
+            enable_translate_hotkey: g.enable_translate_hotkey,
+            ball_opacity: g.ball_opacity,
             // GeneralSettings 不含方案字段；读盘时由 get_general_settings 另行注入
             input_scheme: default_scheme_for_dto(),
+            candidate_position: default_candidate_position_dto(),
+            candidate_panel_mode: default_candidate_panel_mode_dto(),
         }
     }
 }
@@ -484,6 +848,8 @@ fn get_general_settings() -> Result<GeneralSettingsDto, String> {
     let opts = shurufa_options::load();
     let mut dto: GeneralSettingsDto = opts.general.clone().clamped().into();
     dto.input_scheme = opts.input_scheme.clone();
+    dto.candidate_position = opts.candidate_position.clone();
+    dto.candidate_panel_mode = opts.candidate_panel_mode.clone();
     Ok(dto)
 }
 
@@ -502,10 +868,22 @@ fn save_general_settings(s: GeneralSettingsDto) -> Result<(), String> {
         history_max_entries: s.history_max_entries,
         enable_polish_hotkey: s.enable_polish_hotkey,
         enable_ai_hotkey: s.enable_ai_hotkey,
+        enable_translate_hotkey: s.enable_translate_hotkey,
+        ball_opacity: s.ball_opacity,
     }
     .clamped();
+    let position = match s.candidate_position.as_str() {
+        "follow" | "bottom_right" | "bottom_left" => s.candidate_position.clone(),
+        other => return Err(format!("未知候选窗位置策略：{other}")),
+    };
+    let panel_mode = match s.candidate_panel_mode.as_str() {
+        "single" | "multi" => s.candidate_panel_mode.clone(),
+        other => return Err(format!("未知候选面板模式：{other}")),
+    };
     shurufa_options::modify(|current| ImeOptions {
         general: next.clone(),
+        candidate_position: position,
+        candidate_panel_mode: panel_mode,
         ..current.clone()
     })
     .map(|_| ())
@@ -912,6 +1290,24 @@ fn ime_mode_toggle() -> Result<bool, String> {
     match algo_rpc(&ime_ipc::Request::ToggleAscii) {
         Some(ime_ipc::Response::Ascii(v)) => Ok(v),
         _ => Err("算法服务未响应，无法切换中英文".to_owned()),
+    }
+}
+
+/// 读取引擎开关（如 emoji）：直连算法服务 GetOption。
+#[tauri::command]
+fn engine_option_get(name: String) -> bool {
+    match algo_rpc(&ime_ipc::Request::GetOption(name)) {
+        Some(ime_ipc::Response::Option(v)) => v,
+        _ => false,
+    }
+}
+
+/// 写入引擎开关（如 emoji）：直连算法服务 SetOption。
+#[tauri::command]
+fn engine_option_set(name: String, value: bool) -> Result<(), String> {
+    match algo_rpc(&ime_ipc::Request::SetOption { name, value }) {
+        Some(ime_ipc::Response::Ok) => Ok(()),
+        _ => Err("算法服务未响应，无法修改引擎开关".to_owned()),
     }
 }
 
@@ -1394,6 +1790,7 @@ fn main() {
             start_service,
             stop_service,
             update_dictionary,
+            redeploy_dictionaries,
             open_system_settings,
             open_data_directory,
             history_entries,
@@ -1403,6 +1800,8 @@ fn main() {
             clear_unpinned_history,
             ime_options,
             save_ime_options,
+            app_options,
+            save_app_options,
             get_general_settings,
             save_general_settings,
             get_speech_settings,
@@ -1420,8 +1819,15 @@ fn main() {
             apply_skin,
             list_input_schemes,
             set_input_scheme,
+            read_custom_phrases,
+            save_custom_phrases,
+            list_userdbs,
+            export_userdb,
+            clear_userdb,
             ime_mode_status,
             ime_mode_toggle,
+            engine_option_get,
+            engine_option_set,
             trigger_speech,
             set_window_size,
             place_window_bottom_right,
@@ -1559,6 +1965,8 @@ mod tests {
             history_max_entries: 800,
             enable_polish_hotkey: false,
             enable_ai_hotkey: true,
+            enable_translate_hotkey: true,
+            ball_opacity: 60,
         };
         let dto: GeneralSettingsDto = domain.into();
         assert!(dto.autostart);
@@ -1567,6 +1975,8 @@ mod tests {
         assert_eq!(dto.history_max_entries, 800);
         assert!(!dto.enable_polish_hotkey);
         assert!(dto.enable_ai_hotkey);
+        assert!(dto.enable_translate_hotkey);
+        assert_eq!(dto.ball_opacity, 60);
         // From<GeneralSettings> 用默认占位；真实值由 get_general_settings 注入
         assert_eq!(dto.input_scheme, "pinyin");
     }
@@ -1581,7 +1991,11 @@ mod tests {
             history_max_entries: 5000,
             enable_polish_hotkey: true,
             enable_ai_hotkey: true,
+            enable_translate_hotkey: true,
             input_scheme: "pinyin".to_owned(),
+            candidate_position: "follow".to_owned(),
+            candidate_panel_mode: "single".to_owned(),
+            ball_opacity: 100,
         };
         let mapped = matches!(bad.log_level.as_str(), "info" | "debug" | "trace");
         assert!(!mapped, "未知级别应被 save 路径拒绝");
@@ -1613,15 +2027,55 @@ mod tests {
             history_max_entries: 500,
             enable_polish_hotkey: true,
             enable_ai_hotkey: true,
+            enable_translate_hotkey: false,
             input_scheme: "wubi".to_owned(),
+            candidate_position: "bottom_right".to_owned(),
+            candidate_panel_mode: "multi".to_owned(),
+            ball_opacity: 80,
         };
         let value = serde_json::to_value(&dto).expect("DTO 序列化失败");
         assert_eq!(value["input_scheme"], serde_json::json!("wubi"));
+        assert_eq!(
+            value["candidate_position"],
+            serde_json::json!("bottom_right")
+        );
+        assert_eq!(value["candidate_panel_mode"], serde_json::json!("multi"));
+        assert_eq!(value["ball_opacity"], serde_json::json!(80));
+        assert_eq!(value["enable_translate_hotkey"], serde_json::json!(false));
         // 缺字段反序列化要回退 pinyin（serde default）
         let minimal: GeneralSettingsDto = serde_json::from_str(
             r##"{"autostart":false,"log_level":"info","skin_dir_override":null,"history_max_entries":500,"enable_polish_hotkey":true,"enable_ai_hotkey":true}"##,
         )
         .expect("DTO 反序列化失败");
         assert_eq!(minimal.input_scheme, "pinyin");
+        assert_eq!(minimal.candidate_position, "follow");
+        assert_eq!(minimal.candidate_panel_mode, "single");
+        // 老 JSON 无 ball_opacity → serde default 100（完全不透明）
+        assert_eq!(minimal.ball_opacity, 100);
+        // 老 JSON 无 enable_translate_hotkey → serde default 为 true（默认开）
+        assert!(minimal.enable_translate_hotkey);
+        // 不透明度钳位：越界值被压回 [30, 100]
+        assert_eq!(
+            shurufa_options::GeneralSettings {
+                ball_opacity: 255,
+                ..Default::default()
+            }
+            .clamped()
+            .ball_opacity,
+            100
+        );
+        assert_eq!(
+            shurufa_options::GeneralSettings {
+                ball_opacity: 0,
+                ..Default::default()
+            }
+            .clamped()
+            .ball_opacity,
+            30
+        );
+        // 面板模式校验器与 DTO 对齐：single/multi 合法，其余拒绝
+        assert!(shurufa_options::validate_candidate_panel_mode("single"));
+        assert!(shurufa_options::validate_candidate_panel_mode("multi"));
+        assert!(!shurufa_options::validate_candidate_panel_mode("grid"));
     }
 }

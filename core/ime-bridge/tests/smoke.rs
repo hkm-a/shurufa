@@ -44,6 +44,20 @@ fn rime_ice_supports_core_input_and_personalization() {
     println!("上屏文本: {committed}");
     assert_eq!(committed, "你好");
 
+    // try_process_key（weasel#1867 手段3 同类）：锁空闲时与 process_key
+    // 等价（引擎忙时才返回 None，单会话测试里锁必然空闲）。
+    assert!(session.simulate("nihao"), "try 前重新输入 nihao 失败");
+    assert_eq!(
+        session.try_process_key(b' ' as i32, 0),
+        Some(true),
+        "try_process_key 在锁空闲时应返回 Some(eaten)"
+    );
+    assert_eq!(
+        session.commit().as_deref(),
+        Some("你好"),
+        "try_process_key 后上屏异常"
+    );
+
     // 上屏后上下文应清空
     assert!(session.context().candidates.is_empty(), "上屏后候选未清空");
 

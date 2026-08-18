@@ -4,11 +4,350 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-18
+
+### 新增（功能优化）
+- **多时机表情推荐（M7-9，搜狗 15.9「输入 okok/爱你 出表情」同类）**：新增
+  `schemas/lua/emoji_timing.lua` lua_translator——精确输入码直接附加 emoji
+  候选：okok → 👌、aini（爱你）→ ❤️、wanan（晚安）→ 🌙。与 OpenCC
+  simplifier@emoji 互补：emoji.txt 无裸「爱你」，OpenCC 管不到非中文词
+  触发，本模块补这两类。新增集成测试 4 断言（三触发码 + nihao 常规输入
+  不受影响）。「？？？」触发需拦截 Shift+/ 按键（TSF 层），已记录待评估。
+- **上下文调频（M7-8，搜狗 16.6 打字模型同类方向）**：主翻译器开启
+  librime `contextual_suggestions: true`——依据上屏上文从 userdb 读取语境
+  词频，对紧随其后的候选加权（如刚上屏「中国」则输入 renmin 时「人民」
+  更靠前）。MRU（enable_user_dict）已在既有配置；此为语境维度深化。
+  新增集成测试锁定：schema 可部署、上屏流程正常、语境加权不劣化候选排名
+  （无上文 p0 / 上屏中国后 p1，断言 p1 ≤ p0）。
+- **调研结论：简拼开关暂不可行（M7-8，已记录）**：librime 1.17 的
+  speller/algebra **不支持**条件规则（实测 `option@jianpin:` 包裹 abbrev
+  规则报 `Error loading formula #13`），纯 schema 无法实现「关闭简拼」。
+  需引擎侧支持（librime 上游/自定义 patch），标记暂缓；本轮不引入
+  UI 空开关。详见 docs/优化灵感库.md。
+- **悬浮球不透明度（M7，搜狗 16.1 状态栏不透明度同类）**：设置页「通用」
+  新增「外观」面板——悬浮球不透明度滑杆（30%..100%，默认 100%，改动即时
+  生效）。存 options.json `general.ball_opacity`（serde 缺省 100、保存钳位到
+  [30,100]），设置中心加载后/保存时经 Tauri `setOpacity` 应用（悬浮球与
+  控制中心同一窗口，菜单/页面同透明度）。纯设置页 + 选项层改动，无需
+  重启输入法。新增 DTO 往返/钳位测试断言（序列化 80、缺省 100、越界钳位）。
+- **候选条右键菜单（M7，搜狗 16.3b 候选条菜单入口同类）**：候选窗右键
+  候选弹出菜单——复制候选（CF_UNICODETEXT 写系统剪贴板）/ 从候选删除
+  （引擎 Control+d 冷词丢弃）/ 降低词频（Control+j）/ 隐藏该词（Control+x）/
+  打开设置中心。引擎动作经会话共享钩子走当前组合：service.rs 将 ImeClient
+  升级为 Arc<Mutex> 供菜单与 TSF 共用同一会话（新连接会建新会话、空组合
+  空转）；键序与真实按键一致（{Down}×index 移动高亮不提交 → {Control+d/j/x}）。
+  注意：emoji 影子候选由 simplifier 在冷词 filter 之后附加，对 emoji 的
+  删词/降频/隐藏与按热键行为一致地为空操作。新增单测 3 例（命令映射、
+  剪贴板往返含宿主并发重试、菜单与多行布局互不影响）+ 引擎集成测试 2 例
+  （删词/降频链路，非空防假阳性断言）。
+- **修复 cold_word_drop 降频失效（实机排查）**：turn_down_words.lua 为
+  空文件时 require 返回 true，processor/filter 的 `(_st and turn_down_words)
+  or ...` 会取到布尔值导致 filter 崩溃、候选流清空（降频/隐藏全灭）。
+  修复：processor 与 filter 统一优先 reduce_freq_words（实际写入的文件），
+  turn_down_words.lua 补齐为合法空表；新增集成测试锁定降频链路。
+- **多行候选面板（M7，搜狗 16.3b 候选条/多行候选同类）**：设置页「输入」
+  新增候选面板模式下拉（单行候选条 / 多行候选面板），存 options.json
+  `candidate_panel_mode`（TSF 每键热读，约 2 秒生效）。multi 模式下候选窗
+  每行最多 5 个候选、9 候选排 2 行（5+4），窗口高度 = preedit + 行数×行高；
+  命中测试按行映射（第 2 行点击/悬停正常），翻页滚动条 thumb 按多行内容
+  高度定长；GDI/D2D/DComp 三渲染后端共享 `Item.row` 行号、零布局漂移；
+  模式参与内容指纹，切换单/多行即失效布局缓存。新增真实窗口集成测试
+  （9 候选→2 行、第二行命中、单行 90px < 多行 130px）。
+- **符号面板搜索（搜狗/微信 emoji 面板搜索同款，2026-08-18 引入）**：
+  符号面板顶部新增搜索框，实时跨全部 17 分类过滤——支持三种匹配：
+  ① 常用 emoji 关键词索引（中文名/拼音/英文名 → emoji，精选 ~120 条高频
+  emoji：微笑/weixiao/smile→😊、谢谢/xiexie/thanks→🙏、咖啡/kafei/coffee→☕）；
+  ② 符号字符本身包含（搜"↑"或"心"字面命中的符号）；③ 分类名匹配
+  （搜"箭头"列出整类）。搜索态隐藏分类页签与肤色条，平铺去重结果，点击
+  复制行为不变；搜索词实时过滤（input 事件 + 重渲染后恢复焦点与光标，
+  与历史记录搜索同款）。纯设置页 UI 改动（main.js + styles.css），安装即用。
+  搜索逻辑经 node VM 桩测试 10 组断言（中/英/拼音/分类/字符/无结果）验证。
+- **按应用 vim 模式（weasel app_options vim_mode 同款，2026-08-18 引入）**：
+  按应用选项面板新增「vim 模式」开关——配置了 vim_mode 的应用（如 vim /
+  emacs / 终端）下，无组合时按 vim 的「回 normal 模式键」（Esc / Ctrl+C /
+  Ctrl+[）自动切英文直输，vim 才能拿到这些键进入 normal 模式（否则输入法
+  留在中文态吃掉后续 j/k/l 等 normal 键）。实现镜像 weasel 源码
+  （RimeWithWeasel.cpp:274-287）：有组合时跳过（Esc 由引擎取消组合，不抢
+  不切）；前端本地判定（AppOption.vim_mode + 前台应用），零额外 IPC。
+  设置页按应用面板每行新增开关 + 保存携带字段；纯函数
+  `is_vim_normal_mode_key` / `app_vim_mode_enabled` 单测 2 例。兼容老数据
+  （vim_mode 缺省 None = 不覆盖）。
+- **Emoji 候选注释对齐（rime-ice 同款修正）**：`emoji` simplifier 的
+  `inherit_comment` 从 `true` 改为 `false`——emoji 候选不再继承中文词的
+  拼音注释（此前 schema 注释已写明意图但值写反，与上游 rime-ice 的
+  `inherit_comment: false` 及其"emoji 的 comment 显示为空"设计不一致）。
+  已部署到线上 FOX 安装并实机核对（xiexie → 谢谢 + 🙏 行为不变，仅注释
+  显示更干净）。
+- **Emoji 关键词联想验证 + 回归测试锁定（rime-ice simplifier@emoji 同款）**：
+  调研确认 rime-ice **并无**独立"拼音→emoji"词典——emoji 候选来自
+  `simplifier@emoji`（OpenCC emoji.json 文本词典）把**中文词候选**转换成
+  附加候选（谢谢→🙏、微笑→😊）。该机制我们已完整落地（schemas/opencc/
+  emoji.json + emoji.txt 为 rime-ice 全量 4858 行词典 + others.txt，配置与
+  上游逐字节一致），实机验证 5 组词族全部命中：xiexie→🙏（紧随 谢谢 之后）、
+  weixiao→😊、kaixin→😄、haha→😄+🐸（多 emoji）、zan→👍（单字词同样附加）；
+  emoji 开关（switches/emoji，默认开）关闭后无 emoji 候选、恢复后回来（门控
+  可逆）。本轮新增集成测试 `core/ime-bridge/tests/emoji_keyword.rs`（7 断言
+  锁定上述行为，防止未来改动破坏），无功能改动——按调研如实报告已完整，
+  未重复实现。
+- **符号面板增强：emoji 分类 + 肤色记忆 + 最近使用 + 颜文字（搜狗 6.24.1
+  「emoji 面板优化：分类、肤色多选及记忆、新增颜文字」同类）**：设置页符号
+  面板从 11 个文本符号分类扩展为「文本符号 + emoji + 颜文字」三族——
+  新增 表情（70+）/手势/动物/生活（食物·旅行·活动·物品）/爱心 五个 emoji
+  分类与 颜文字（kaomoji）分类；emoji 分类顶部显示肤色选择条（默认 + 5 档
+  肤色修饰符，搜狗「肤色多选」同款），选中的肤色实时应用到手势类 emoji
+  （👍🏻👍🏼👍🏽👍🏾👍🏿）并本地持久化（「肤色记忆」）；点击任意符号自动记入
+  「最近」页签（去重保留 30 个，本地保存，搜狗「记忆功能」同款），下次打开
+  面板直接复用。纯设置页 UI 改动（main.js + styles.css），点击复制行为不变，
+  无 TSF/引擎改动，安装即用无需重登录。ZWJ 组合 emoji（如 🧑💻）暂不支持
+  肤色（变体规则需按位置插入修饰符，当前只覆盖最高频手势类），已备注在代码。
+- **模式切换 toast 提示（微信/搜狗模式提示同类，成熟输入法方向 show_notifications）**：
+  Shift 切换中/英、CapsLock 切英文、Shift+空格 全/半角、Ctrl+. 中/英标点
+  生效时在输入锚点上方弹出轻量提示条（「英文直输」「中文输入」「全角」「半角」
+  「英文标点」「中文标点」），2 秒后自动消失。候选窗不可见（无组合）时这是
+  唯一的切换反馈通道——此前 Shift 切换中英文在无组合场景零反馈。实现：
+  `platforms/windows/src/toast.rs` 独立小窗（WS_POPUP + TOPMOST|NOACTIVATE|
+  TOOLWINDOW + 点击穿透），外观沿用皮肤（背景/文字色/DWM 圆角），位置跟随
+  输入锚点、无锚点落主屏底部居中，焦点离开应用立即收起；5 处切换点接线 +
+  纯函数定位单测 4 例。
+- **划词翻译（Ctrl+Shift+T，微信/搜狗划词翻译同类）**：选中文本后按热键 →
+  AI 翻译成中文（原文已是中文则译英文），面板回车覆盖选区。复用划词润色
+  完整的"抓选区 + 面板 + 回车覆盖"链路：ai_panel 的 `mode_polish: bool`
+  重构为 `PanelMode` 枚举（Write/Polish/Translate），翻译模式用独立系统
+  提示 `SYSTEM_PROMPT_TRANSLATE`（与 AI 帮写模板无关）。新增
+  `enable_translate_hotkey` 设置开关（默认开，通用页新增一行），热键门控
+  位图扩到 3 位。依赖 AGNES_API_KEY（与 AI 帮写/划词润色相同）。
+  调研结论：AI 帮写（Ctrl+Shift+W）/ 划词润色（Ctrl+Shift+R）在 wave 4
+  已完整实现（ai_panel.rs 面板 + listener.rs 热键/门控轮询 + 设置开关），
+  本轮验证完成态并补齐划词翻译；"边写边译"（输入时实时逐词翻译）评估后
+  暂缓——与输入流冲突、复杂度高，划词翻译已覆盖主要使用场景。
+- **中英混输自动空格（rime-ice en_spacer 同款，默认开可关）**：英文词上屏后
+  再输入英文词，候选自动带前导空格（hello 上屏后 world → ` world`），
+  中英混输不用手动敲空格。触发条件窄（上次上屏英文 + 本次候选纯英文词），
+  误伤概率低。实现：`schemas/lua/en_spacer.lua`（挂了 `en_spacer` 开关，
+  reset:1 默认开）+ filters 在 uniquifier 之前；设置页输入选项新增开关
+  （engine_option 模式，与 Emoji 同款）。cn_en_spacer 评估后跳过：我们
+  没有 rime-ice 的 cn_en 中英混输词典，无作用对象。新增集成测试
+  （首次输入不加空格 / 英文后加空格 / 开关关不加）。
+- **Unicode 输入（rime-ice unicode.lua 同款）**：输入 `U` + 十六进制码点 →
+  对应字符（`U4f60` → 你、`U1F600` → 😀、`U03B1` → α），生僻字/emoji/
+  特殊符号不再依赖词库收录。BMP 内码点附带按位遍历的变体候选（帮助从
+  近似码点找字）。实现：`schemas/lua/unicode.lua` + recognizer/patterns
+  `unicode: "^U[a-fA-F0-9]+"`（大写 U 前缀，不与辅码检字 uU 冲突；hex
+  大小写都收，放宽 rime-ice 原版只收小写）。新增集成测试，实机验证通过。
+- **符号配对（微信输入法同类，默认关）**：中文态、无组合时按 `(` `[` `{`
+  `《` 自动补配对符并把光标居中（`()` `[]` `{}` `《》`）。纯 TSF 落盘
+  （InsertTextAtSelection + SetSelection 光标居中），无引擎交互；放在
+  Shift+可打印键分支之前（US 键盘上 `(` 是 Shift+9，否则会被截胡只插
+  单个字符）。默认关避免与 IDE 自动补全/括号高亮冲突（微信默认同关）；
+  设置页输入选项新增开关。新增配对表单测 + options 往返单测。
+- **长候选缩写（weasel style/candidate_abbreviate_length 同款）**：单条候选
+  超过 24 字符（皮肤 `abbreviate_length` 可调，0=关闭）时截断显示为
+  `前缀…`，避免长词/长英文/日期时间戳/ID 撑爆候选行、把同排其它候选
+  挤掉（配合既有 60% 屏宽封顶）。只影响显示——引擎按索引提交，上屏仍
+  是完整文本。纯渲染层实现：候选窗布局时按字符数截断并实测宽度，D2D/
+  DComp 两后端共用。
+- **候选来源角标（P2 #14 部分落地，启发式）**：皮肤 `show_candidate_badge`
+  开启时，候选按文本特征分类（EN=英文 / EMOJI / ◈=日期时间金额算式 /
+  字 / 词）在文本右侧显示小角标。调研结论：librime 1.17 公开 C API 不
+  暴露候选 type（RimeCandidate 仅 text/comment/reserved），且无云词库时
+  "来源标识"的粗分类信息价值有限，因此**默认关闭**、按需开启。纯函数
+  分类器 + 三路渲染共用，新增单元测试。
+- **部件拆字辅码筛选（rime-ice search.lua，搜狗/微软候选内笔画/部件筛选同类）**：
+  输入拼音出现候选后，输入辅码引导符（反引号 `）+ 部件码，按
+  radical_pinyin 词典过滤候选（`nihao`ren` → 只留首字含 亻(ren) 部件的
+  候选 你好/倪/伲/伱，拟/尼/妮 被过滤），生僻字选字不再靠翻页。
+  实现：`schemas/lua/search.lua`（Mirtle 原版）+ `lua_filter@*search@radical_pinyin`
+  挂 filters（uniquifier 之前，namespace=radical_pinyin 即 schema 反查方案）
+  + `key_binder/search: "`"` + speller/alphabet 加 `（initials 不加，避免单独
+  成码）。新增集成测试（nihao`ren 过滤 + 基线 passthrough），实机验证通过。
+- **V 模式帮助（vhelp，rime-ice vhelp 浏览符号码同款思路）**：输入 `vhelp`
+  列出本方案全部 V 模式触发码及说明（日期 rq/时间 sj/星期 xq/ISO dt/
+  时间戳 ts/中文日期 rqzh/英文日期 rqen/金额大写 R/计算器 cC/农历 nl/N/
+  辅码反查 uU/部件辅码 `），不用再翻文档记触发码。实现：
+  `schemas/lua/v_help.lua`（lua_translator，注意 translator 用
+  `(input, seg, env)` 三参签名，与 filter 的 `(input, env)` 不同）。
+  新增集成测试（vhelp 列出触发码 + 不干扰正常输入）。
+- **按应用自动英文（weasel app_options 同款）**：设置页新增「按应用自动
+  英文」面板——按进程名（小写，如 `windowsterminal.exe`）配置进入该应用
+  自动切英文直输、离开恢复进入前状态（终端/IDE 常用）。实现：
+  options.json 新增 `app_options` 映射 + TSF 前台应用跟踪（复用
+  is_secure_desktop 的前台窗口检测，提取进程名）+ 应用切换时按覆盖表
+  set_option(ascii_mode)。纯决策函数 `decide_app_ascii` 全覆盖语义单测
+  （应用没变不动作/有覆盖应用覆盖/离开恢复快照/识别失败宁可不触发）。
+  设置页新增面板（增删行 + 保存），约 2 秒热生效。
+- **英文自动大小写（rime-ice autocap_filter，成熟输入法更新日志方向）**：
+  输入 `Hello` → 英文候选转首字母大写 `Hello`；`HELLo`/`HELLO` → 全大写
+  `HELLO`；全小写 `hello` 不变；`Hel` 前缀联想也转 `Hello`/`Help`。实现：
+  english.schema.yaml 的 speller/algebra 增加大小写派生规则（`\U`/`\L`，
+  rime-ice melt_eng 同款），librime 构建 prism 时生成 Hello/HELLO/HELLo
+  等变体编码使任意大小写输入都能命中词典；`lua_filter@*autocap_filter`
+  挂 filters（corrector 之后、uniquifier 之前）按输入大小写转换候选文本。
+  新增集成测试（Hello/HELLO/hello/Hel 前缀 + Nihao 不破坏既有行为），
+  实机验证通过。
+- **词汇别名（rime-ice 2025+「部分常用词自动展示翻译/别名/化学式/简称」）**：
+  多个词条共享同一拼音编码，输入时一并出现（`aerfa` → 阿尔法 + alpha/α/A、
+  `shui` → H2O/水分子、`beita` → beta/β）。词表
+  `schemas/word_info.dict.yaml`（希腊字母全量 + 化学式 + 常见音译别名，
+  约 120 条）+ `word_info.schema.yaml` 依赖方案（随 rime_ice 部署编译）。
+  编码用**紧凑拼音**（aerfa 而非 a er fa）：table_translator 查询走 prism
+  精确码命中（GetValue 单 key），与 script_translator 的音节图匹配不同
+  （rime-ice cn_en 同款：`X光\tXguang`）。initial_quality 0.5 排在拼音
+  候选之后，enable_completion false 仅精确码命中。新增集成测试，
+  实机验证通过。
+- **Emoji 候选（rime-ice 闲置资产，OpenCC 转换）**：输入中文词时附带 emoji
+  候选（`weixiao` → 微笑 + 😊、`xihuan` → ❤️、`kaixin` → 😄），默认开启、
+  开关在设置页输入选项（新增 engine_option_get/set 命令直连算法服务）。
+  实现：`simplifier@emoji` 挂 filters + OpenCC 数据 `schemas/opencc/`
+  （emoji.json 引用 text 词典 emoji.txt + others.txt，无需 .ocd2 编译）。
+  简繁切换暂缓：s2t.json 需 4 个 .ocd2 二进制词典，librime 分发未携带。
+  新增集成测试（默认开 → 😊 出现；同会话关闭 → 消失），实机验证通过。
+- **辅码检字（部件拆字反查，P0 #2 收口）**：`uU` 前缀 + 部件码反查汉字
+  （`uUheng` → 一、`uUbaishao` → 的），rime-ice 部件拆字方案（radical_pinyin
+  词典 2.1MB/13 万词条 + affix_segmentor + reverse_lookup_filter）。部署器
+  只编译主翻译器词典的坑已排：radical_pinyin 需同时具备 dict + schema 并
+  列入 dependencies 才会被编译。新增集成测试（uUheng/uUbaishao 双断言），
+  实机 pipe_drive 验证通过。
+- **用户词库可视化管理（P1 #12）**：词库页新增「用户词库（本地学习记录）」
+  区——列出各 userdb（名称/大小/备份数），支持**导出**（复制到
+  `%APPDATA%\shurufa\userdb-backups\` 带时间戳）与**清空**（重置调频与
+  自造词，删除前自动备份防误删）。不解析 leveldb 内部格式（非公开），
+  以目录级快照交付备份/重置能力。
+- **符号面板（P1 #11）**：设置页新增「符号」页——11 个分类标签
+  （常用/箭头/数学/货币/单位/标点/表情/天气/音乐/棋牌/星座）+ 符号网格，
+  点击即复制到剪贴板。数据取自 rime-ice symbols_v.yaml 常用子集；
+  输入时 `/` 前缀符号码（/fh 商标、/1 数字）照常可用。
+- **冷词丢弃/隐藏/降频（rime-ice cold_word_drop 模块）**：候选时 `Ctrl+D`
+  强制删词（无视编码）、`Ctrl+J` 降频（词条移到第 4 候选位）、`Ctrl+X`
+  隐藏当前输入码下的该词。processor 把词条写进用户目录
+  `lua/cold_word_drop/*_words.lua`，filter 立即生效；数据文件可手工编辑
+  （如 `{ "示例" }` 即永久丢弃）。新增集成测试（丢弃词不出现在候选）。
+- **候选窗位置策略（Fcitx5/微软拼音同类）**：设置页「输入」新增位置策略——
+  `跟随光标`（默认）/ `固定右下角` / `固定左下角`。固定模式忽略锚点、
+  每次弹窗同一位置，且免去每键 GetActiveView/GetTextExt 的 COM 往返。
+  选项存 options.json，TSF 每键热读约 2 秒生效；新增解析单测。
+- **自定义短语可视化编辑器**：设置页新增「短语」页——编码/词条/权重三列
+  表格增删改，保存写 `%APPDATA%\shurufa\rime\custom_phrase.txt`（格式
+  与 rime-ice 官方一致：`词汇<Tab>编码<Tab>权重` + `#@/db_type tabledb`
+  表头指令；权重 99 压过拼音候选置顶），「保存并部署」一键重建生效。
+  新增引擎级测试（gs → 公司置顶），实机 pipe_drive 验证通过。
+- **错音错字提示（rime-ice corrector.lua）**：输入读错的拼音时，候选旁
+  comment 显示正确读音（`geiyu` → 「给予 (jǐ yǔ)」）；输入错别字时显示
+  正确写法（纠错表覆盖馄饨/主角/角色/说服等常见错音与错字）。实现：
+  `lua_filter@*corrector` 挂在 filters 首位 + `translator` 开
+  `spelling_hints: 8` / `always_show_comments` / comment_format 用全角
+  `［］` 包裹拼音供脚本提取匹配；未命中纠错表的候选 comment 自动清空，
+  不留拼音噪音。新增集成测试（给予读音 + 无残留标记），实机验证通过。
+- **候选窗刷新去重（内容指纹短路，weasel#1869 进一步）**：候选内容指纹
+  （preedit/候选文本与副标/高亮序号/页码/中英全角模式/皮肤参数/DPI 的
+  FNV-1a 散列）未变时，整帧跳过字体实测与 `InvalidateRect` 重绘——组合
+  内容未变的按键（按住修饰键、重复键、锚点移动但内容相同）零窗口成本。
+  几何未变仍跳过 MoveWindow/阴影同步（既有节流），三者皆变才全量刷新。
+  新增指纹判定单测（相同内容同指纹、8 类可见变化各不同）。
+- **引擎忙按键不排队（服务端 try-lock，weasel#1867 手段3 同类）**：算法
+  服务多宿主并发时，某会话持锁处理长操作会让其他会话的按键排队阻塞
+  （按键延迟）。新增 `Session::try_process_key` 非阻塞喂键：锁空闲等价
+  普通路径；锁忙立即应答"未吃 + 空上下文"，客户端按键直通、下一键自然
+  重试。正常单键持锁 <1ms，争用极少见，兜底保体验。新增冒烟断言
+  （锁空闲返回 Some(eaten) 且上屏正确）。
+- **V 模式快捷转写（rime-ice 官方 Lua 套件）**：沿用 librime-lua 通道启用四组
+  转写能力——`rq/sj/xq/dt/ts` 日期/时间/星期/ISO 时间戳（date_translator.lua，
+  日期候选 quality=100 压过拼音候选置顶）、`R`+数字 金额大写（number_translator.lua：
+  R123 → 壹佰贰拾叁元整）、`cC`+算式 计算器（calc_translator.lua：cC1+1 → 2）、
+  `nl` 今日农历与 `N`+YYYYMMDD 指定日农历（lunar.lua + lunar.db，含二十四节气
+  与星期）。识别器模式（recognizer/patterns：number/calculator/gregorian_to_lunar）
+  让大写/数字/符号经 recognizer 处理器直接入码，speller 字母表补全大写段。
+  新增集成测试 5 项断言（日期/金额/计算器/指定农历/今日农历），实机 pipe_drive
+  全链路验证通过。
+- **候选窗深度自定义（皮肤参数化）**：皮肤 JSON 的 `metrics` 新增间距参数——
+  `padding`（内边距）、`item_gap`（候选间距）、`label_gap`（序号与词间距）、
+  `hl_pad`（高亮留白）、`row_h`（行高）、`preedit_h`（preedit 区高），均为
+  基准 px、随 DPI 缩放、0=内置默认；配合既有 `font_scale`/`radius`/`opacity`/
+  深色跟随，候选窗布局（show 宽度高度、GDI 绘制、命中测试、滚动条轨道）全链路
+  读皮肤值。新增解析/钳制单测，v2 老皮肤文件零行为变化。
+- **悬浮球菜单「重新部署」**：帮助菜单新增"重新部署方案（重建词典）"——宿主
+  新增 `deploy` 子命令（rime_deployer 重建二进制词典，输出写到用户数据目录
+  `%APPDATA%\shurufa\rime`，安装目录 schemas 只读也能跑），设置页新增
+  `redeploy_dictionaries` 命令同步等待并带回编译结果；手动改 schema/词库后
+  一键生效，无需重装。方案切换 toast、打开数据目录、系统输入法设置、启动/自愈
+  服务等既有菜单项保持。
+- **以词定字（librime-lua 打通，rime-ice 官方脚本）**：输入整词后按 `[` 上屏
+  第一个字、`]` 上屏最后一个字（如 `zhongguo[` → 中、`zhongguo]` → 国）。
+  这是 librime-lua 在引擎内的首次启用——经排查确认内置 rime.dll（1.17）
+  已编译进 librime-lua，无需额外动态库；schema 侧以 `lua_processor@*select_character`
+  挂在 processors 首位、按键绑定走 `key_binder` 的 librime 规范键名
+  （`bracketleft`/`bracketright`）。新增集成测试覆盖首字/末字上屏与
+  脚本搜索路径（user_data_dir/lua）。后续 V-mode、农历/日期等 lua 扩展
+  均沿用此通道。
+
 ### 修复（实机使用体检发现）
+- **cold_word_drop.filter 崩溃英文候选（实机回归）**：filter.lua 对无
+  preedit 的候选（英文补全等）执行 `cand.preedit:gsub(...)` 抛 Lua 错误，
+  导致候选流被丢弃、英文补全消失。修复①：nil 守卫回退到当前输入串；
+  修复②：drop/hide/reduce 列表全空时直通不做重排；修复③：默认列表清空
+  （原 rime-ice 演示内容含 NSFW 词，用户用 Ctrl+D/J 自行添加）。
+- **Emoji 候选挤掉英文补全（集成测试回归）**：simplifier@emoji 为每个
+  候选生成 shadow（inherit_comment: false 时 comment 为空），与带 ［拼音］
+  注释的原候选并存 → uniquifier 无法去重 → 候选数翻倍 → 英文被挤出搜索
+  窗口。修复：emoji 改 `inherit_comment: true`（shadow 继承原 comment，
+  uniquifier 正常去重）+ english_mixing 测试搜索窗口 4→6 页（emoji 合法
+  增加候选量）。
+- **引擎启动全量重编译（librime#1077 同类）**：`RimeStartMaintenance(1)`
+  每次启动全量比对/重建词典，慢启动。改为增量部署 `(0)`：只重建 mtime
+  变化的 schema/词典；首装无 build 产物时 librime 仍会全量构建（等价
+  首次行为）。安装器预构建 + host deploy 已覆盖 schema 变更场景。
+- **每键候选窗锚点 COM 往返（weasel#1867 手段6 同类）**：TSF 每键
+  `composition_anchor` 做 GetActiveView + GetTextExt 两次 COM 调用取
+  锚点。组合对象未变时复用上次锚点（同一组合会话指针不变），跳过往返；
+  固定位置模式下完全不取锚点。输入位置缓存字段在 Inner 上，跨键复用。
 - **输入时候选框过大**：单行 9 个候选在长词/高 DPI 下横贯整个屏幕（此前实测
   候选窗可撑到近满屏宽），挡视线也看不清。现候选窗最大宽度钳制到屏幕宽度的
   60%，放不下的候选自动截断、靠翻页访问；窗口右侧钳制逻辑同步生效，保证
   候选窗不越出屏幕右缘。新增回归测试锁定该行为（真实窗口 + GDI 实测宽度）。
+- **60% 屏宽钳制在缩放 >100% 下失效（候选窗仍横贯大半个屏幕）**：钳制上限用
+  `GetSystemMetrics(SM_CXSCREEN)` 的**物理像素**（如 150% 缩放下 2560px）计算，
+  而候选窗布局、文本测量与 MoveWindow 全程使用窗口 DPI 的**逻辑像素**（该屏
+  1706px）——上限被放大 dpi/96 倍，150% 缩放下实际钳到 90% 屏宽，实测
+  "xiu fu" 候选窗 w=1104 逻辑 px = 1656 物理 px（65% 屏宽）。现新增
+  `logical_screen_dim`（物理 → 逻辑换算）并用于宽度钳制与右/下缘定位钳制，
+  150% 缩放下候选窗最多 60% 屏宽（1023 逻辑 px）。回归测试同步按换算后的
+  逻辑屏宽断言，新增换算函数单测（96/144/192 DPI 边界）。
+- **安装器升级被运行中的进程锁死（升级卡在"写入 payload"步骤）**：实测
+  `shurufa-algo.exe --once` 自检挂起时不退出，进程锁住 exe 导致安装器写入
+  反复失败；且安装器杀掉 algo 后 host 的 supervise/自启动会在 1-2s 内把它
+  重新拉起，再次撞上文件锁。两处修复：① `--once` 模式加 90s 超时 watchdog，
+  挂起即强制退出（`[algo] --once 超时`），杜绝自检进程长期锁文件；② 安装器
+  `stop_process` 从"单发 taskkill"改为"多轮 taskkill + tasklist 轮询确认 +
+  WMI Terminate 兜底"，写文件重试时先再杀一轮宿主/算法进程并等待文件解锁
+  （`wait_file_unlocked`），对抗进程被重新拉起的竞争。
+- **打字莫名卡顿（每键同步磁盘 I/O）**：TSF 每键热路径上有两处同步磁盘
+  访问——`debug_log` 每次按键写 2 次日志文件（实测 ~1.8ms，且多宿主进程
+  并发 append 同一文件存在锁竞争，磁盘抖动时单次可飙到数十 ms），叠加
+  `ui.show()` 每键重读皮肤文件 + JSON 解析（~1ms）。快速打字时每键 ~3ms
+  阻塞，表现为"莫名其妙"的间歇卡顿。修复：① `debug_log` 改为**内存缓冲 +
+  后台 500ms 节流落盘**（热路径零 I/O，缓冲上限 5000 行防日志风暴）；
+  ② 皮肤加载改**带 mtime/长度校验的缓存**（文件未变直接复用，热切换皮肤
+  仍生效）。新增缓存行为单测（首次加载/命中/文件改动重载）。
+- **抗 CPU 降频（weasel#1250 同类）**：Windows 功耗管理把空闲的算法服务
+  压到 0.5-1GHz，按键后频率爬升慢 → 间歇性"莫名其妙"卡顿。安装器（管理员）
+  在安装时写 IFEO PerfOptions 高优先级（`CpuPriorityClass=3`，algo/host 每次
+  启动自动 High，无需进程提权，不破坏 IPC 管道完整性），卸载时清除。
+- **候选窗渲染热路径优化**：① GDI 字体缓存——show()/paint 每键创建 2-3 个
+  HFONT（CreateFontW 系统调用）再删除，改为按字号缓存复用；② `MoveWindow`
+  `bRepaint=false`——避免其立即触发一次 WM_PAINT 与下方 `InvalidateRect`
+  重复全窗口重绘（每键两次绘制 → 一次）；③ **候选窗 UI 节流**（weasel#1869
+  同类，实测长跑宿主下重复 ShowWindow/SetWindowPos 会随运行时间变慢，
+  show 24→2.6ms）——几何未变不重复 MoveWindow、已显示不重复 ShowWindow、
+  阴影壳只在几何变化时同步，每键省掉重复窗口系统调用。
+- **超长输入串防护（weasel#649 同类）**：误触/粘贴造成组合 ≥64 码时，
+  算法服务在喂下一键前自动清空组合（转纯字母直通，同微软输入法做法），
+  防止 librime translator 在超大音节图上查找导致卡死。正常整句输入零影响。
+- **延迟打点常驻 + 分析脚本**：按键→上屏延迟（LAT）默认写入日志（走内存
+  缓冲零 I/O），新增 `scripts/analyze-latency.py` 输出 p50/p95/p99/max 与
+  尖峰明细，卡顿排查直接出数据。
+- **安装后引擎预热**：安装器启动 host 后经命名管道做一次 CreateSession +
+  ToggleAscii 往返，把首键成本（会话/词典加载）移到安装收尾。
+- **新增排查文档** `docs/输入卡顿排查.md`：卡顿分层定位、延迟分析用法、
+  已知根因对照、Windows 11 系统级偶发延迟（休眠唤醒首输入 5-10s）排除法。
 
 ### 文档（2026-08-18）
 - **新增 `docs/开发计划.md`**：以搜狗 2009-2026 更新日志时间线为依据的路线图

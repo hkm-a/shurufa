@@ -5,7 +5,7 @@
 [![许可证](https://img.shields.io/badge/许可证-GPL--3.0-blue.svg)](LICENSE)
 [![平台](https://img.shields.io/badge/平台-Windows%20%7C%20Android-2ea44f.svg)](#平台支持)
 [![CI](https://github.com/hkm-a/shurufa/actions/workflows/ci.yml/badge.svg)](https://github.com/hkm-a/shurufa/actions/workflows/ci.yml)
-[![状态](https://img.shields.io/badge/状态-v0.7.1-2da44e.svg)](CHANGELOG.md)
+[![状态](https://img.shields.io/badge/状态-v0.8.0-2da44e.svg)](CHANGELOG.md)
 
 Shurufa 把中文输入和设备剪贴板放在同一条工作流里：输入法负责稳定输入，剪贴板负责设备间同步。截图、标注与录屏由 PixPin 等专业工具负责，Shurufa 不再重复提供这类桌面能力。
 
@@ -76,8 +76,9 @@ version.json   版本号单一事实源（由 set-version.ps1 同步四处派生
 
 ## 当前状态
 
-当前开发版 **v0.7.1（versionCode 29，2026-08-18）**，已完成 M6 增强目标及
-符号面板 / AI 帮写 / 皮肤 / 跨设备文件同步等多轮迭代，下一阶段路线图见
+当前版本 **v0.8.0（versionCode 30，2026-08-18）**，M7「候选与打字体验收尾」已完成：
+多行候选面板（单/多行切换）、候选条右键菜单、悬浮球不透明度、上下文调频、
+多时机表情推荐等（验收见 [M7 验收报告](docs/M7-验收报告.md)），路线图见
 [开发计划](docs/开发计划.md)：
 
 - **输入**：librime 雾凇拼音 + 小鹤双拼、MRU 最近使用提频、音节分词视图、
@@ -90,7 +91,7 @@ version.json   版本号单一事实源（由 set-version.ps1 同步四处派生
 - **跨设备**：剪贴板文本/图片/文件双向同步（协议 v3：分块校验 + 回执）、文件接收
   审批通知、剪贴板收藏、自托管中继、云词库多代回滚。
 - **工程**：全工作区 cargo clippy（-D warnings）与 cargo fmt --check 零告警、
-  约 145+ 项测试全绿、版本单一事实源 0.7.1/29、CI 双平台（Windows/Android）流水线。
+  约 170+ 项测试全绿、版本单一事实源 0.8.0/30、CI 双平台（Windows/Android）流水线。
 
 详细验收证据与评分见 [验证报告](.claude/verification-report.md)，演进过程见 [CHANGELOG](CHANGELOG.md)。
 

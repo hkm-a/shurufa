@@ -46,6 +46,8 @@ use crate::panel::skin::{self, ShadowShell, Skin};
 pub const HOTKEY_ID: i32 = 2;
 /// 划词润色热键：Ctrl+Shift+R 抓取前台选区进面板润色，回车覆盖选区。
 pub const POLISH_HOTKEY_ID: i32 = 3;
+/// 划词翻译热键：Ctrl+Shift+T 抓取前台选区进面板翻译，回车覆盖选区。
+pub const TRANSLATE_HOTKEY_ID: i32 = 4;
 /// Worker 线程把网络结果转回 UI 线程的私有消息。
 const WM_AI_DONE: u32 = WM_APP + 71;
 /// 流式增量包：LPARAM 携带 Box<(String /*已累积全文*/, bool /*is_final*/)>。
@@ -58,6 +60,8 @@ const SYSTEM_PROMPT_FORMAL: &str = "你是用户输入法里的‘AI 帮写’�
 const SYSTEM_PROMPT_CHAT: &str = "你是用户输入法里的‘AI 帮写’助手。用轻松自然的口吻聊天，直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。";
 const SYSTEM_PROMPT_MAIL: &str = "你是用户输入法里的‘AI 帮写’助手。生成结构完整、礼貌得体的中文邮件正文，直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。";
 const SYSTEM_PROMPT_EMOJI: &str = "你是用户输入法里的‘AI 帮写’助手。输出活泼的中文并适量穿插 emoji，直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。";
+/// 划词翻译系统提示：把选区原文翻译成中文（原文已是中文时译成英文）。
+const SYSTEM_PROMPT_TRANSLATE: &str = "你是用户输入法里的划词翻译助手。把用户选中/输入的文本翻译成中文；若原文已是中文则翻译成英文。只输出译文本身，不要解释、不要加引号、不要 Markdown 代码块；控制在 500 字以内。";
 /// 模板 chips: (标签, 系统提示)。选择只影响下一次请求。
 const TEMPLATES: &[(&str, &str)] = &[
     ("正式", SYSTEM_PROMPT_FORMAL),
@@ -113,14 +117,25 @@ fn palette() -> (Palette, skin::Metrics, skin::Shadow) {
     )
 }
 
+/// 面板模式：决定标题、选区交互与默认行为。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanelMode {
+    /// AI 帮写（Ctrl+Shift+W）：空面板等提示词
+    Write,
+    /// 划词润色（Ctrl+Shift+R）：选区原文进面板，回车覆盖选区
+    Polish,
+    /// 划词翻译（Ctrl+Shift+T）：选区原文进面板，AI 翻译，回车覆盖选区
+    Translate,
+}
+
 struct PanelState {
     hwnd: HWND,
     /// 呼出时的前台窗口，回车粘贴目标
     target: HWND,
     dpi: u32,
     status: Status,
-    /// true = 划词润色（选区进面板、回车覆盖选区）；false = AI 帮写
-    mode_polish: bool,
+    /// 面板模式（Write / Polish / Translate）
+    mode: PanelMode,
     /// 当前模板下标（TEMPLATES）；切换只影响下一次请求
     template: usize,
 }
@@ -152,7 +167,8 @@ thread_local! {
     static PANEL_HWND: RefCell<Option<HWND>> = const { RefCell::new(None) };
 }
 
-/// 最近一次生效的热键门控位图：bit0 = enable_polish_hotkey，bit1 = enable_ai_hotkey。
+/// 最近一次生效的热键门控位图：bit0 = enable_polish_hotkey，bit1 = enable_ai_hotkey，
+/// bit2 = enable_translate_hotkey。
 /// u8::MAX 哨兵表示"尚未同步"，首次 refresh_hotkey_gates 必然重注册一次。
 static LAST_HOTKEY_GATES: AtomicU8 = AtomicU8::new(u8::MAX);
 
@@ -165,7 +181,7 @@ static LAST_HOTKEY_GATES: AtomicU8 = AtomicU8::new(u8::MAX);
 /// （shurufa_options::hotkey_gates()，默认均开启）：关掉的入口不注册，
 /// 开关热更新由 refresh_hotkey_gates 按 2 秒轮询接管。
 pub fn register_hotkey() -> &'static str {
-    let (enable_polish, enable_ai) = shurufa_options::hotkey_gates();
+    let (enable_polish, enable_ai, enable_translate) = shurufa_options::hotkey_gates();
     unsafe {
         let which = if !enable_ai {
             "（设置中已关闭 AI 帮写热键）"
@@ -185,6 +201,14 @@ pub fn register_hotkey() -> &'static str {
             "（划词润色热键被占用）"
         };
         crate::log_line(&format!("划词润色热键：{polish}"));
+        let translate = if !enable_translate {
+            "（设置中已关闭划词翻译热键）"
+        } else if RegisterHotKey(None, TRANSLATE_HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, 0x54).is_ok() {
+            "Ctrl+Shift+T"
+        } else {
+            "（划词翻译热键被占用）"
+        };
+        crate::log_line(&format!("划词翻译热键：{translate}"));
         which
     }
 }
@@ -192,8 +216,8 @@ pub fn register_hotkey() -> &'static str {
 /// 启动时把当前门控写入缓存，避免 2 秒后第一次轮询误判"变化"而重注册。
 /// 必须在 register_hotkey 之后调用（listener 主线程）。
 pub fn sync_hotkey_gate_cache() {
-    let (enable_polish, enable_ai) = shurufa_options::hotkey_gates();
-    let bits = (enable_polish as u8) | ((enable_ai as u8) << 1);
+    let (enable_polish, enable_ai, enable_translate) = shurufa_options::hotkey_gates();
+    let bits = (enable_polish as u8) | ((enable_ai as u8) << 1) | ((enable_translate as u8) << 2);
     LAST_HOTKEY_GATES.store(bits, Ordering::Relaxed);
 }
 
@@ -204,18 +228,19 @@ pub fn sync_hotkey_gate_cache() {
 /// 消息队列，WM_HOTKEY 只投递给注册线程；跨线程注册会让 listener 的
 /// GetMessageW 循环永远收不到按键。
 pub fn refresh_hotkey_gates() {
-    let (enable_polish, enable_ai) = shurufa_options::hotkey_gates();
-    let bits = (enable_polish as u8) | ((enable_ai as u8) << 1);
+    let (enable_polish, enable_ai, enable_translate) = shurufa_options::hotkey_gates();
+    let bits = (enable_polish as u8) | ((enable_ai as u8) << 1) | ((enable_translate as u8) << 2);
     let prev = LAST_HOTKEY_GATES.swap(bits, Ordering::Relaxed);
     if prev == bits {
         return; // 门控无变化：不打扰注册状态，也不刷日志
     }
     crate::log_line(&format!(
-        "热键门控变化：AI={enable_ai}，划词润色={enable_polish}，重注册"
+        "热键门控变化：AI={enable_ai}，划词润色={enable_polish}，划词翻译={enable_translate}，重注册"
     ));
     unsafe {
         let _ = UnregisterHotKey(None, HOTKEY_ID);
         let _ = UnregisterHotKey(None, POLISH_HOTKEY_ID);
+        let _ = UnregisterHotKey(None, TRANSLATE_HOTKEY_ID);
     }
     let _ = register_hotkey();
 }
@@ -226,12 +251,22 @@ pub fn polish_selection() {
     crate::log_line("划词润色：收到热键");
     let target = unsafe { GetForegroundWindow() };
     let grabbed = grab_selected_text();
-    show_polish(target, grabbed);
+    show_selection_mode(target, grabbed, PanelMode::Polish);
 }
 
-/// 面板态划词入口：selected 为 None/空/超长 → Failed("未选中有效文本")，
-/// 否则预填选区文本并直接落 Editing，标题按"划词润色"渲染。
-fn show_polish(target: HWND, selected: Option<String>) {
+/// 划词翻译入口（Ctrl+Shift+T）：抓选区 → 面板预填进 Editing，AI 翻译；
+/// 无有效选区时面板走 Failed 样式提示。回车覆盖选区（微信/搜狗划词翻译同类）。
+pub fn translate_selection() {
+    crate::log_line("划词翻译：收到热键");
+    let target = unsafe { GetForegroundWindow() };
+    let grabbed = grab_selected_text();
+    show_selection_mode(target, grabbed, PanelMode::Translate);
+}
+
+/// 面板态选区入口（润色/翻译共用）：selected 为 None/空/超长 →
+/// Failed("未选中有效文本")，否则预填选区文本并直接落 Editing，
+/// 标题按模式渲染（"划词润色" / "划词翻译"）。
+fn show_selection_mode(target: HWND, selected: Option<String>, mode: PanelMode) {
     let Some(hwnd) = ensure_window() else {
         crate::log_line("AI 面板窗口创建失败");
         return;
@@ -259,14 +294,19 @@ fn show_polish(target: HWND, selected: Option<String>) {
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false)
         && !too_long;
+    let label = match mode {
+        PanelMode::Polish => "划词润色",
+        PanelMode::Translate => "划词翻译",
+        PanelMode::Write => "AI 帮写",
+    };
     let status = if valid {
         crate::log_line(&format!(
-            "划词润色面板弹出，选区 {} 字符",
+            "{label}面板弹出，选区 {} 字符",
             selected.as_ref().map(|s| s.chars().count()).unwrap_or(0)
         ));
         Status::Editing
     } else {
-        crate::log_line("划词润色：未选中有效文本");
+        crate::log_line(&format!("{label}：未选中有效文本"));
         Status::Failed {
             reason: "未选中有效文本".into(),
         }
@@ -284,7 +324,7 @@ fn show_polish(target: HWND, selected: Option<String>) {
             target,
             dpi,
             status,
-            mode_polish: true,
+            mode,
             template: 0,
         });
     });
@@ -416,7 +456,7 @@ pub fn show() {
             target,
             dpi,
             status,
-            mode_polish: false,
+            mode: PanelMode::Write,
             template: 0,
         });
     });
@@ -460,15 +500,20 @@ fn start_request(query: String) {
         });
         return;
     };
-    let Some((hwnd, template)) =
-        PANEL.with_borrow(|slot| slot.as_ref().map(|s| (s.hwnd, s.template)))
+    let Some((hwnd, template, mode)) =
+        PANEL.with_borrow(|slot| slot.as_ref().map(|s| (s.hwnd, s.template, s.mode)))
     else {
         return;
     };
-    let system_prompt = TEMPLATES
-        .get(template)
-        .map(|t| t.1)
-        .unwrap_or(SYSTEM_PROMPT);
+    // 划词翻译用固定翻译提示；其它模式走所选模板（默认"正式"）。
+    let system_prompt = if mode == PanelMode::Translate {
+        SYSTEM_PROMPT_TRANSLATE
+    } else {
+        TEMPLATES
+            .get(template)
+            .map(|t| t.1)
+            .unwrap_or(SYSTEM_PROMPT)
+    };
     PANEL.with_borrow_mut(|slot| {
         if let Some(state) = slot.as_mut() {
             state.status = Status::Pending {
@@ -1223,12 +1268,17 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let bold = make_font(sf(BASE_FONT), FW_BOLD.0 as i32);
         let small = make_font(sf(BASE_SMALL_FONT), FW_NORMAL.0 as i32);
 
-        // 顶部第 0 行：标题（由模式决定："AI 帮写" / "划词润色"）
+        // 顶部第 0 行：标题（由模式决定："AI 帮写" / "划词润色" / "划词翻译"）
         SelectObject(hdc, HGDIOBJ(bold.0));
         SetTextColor(hdc, COLORREF(colors.accent));
+        let title = match state.mode {
+            PanelMode::Write => "AI 帮写",
+            PanelMode::Polish => "划词润色",
+            PanelMode::Translate => "划词翻译",
+        };
         draw_line(
             hdc,
-            if state.mode_polish { "划词润色" } else { "AI 帮写" },
+            title,
             padding,
             padding,
             width - padding * 2,
