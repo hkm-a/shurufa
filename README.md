@@ -5,7 +5,7 @@
 [![许可证](https://img.shields.io/badge/许可证-GPL--3.0-blue.svg)](LICENSE)
 [![平台](https://img.shields.io/badge/平台-Windows%20%7C%20Android-2ea44f.svg)](#平台支持)
 [![CI](https://github.com/hkm-a/shurufa/actions/workflows/ci.yml/badge.svg)](https://github.com/hkm-a/shurufa/actions/workflows/ci.yml)
-[![状态](https://img.shields.io/badge/状态-v0.5.6-2da44e.svg)](CHANGELOG.md)
+[![状态](https://img.shields.io/badge/状态-v0.7.1-2da44e.svg)](CHANGELOG.md)
 
 Shurufa 把中文输入和设备剪贴板放在同一条工作流里：输入法负责稳定输入，剪贴板负责设备间同步。截图、标注与录屏由 PixPin 等专业工具负责，Shurufa 不再重复提供这类桌面能力。
 
@@ -69,23 +69,28 @@ version.json   版本号单一事实源（由 set-version.ps1 同步四处派生
 
 ## 文档导航
 
-- 产品：[架构说明](docs/架构说明.md) · [迭代方向](docs/迭代方向.md)
+- 产品：[架构说明](docs/架构说明.md) · [迭代方向](docs/迭代方向.md) · [开发计划](docs/开发计划.md)
 - 用户：[Windows 安装指南](docs/Windows安装指南.md) · [安卓安装与使用](docs/安卓安装与使用.md) · [云词库](docs/云词库.md) · [自托管中继](docs/自托管中继.md)
-- 开发者：[开发环境](docs/开发环境.md) · [发布流程](docs/发布流程.md) · [CHANGELOG](CHANGELOG.md)
+- 开发者：[开发环境](docs/开发环境.md) · [发布流程](docs/发布流程.md) · [版本管理](docs/版本管理.md) · [文档管理](docs/文档管理.md) · [CHANGELOG](CHANGELOG.md)
 - 验收：[M1](docs/M1-验收报告.md) · [M2](docs/M2-验收报告.md) · [M3](docs/M3-验收报告.md) · [M4 Windows](docs/M4-验收报告.md) · [M4 Android](docs/M4-安卓验收报告.md) · [安卓附件测试](docs/安卓附件测试.md)
 
 ## 当前状态
 
-当前版本 **v0.5.6（2026-08-14）**，已完成 M6 增强目标并进入功能收尾阶段：
+当前开发版 **v0.7.1（versionCode 29，2026-08-18）**，已完成 M6 增强目标及
+符号面板 / AI 帮写 / 皮肤 / 跨设备文件同步等多轮迭代，下一阶段路线图见
+[开发计划](docs/开发计划.md)：
 
-- **输入**：librime 雾凇拼音 + 小鹤双拼（独立双拼词典与引擎热切换）、MRU 最近使用提频、
-  拼音音节分词视图、Shift/CapsLock/Ctrl+. 切换、全局中/英语义（悬浮条可查可切）、五笔/仓颉入口预留。
-- **桌面**：FOX 悬浮条（中/En 指示、拼/双切换、剪贴板历史、语音转写、AI 帮写、划词润色入口）、
-  皮肤系统（5 套预设 + JSON 编辑器 + 热生效）、候选窗 DComp/D2D/GDI 瀑布渲染、Tauri 自研安装器。
-- **跨设备**：剪贴板文本/图片/文件双向同步（协议 v3：分块校验 + 回执）、文件接收审批通知、
-  剪贴板收藏、自托管中继、云词库多代回滚。
-- **工程**：全工作区 cargo clippy（-D warnings）与 cargo fmt --check 零告警、约 145 项测试全绿、
-  版本单一事实源 0.5.6/17、CI 双平台（Windows/Android）流水线。
+- **输入**：librime 雾凇拼音 + 小鹤双拼、MRU 最近使用提频、音节分词视图、
+  Shift/CapsLock/Ctrl+. 切换、全局中/英语义、V 模式 / 以词定字 / 辅码检字 /
+  错音提示 / 冷词丢弃 / Emoji 候选 / Unicode 输入 / 符号配对 / 中英混输自动空格
+  等 rime-ice 同款能力，五笔/仓颉入口预留。
+- **桌面**：FOX 悬浮球（中/En 指示、剪贴板历史、语音转写、AI 帮写/润色/翻译、
+  划词入口）、皮肤系统（5 套预设 + JSON 编辑器 + 热生效）、候选窗 DComp/D2D/GDI
+  瀑布渲染、模式切换 toast、Tauri 自研安装器。
+- **跨设备**：剪贴板文本/图片/文件双向同步（协议 v3：分块校验 + 回执）、文件接收
+  审批通知、剪贴板收藏、自托管中继、云词库多代回滚。
+- **工程**：全工作区 cargo clippy（-D warnings）与 cargo fmt --check 零告警、
+  约 145+ 项测试全绿、版本单一事实源 0.7.1/29、CI 双平台（Windows/Android）流水线。
 
 详细验收证据与评分见 [验证报告](.claude/verification-report.md)，演进过程见 [CHANGELOG](CHANGELOG.md)。
 
