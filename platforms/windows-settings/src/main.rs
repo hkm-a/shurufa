@@ -458,6 +458,40 @@ fn pair_ui_confirm(yes: bool) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// M10-1 专业词模式：场景词库文件放 schemas/scenario_*.dict.yaml，部署即生效
+// （实测 librime 编译 schemas/ 全部 dict，拼音可直接打场景词）。保存场景 =
+// 记录偏好到 options.json + 重建词典。注：实测 librime 1.17 的列表 patch
+// 不支持 "+item" 追加（会把 engine/translators 整体替换、拼音失效），
+// 因此不做 rime_ice.custom.yaml 挂载。
+// ---------------------------------------------------------------------------
+
+/// M10-1：保存专业词场景——写 options.json 并重建二进制词典（deploy）。
+#[tauri::command]
+async fn save_scenario_dict(name: String) -> Result<String, String> {
+    let name = name.trim().to_owned();
+    if !shurufa_options::validate_scenario_dict(&name) {
+        return Err(format!(
+            "未知专业词场景：{name}（合法值 none/doctor/lawyer/code）"
+        ));
+    }
+    shurufa_options::modify(|current| shurufa_options::ImeOptions {
+        scenario_dict: name.clone(),
+        ..current.clone()
+    })
+    .map_err(|error| format!("保存场景失败：{error}"))?;
+    let label = match name.as_str() {
+        "doctor" => "医生",
+        "lawyer" => "律师",
+        "code" => "代码",
+        _ => "无",
+    };
+    let deploy = redeploy_dictionaries().await?;
+    Ok(format!(
+        "已启用「{label}」专业词库；{deploy}（词库已部署，拼音直接可打）"
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // M9-3 桌面快捷搜索：应用（Start Menu .lnk + App Paths）/ 文件（桌面/文档/下载
 // 有限遍历）/ 计算器（算术表达式求值）。
 // ---------------------------------------------------------------------------
@@ -1375,6 +1409,10 @@ struct GeneralSettingsDto {
     /// M9-6：划词工具应用白名单（exe 文件名；空 = 所有应用）。
     #[serde(default)]
     selection_app_whitelist: Vec<String>,
+    /// M10-1：专业词场景（none/doctor/lawyer/code）；序列化时从
+    /// options.json 读取，保存走独立 save_scenario_dict 命令（需重建词典）。
+    #[serde(default = "default_scenario_dict_dto")]
+    scenario_dict: String,
 }
 
 fn default_candidate_position_dto() -> String {
@@ -1391,6 +1429,10 @@ fn default_ball_opacity_dto() -> u8 {
 
 fn default_true_dto() -> bool {
     true
+}
+
+fn default_scenario_dict_dto() -> String {
+    "none".to_owned()
 }
 
 fn default_scheme_for_dto() -> String {
@@ -1415,6 +1457,7 @@ impl From<GeneralSettings> for GeneralSettingsDto {
             enable_translate_hotkey: g.enable_translate_hotkey,
             ball_opacity: g.ball_opacity,
             selection_app_whitelist: g.selection_app_whitelist,
+            scenario_dict: default_scenario_dict_dto(),
             // GeneralSettings 不含方案字段；读盘时由 get_general_settings 另行注入
             input_scheme: default_scheme_for_dto(),
             candidate_position: default_candidate_position_dto(),
@@ -1430,6 +1473,7 @@ fn get_general_settings() -> Result<GeneralSettingsDto, String> {
     dto.input_scheme = opts.input_scheme.clone();
     dto.candidate_position = opts.candidate_position.clone();
     dto.candidate_panel_mode = opts.candidate_panel_mode.clone();
+    dto.scenario_dict = opts.scenario_dict.clone();
     Ok(dto)
 }
 
@@ -1473,6 +1517,7 @@ fn save_general_settings(s: GeneralSettingsDto) -> Result<(), String> {
         "single" | "multi" => s.candidate_panel_mode.clone(),
         other => return Err(format!("未知候选面板模式：{other}")),
     };
+    let _ = s.scenario_dict; // scenario_dict 由 save_scenario_dict 独立管理（需重建词典）
     shurufa_options::modify(|current| ImeOptions {
         general: next.clone(),
         candidate_position: position,
@@ -2418,6 +2463,7 @@ fn main() {
             pair_ui_start,
             pair_ui_state,
             pair_ui_confirm,
+            save_scenario_dict,
             desktop_search,
             launch_desktop_target,
             dashboard_state,
@@ -2655,6 +2701,7 @@ mod tests {
             candidate_panel_mode: "single".to_owned(),
             ball_opacity: 100,
             selection_app_whitelist: vec![],
+            scenario_dict: "none".to_owned(),
         };
         let mapped = matches!(bad.log_level.as_str(), "info" | "debug" | "trace");
         assert!(!mapped, "未知级别应被 save 路径拒绝");
@@ -2692,6 +2739,7 @@ mod tests {
             candidate_panel_mode: "multi".to_owned(),
             ball_opacity: 80,
             selection_app_whitelist: vec!["WINWORD.EXE".to_owned()],
+            scenario_dict: "none".to_owned(),
         };
         let value = serde_json::to_value(&dto).expect("DTO 序列化失败");
         assert_eq!(value["input_scheme"], serde_json::json!("wubi"));
@@ -2743,6 +2791,13 @@ mod tests {
         let timeout = pair_ui_state_from(None, Some(r#"{"token":"t","ts_ms":1}"#), 80_000);
         assert_eq!(timeout.phase, "failed");
         assert_eq!(pair_ui_state_from(None, None, 0).phase, "idle");
+        // M10-1：专业词场景校验（save_scenario_dict 的准入条件）
+        assert!(shurufa_options::validate_scenario_dict("doctor"));
+        assert!(shurufa_options::validate_scenario_dict("lawyer"));
+        assert!(shurufa_options::validate_scenario_dict("code"));
+        assert!(shurufa_options::validate_scenario_dict("none"));
+        assert!(!shurufa_options::validate_scenario_dict("xxx"));
+        assert_eq!(shurufa_options::ImeOptions::default().scenario_dict, "none");
         // M9-3：计算器表达式识别与求值
         assert_eq!(calc_expression("1+2*3"), Some(7.0));
         assert_eq!(calc_expression("(1+2)*3"), Some(9.0));

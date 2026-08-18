@@ -1,0 +1,17 @@
+# 专业词场景：医生（M10-1，搜狗 16.2 场景词库同类）
+# 由 rime_ice.custom.yaml 挂载（table_translator@scenario_doctor）。
+# 编码用空格分隔音节；词条按需扩充。
+
+name: scenario_doctor
+version: "1.0"
+sort: by_weight
+use_preset_vocabulary: false
+...
+
+白细胞	bai xi bao	100
+高血压	gao xue ya	100
+处方	chu fang	100
+心电图	xin dian tu	100
+住院	zhu yuan	100
+病床	bing chuang	100
+专业词库	zhuanyeciku	100

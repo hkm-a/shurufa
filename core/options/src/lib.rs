@@ -60,11 +60,26 @@ pub struct ImeOptions {
     /// 默认关（避免与 IDE 自动补全/括号高亮冲突；微信默认同样关闭）。
     #[serde(default = "default_symbol_pairing")]
     pub symbol_pairing: bool,
+    /// M10-1 专业词场景（搜狗 16.2 场景词库同类）：none（默认）/ doctor /
+    /// lawyer / code。设置中心保存后生成 rime_ice.custom.yaml 挂载场景词库
+    /// 并重建词典；改动需重新部署生效。
+    #[serde(default = "default_scenario_dict")]
+    pub scenario_dict: String,
 }
 
 /// 符号配对默认值：关闭（微信输入法默认同样关闭，避免与应用冲突）。
 pub fn default_symbol_pairing() -> bool {
     false
+}
+
+/// 专业词场景默认值：无（M10-1）。
+pub fn default_scenario_dict() -> String {
+    "none".to_owned()
+}
+
+/// 校验专业词场景 id（M10-1）。
+pub fn validate_scenario_dict(s: &str) -> bool {
+    matches!(s, "none" | "doctor" | "lawyer" | "code")
 }
 
 /// 单个应用的输入法行为覆盖（weasel app_options 同款）。
@@ -267,6 +282,7 @@ impl Default for ImeOptions {
             candidate_panel_mode: default_candidate_panel_mode(),
             app_options: std::collections::BTreeMap::new(),
             symbol_pairing: default_symbol_pairing(),
+            scenario_dict: default_scenario_dict(),
         }
     }
 }

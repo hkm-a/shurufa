@@ -104,7 +104,7 @@ const NAV_GROUPS = [
 const SETTINGS_SEARCH_INDEX = [
   { page: "workspace", label: "工作台", keywords: ["概览", "后台服务", "服务状态", "输入方案", "剪贴板历史", "热门词库", "直达"] },
   { page: "general", label: "通用", keywords: ["行为", "主题", "亮色", "暗色", "跟随系统", "悬浮球", "不透明度", "历史保留", "AI", "帮写", "润色", "翻译", "热键", "划词", "白名单"] },
-  { page: "input", label: "输入", keywords: ["候选", "直达快捷", "快捷键", "中英切换", "大写锁定", "符号", "emoji", "引擎开关", "空格"] },
+  { page: "input", label: "输入", keywords: ["候选", "直达快捷", "快捷键", "中英切换", "大写锁定", "符号", "emoji", "引擎开关", "空格", "专业词", "医生", "律师", "代码", "场景词库"] },
   { page: "scheme", label: "方案", keywords: ["输入方案", "全拼", "双拼", "小鹤", "五笔", "仓颉"] },
   { page: "phrases", label: "短语", keywords: ["自定义词条", "词条", "短语", "编码"] },
   { page: "symbols", label: "符号", keywords: ["符号", "emoji", "表情", "搜索", "颜文字"] },
@@ -1410,6 +1410,18 @@ function inputPage() {
         <textarea id="shortcuts-editor" rows="6" spellcheck="false" placeholder="每行一条：触发码  名称  app|url  目标&#10;weixin&#9;微信&#9;app&#9;C:/apps/wechat.exe&#10;baidu&#9;百度&#9;url&#9;https://www.baidu.com">${escapeHtml(shortcutsText)}</textarea>
         <p class="field-note">每行：触发码（小写字母数字） 名称  类型(app/url)  目标；保存即生效（引擎每次按键重新加载快捷表）</p>
         <button class="primary-action compact" data-action="save-shortcuts"><i data-lucide="save"></i>保存直达</button>
+      </article>
+      <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="stethoscope"></i></div><div><h3>专业词场景（M10-1）</h3><p>按领域挂载场景词库：医生 / 律师 / 代码；保存后重建词典生效（搜狗 16.2 场景词库同类）</p></div></div>
+        <div class="field-action">
+          <select id="scenario-select" aria-label="专业词场景">
+            <option value="none" ${(generalSettings?.scenario_dict || "none") === "none" ? "selected" : ""}>无（默认）</option>
+            <option value="doctor" ${(generalSettings?.scenario_dict || "") === "doctor" ? "selected" : ""}>医生</option>
+            <option value="lawyer" ${(generalSettings?.scenario_dict || "") === "lawyer" ? "selected" : ""}>律师</option>
+            <option value="code" ${(generalSettings?.scenario_dict || "") === "code" ? "selected" : ""}>代码</option>
+          </select>
+          <button class="primary-action compact" data-action="save-scenario"><i data-lucide="save"></i>保存并重建词典</button>
+        </div>
       </article>
       <article class="hint-card"><i data-lucide="lightbulb"></i><p>后台服务负责剪贴板历史与跨设备同步。它会以隐藏窗口运行。语音转写（Ctrl+Shift+S）当前为 dev-stub。</p></article>
     </section>`;
@@ -3292,6 +3304,15 @@ async function handleAction(button) {
       emojiTone = tone && EMOJI_TONES.includes(tone) ? tone : null;
       saveEmojiTone(emojiTone);
       render();
+      return;
+    }
+    if (action === 'save-scenario') {
+      const name = document.querySelector('#scenario-select')?.value || 'none';
+      try {
+        const msg = await invoke('save_scenario_dict', { name });
+        if (generalSettings) generalSettings.scenario_dict = name;
+        showToast(msg);
+      } catch (error) { showToast(String(error), true); }
       return;
     }
     // M8-4：保存直达清单（解析 textarea 行格式）
