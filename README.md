@@ -94,7 +94,9 @@ version.json   版本号单一事实源（由 set-version.ps1 同步四处派生
 - **跨设备**：剪贴板文本/图片/文件双向同步（协议 v3：分块校验 + 回执）、文件接收
   审批通知、剪贴板收藏、自托管中继、云词库多代回滚。
 - **工程**：全工作区 cargo clippy（-D warnings）与 cargo fmt --check 零告警、
-  约 199 项测试全绿、版本单一事实源 1.0.0/32、CI 双平台（Windows/Android）流水线。
+  约 199 项测试全绿、版本单一事实源 1.0.0/32、CI 双平台（Windows/Android）流水线；
+   开发调试可启用 Tauri MCP Bridge（`--features mcp-bridge`，127.0.0.1:9323）供
+   mcp-server-tauri 连接，DSH 侧工具以 `mcp__tauri__*` 注册。
 
 详细验收证据与评分见 [验证报告](.claude/verification-report.md)，演进过程见 [CHANGELOG](CHANGELOG.md)。
 
