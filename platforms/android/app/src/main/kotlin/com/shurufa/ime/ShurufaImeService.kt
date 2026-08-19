@@ -119,6 +119,12 @@ class ShurufaImeService : InputMethodService() {
     private var phraseCategory: String? = null
     /** M-A2-3 时间/日期/邮箱后缀快捷输入面板（搜狗 7.4）。 */
     private var quickInsertPanel: LinearLayout? = null
+    /** M-A2-2 表情面板（分类/搜索/最近，数据与 PC 同源）。 */
+    private var emojiPanel: LinearLayout? = null
+    private var emojiSearchBox: EditText? = null
+    private var emojiGrid: LinearLayout? = null
+    private var emojiCategoryId: String? = null
+    private var emojiChipsRow: LinearLayout? = null
     /// 大写锁定（微信输入法同款 capslock 键：行首图标键）
     private var shiftMode = false
     private var historyPanel: LinearLayout? = null
@@ -627,6 +633,14 @@ class ShurufaImeService : InputMethodService() {
         // M-A2-3 时间/日期/邮箱后缀（搜狗 7.4）
         functionRow.addView(
             functionChip("⏱", getString(R.string.ime_chip_quick_insert)) { toggleQuickInsert() },
+            LinearLayout.LayoutParams(
+                clipButtonSize,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
+        )
+        // M-A2-2 表情面板（搜狗 8.0 表情面板 / 4.8 表情搜索）
+        functionRow.addView(
+            functionChip("😀", getString(R.string.ime_chip_emoji)) { toggleEmojiPanel() },
             LinearLayout.LayoutParams(
                 clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
@@ -1226,6 +1240,177 @@ class ShurufaImeService : InputMethodService() {
         quickPhrasePanel?.visibility = View.GONE
         keyArea.visibility = View.GONE
         quickInsertPanel?.visibility = View.VISIBLE
+    }
+
+    // ---------- M-A2-2 表情面板（分类 / 搜索 / 最近） ----------
+
+    private fun toggleEmojiPanel() {
+        val existing = emojiPanel
+        if (existing != null && existing.visibility == View.VISIBLE) {
+            existing.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+            return
+        }
+        if (existing == null) {
+            val built = buildEmojiPanel()
+            emojiPanel = built
+            inputRoot?.addView(
+                built,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
+        historyPanel?.visibility = View.GONE
+        aiPanel?.visibility = View.GONE
+        previewKeyboard?.visibility = View.GONE
+        schemePanel?.visibility = View.GONE
+        settingsPanel?.visibility = View.GONE
+        quickPhrasePanel?.visibility = View.GONE
+        quickInsertPanel?.visibility = View.GONE
+        emojiSearchBox?.setText("")
+        emojiCategoryId = null
+        refreshEmojiChips()
+        renderEmoji()
+        keyArea.visibility = View.GONE
+        emojiPanel?.visibility = View.VISIBLE
+    }
+
+    private fun buildEmojiPanel(): LinearLayout {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(palette.key)
+            visibility = View.GONE
+            setPadding(dp(10f), dp(8f), dp(10f), dp(10f))
+        }
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.ep_title)
+            textSize = 13f
+            setTextColor(palette.panelText)
+        })
+        val search = EditText(this).apply {
+            hint = getString(R.string.ep_search_hint)
+            textSize = 14f
+            setTextColor(palette.panelText)
+            setHintTextColor(if (isDark()) 0xFF8E949D.toInt() else 0xFF9AA0AA.toInt())
+            setSingleLine(true)
+        }
+        emojiSearchBox = search
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun afterTextChanged(s: Editable?) = renderEmoji()
+        })
+        panel.addView(
+            search,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(40f),
+            ).apply { topMargin = dp(6f) },
+        )
+        emojiChipsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        panel.addView(emojiChipsRow)
+        emojiGrid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        panel.addView(
+            ScrollView(this).apply { addView(emojiGrid) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+                topMargin = dp(6f)
+            },
+        )
+        return panel
+    }
+
+    private fun refreshEmojiChips() {
+        val row = emojiChipsRow ?: return
+        row.removeAllViews()
+        val cats = listOf<String?>(null) + EmojiPanel.CATEGORIES.map { it.id }
+        for (id in cats) {
+            val label = if (id == null) {
+                getString(R.string.ep_recent)
+            } else {
+                EmojiPanel.CATEGORIES.first { it.id == id }.label
+            }
+            val selected = id == emojiCategoryId
+            val chip = TextView(this).apply {
+                text = label
+                textSize = 13f
+                gravity = Gravity.CENTER
+                tag = id
+                setTextColor(if (selected) 0xFFFFFFFF.toInt() else palette.panelText)
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(12f).toFloat()
+                    setColor(if (selected) palette.accent else palette.keyPressed)
+                }
+                setPadding(dp(14f), dp(5f), dp(14f), dp(5f))
+                setOnClickListener {
+                    emojiCategoryId = id
+                    refreshEmojiChips()
+                    renderEmoji()
+                }
+            }
+            row.addView(
+                chip,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { setMargins(0, dp(6f), dp(6f), 0) },
+            )
+        }
+    }
+
+    private fun renderEmoji() {
+        val grid = emojiGrid ?: return
+        grid.removeAllViews()
+        val query = emojiSearchBox?.text?.toString()?.trim().orEmpty()
+        val items: List<String> = when {
+            query.isNotEmpty() -> EmojiPanel.search(query)
+            emojiCategoryId == null -> recentEmojis()
+            else -> EmojiPanel.CATEGORIES.first { it.id == emojiCategoryId }.symbols
+        }
+        if (items.isEmpty()) {
+            grid.addView(TextView(this).apply {
+                text = getString(R.string.ep_empty)
+                textSize = 13f
+                setTextColor(palette.preedit)
+                setPadding(0, dp(10f), 0, 0)
+            })
+            return
+        }
+        items.chunked(8).forEach { rowItems ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            rowItems.forEach { emoji ->
+                row.addView(
+                    TextView(this).apply {
+                        text = emoji
+                        textSize = 24f
+                        gravity = Gravity.CENTER
+                        setOnClickListener { sendEmoji(emoji) }
+                    },
+                    LinearLayout.LayoutParams(0, dp(44f), 1f),
+                )
+            }
+            grid.addView(row, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
+        }
+    }
+
+    private fun recentEmojis(): List<String> =
+        EmojiPanel.decodeRecent(
+            getSharedPreferences("shurufa", Context.MODE_PRIVATE)
+                .getString(EmojiPanel.RECENT_KEY, "") ?: ""
+        )
+
+    private fun sendEmoji(emoji: String) {
+        currentInputConnection?.commitText(emoji, 1)
+        val recent = EmojiPanel.pushRecent(recentEmojis(), emoji)
+        getSharedPreferences("shurufa", Context.MODE_PRIVATE)
+            .edit()
+            .putString(EmojiPanel.RECENT_KEY, EmojiPanel.encodeRecent(recent))
+            .apply()
+        if (emojiCategoryId == null) renderEmoji()
     }
 
     private fun buildQuickInsertPanel(): LinearLayout {

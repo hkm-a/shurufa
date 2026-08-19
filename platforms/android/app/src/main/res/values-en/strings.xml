@@ -122,6 +122,13 @@
     <string name="qi_section_time">Time</string>
     <string name="qi_section_date">Date</string>
     <string name="qi_section_email">Email suffixes</string>
+
+    <!-- M-A2-2 emoji panel -->
+    <string name="ime_chip_emoji">Emoji</string>
+    <string name="ep_title">Emoji · tap to send · search or category</string>
+    <string name="ep_search_hint">Search emoji (e.g. smile / weixiao)…</string>
+    <string name="ep_recent">Recent</string>
+    <string name="ep_empty">(No matching emoji)</string>
     <string name="scheme_dialog_title">Switch input scheme</string>
     <string name="scheme_dialog_close">Close</string>
     <string name="scheme_dialog_hint">Switching applies immediately</string>
