@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 新增（安卓 M-A1-3：九键 T9 键盘 UI + 方案即时生效，2026-08-19）
+- **九键 T9 键盘页**：shurufa_t9 方案下键盘渲染 3×3 数字键（1-9，键面带
+  abc…wxyz 字母提示）+ 底栏 符/中英/空格/删除/换行；数字键整键送引擎
+  （T9 词库吃 2-9），引擎拒绝的 1 直接上屏数字。
+- **方案即时生效（修复既有缺口）**：rimejni 在 nativeInit 与方案切换时对
+  会话执行 librime select_schema（此前 Android 端只持久化偏好、引擎仍跑
+  雾凇拼音，双拼/五笔/仓颉/T9 均不生效）；options 新增 t9 方案 id 与
+  schema_id_of 映射；方案面板文案去掉「预览 · 需重启」。
+- **方案面板**：新增「9 键拼音」入口；切换成功即重建键盘（T9 ⇄ QWERTY）。
+- 测试：KeyboardLayoutSpecTest +1（九键页 3×3 数字 + 底栏五种功能键）；
+  options validate/schema 映射 +3；JVM 全量单测通过；rimejni 交叉编译
+  arm64 .so 并随 APK 装实机（体积 ~60MB），冷启动无崩溃。
+
 ### 新增（安卓 M-A1-2：9 键 T9 拼音引擎，2026-08-19）
 - **T9 词库**：scripts/gen-t9-dict.py 从雾凇拼音基础词库（base+others）生成
   shurufa_t9.dict.yaml（542,559 词条，整词 T9 数字串作单码索引；

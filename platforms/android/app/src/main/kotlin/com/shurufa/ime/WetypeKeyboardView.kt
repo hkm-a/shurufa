@@ -44,6 +44,8 @@ internal class WetypeKeyboardView(
 
     sealed class WetypeAction {
         data class Char(val value: String) : WetypeAction()
+        /** T9 数字键：整键送引擎（shurufa_t9 方案吃 2-9），引擎拒绝时由 IME 上屏数字。 */
+        data class Digit(val value: String) : WetypeAction()
         object Backspace : WetypeAction()
         object Shift : WetypeAction()
         object NumberPage : WetypeAction()
@@ -76,6 +78,9 @@ internal class WetypeKeyboardView(
             KeyboardLayoutSpec.languageLabel(asciiMode),
         )
         KeyboardLayoutSpec.Page.SYMBOLS -> KeyboardLayoutSpec.symbolRows()
+        KeyboardLayoutSpec.Page.T9 -> KeyboardLayoutSpec.t9Rows(
+            KeyboardLayoutSpec.languageLabel(asciiMode)
+        )
     }
     // 横屏不能继续按短边比例压缩：四行按键至少44dp，才有稳定的触控面积和视觉节奏。
     // 高度百分比（M-A1-1，搜狗 5.1 键盘调节）缩放自然高度与可用余量两个输入。
@@ -399,6 +404,7 @@ internal class WetypeKeyboardView(
 
     private fun actionFor(key: KeyboardLayoutSpec.Key, label: String): WetypeAction = when (key.kind) {
         KeyboardLayoutSpec.Kind.CHAR -> WetypeAction.Char(label)
+        KeyboardLayoutSpec.Kind.DIGIT -> WetypeAction.Digit(label)
         KeyboardLayoutSpec.Kind.BACKSPACE -> WetypeAction.Backspace
         KeyboardLayoutSpec.Kind.SHIFT -> WetypeAction.Shift
         KeyboardLayoutSpec.Kind.NUMBER -> WetypeAction.NumberPage
@@ -462,9 +468,9 @@ internal object KeyboardHeightSpec {
 
 /** 键盘页面与键位语义的纯规格，便于单元测试验证视觉顺序不会影响输入功能。 */
 internal object KeyboardLayoutSpec {
-    enum class Page { LETTERS, SYMBOLS }
+    enum class Page { LETTERS, SYMBOLS, T9 }
     enum class Icon { BACKSPACE, SHIFT, BACK }
-    enum class Kind { CHAR, BACKSPACE, SHIFT, NUMBER, BACK, ENTER, SPACE, LANG }
+    enum class Kind { CHAR, BACKSPACE, SHIFT, NUMBER, BACK, ENTER, SPACE, LANG, DIGIT }
 
     data class Key(
         val label: String = "",
@@ -510,6 +516,47 @@ internal object KeyboardLayoutSpec {
                 Key("换行", kind = Kind.ENTER, weight = 1.55f, functional = true, textSize = 15f, description = "换行"),
             ),
         ),
+    )
+
+    /** M-A1-3 九键 T9 键盘：3×3 数字键（整词数字串喂引擎，shurufa_t9 方案）
+     * + 底栏 符/中英/空格/删除/换行；1 键不在引擎 alphabet 内，引擎拒绝后
+     * 由 IME 直接上屏数字。 */
+    fun t9Rows(languageLabel: String = languageLabel(false)): List<Row> {
+        val t9Letters = listOf(
+            "1" to "", "2" to "abc", "3" to "def",
+            "4" to "ghi", "5" to "jkl", "6" to "mno",
+            "7" to "pqrs", "8" to "tuv", "9" to "wxyz",
+        )
+        return listOf(
+            Row(t9Letters.subList(0, 3).map { t9Key(it.first, it.second) }),
+            Row(t9Letters.subList(3, 6).map { t9Key(it.first, it.second) }),
+            Row(t9Letters.subList(6, 9).map { t9Key(it.first, it.second) }),
+            Row(
+                listOf(
+                    Key("符", kind = Kind.NUMBER, functional = true, textSize = 14f, bold = true, description = "符号键盘"),
+                    Key(languageLabel, kind = Kind.LANG, textSize = 14f, description = "切换中英文"),
+                    Key("", kind = Kind.SPACE, weight = 1.8f, description = "空格"),
+                    Key(
+                        icon = Icon.BACKSPACE,
+                        kind = Kind.BACKSPACE,
+                        functional = true,
+                        description = "删除；长按连续删除，上滑清空拼音",
+                        longKind = Kind.BACKSPACE,
+                        swipeUpClears = true,
+                    ),
+                    Key("换行", kind = Kind.ENTER, weight = 1.2f, functional = true, textSize = 15f, description = "换行"),
+                ),
+            ),
+        )
+    }
+
+    private fun t9Key(label: String, letters: String): Key = Key(
+        label = label,
+        secondary = letters.ifEmpty { null },
+        kind = Kind.DIGIT,
+        textSize = 22f,
+        bold = true,
+        description = if (letters.isEmpty()) "数字 $label" else "键 $label，字母 $letters",
     )
 
     fun symbolRows(): List<Row> = listOf(

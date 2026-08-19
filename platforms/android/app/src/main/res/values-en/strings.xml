@@ -107,11 +107,12 @@
     <string name="kb_settings_close">Close settings</string>
     <string name="scheme_dialog_title">Switch input scheme</string>
     <string name="scheme_dialog_close">Close</string>
-    <string name="scheme_dialog_hint">Preview schemes take effect after restarting the host app</string>
+    <string name="scheme_dialog_hint">Switching applies immediately</string>
     <string name="scheme_pinyin">Pinyin (Rime Ice · default)</string>
-    <string name="scheme_double_pinyin">Double Pinyin (preview · restart needed)</string>
-    <string name="scheme_wubi">Wubi 86 (preview · restart needed)</string>
-    <string name="scheme_cangjie">Cangjie 5 (preview · restart needed)</string>
+    <string name="scheme_double_pinyin">Double Pinyin (Xiaohe)</string>
+    <string name="scheme_wubi">Wubi 86</string>
+    <string name="scheme_cangjie">Cangjie 5</string>
+    <string name="scheme_t9">9-key T9 Pinyin</string>
     <string name="scheme_selected_banner">Switched to %1$s</string>
     <string name="main_card_scheme_title">Current input scheme</string>
 </resources>

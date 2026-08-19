@@ -23,6 +23,32 @@ class KeyboardLayoutSpecTest {
     }
 
     @Test
+    fun 九键页三行数字加完整底栏() {
+        val rows = KeyboardLayoutSpec.t9Rows()
+        assertEquals(4, rows.size)
+        // 前三行：3×3 数字键（1-9）
+        val digits = rows.take(3).flatMap { it.keys }
+        assertEquals(9, digits.size)
+        assertEquals(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9"), digits.map { it.label })
+        assertTrue(digits.all { it.kind == KeyboardLayoutSpec.Kind.DIGIT })
+        // 键面字母提示：2→abc … 9→wxyz
+        assertEquals("abc", rows[0].keys[1].secondary)
+        assertEquals("wxyz", rows[2].keys[2].secondary)
+        // 底栏：符 / 中英 / 空格 / 删除 / 换行
+        assertEquals(
+            listOf(
+                KeyboardLayoutSpec.Kind.NUMBER,
+                KeyboardLayoutSpec.Kind.LANG,
+                KeyboardLayoutSpec.Kind.SPACE,
+                KeyboardLayoutSpec.Kind.BACKSPACE,
+                KeyboardLayoutSpec.Kind.ENTER,
+            ),
+            rows[3].keys.map { it.kind },
+        )
+        assertTrue(rows[3].keys.first { it.kind == KeyboardLayoutSpec.Kind.SPACE }.weight > 1.5f)
+    }
+
+    @Test
     fun 默认页底栏保留完整的中英文与输入功能() {
         val row = KeyboardLayoutSpec.letterRows(false).last()
         assertEquals(

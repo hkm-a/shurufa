@@ -224,7 +224,22 @@ fn default_input_scheme() -> String {
 /// 供 settings UI / TSF watcher / JNI 三端共享同一事实源；wave 5 引入
 /// 新方案时只改这一个函数。
 pub fn validate_input_scheme(s: &str) -> bool {
-    matches!(s, "pinyin" | "double_pinyin" | "wubi" | "cangjie")
+    matches!(
+        s,
+        "pinyin" | "double_pinyin" | "wubi" | "cangjie" | "t9"
+    )
+}
+
+/// options 方案 id → librime schema_id 的映射（与 schemas/ 文件名一致）；
+/// 未知 id 回退雾凇拼音。Windows TSF 与 Android JNI 共用。
+pub fn schema_id_of(scheme: &str) -> &'static str {
+    match scheme {
+        "double_pinyin" => "shurufa_double_pinyin",
+        "wubi" => "shurufa_wubi",
+        "cangjie" => "shurufa_cangjie",
+        "t9" => "shurufa_t9",
+        _ => "rime_ice",
+    }
 }
 
 /// 语音转写设置（Ctrl+Shift+S → 剪贴板 + 书面语化）。serde 双端兼容：
@@ -1443,6 +1458,10 @@ mod tests {
         assert!(validate_input_scheme("pinyin"));
         assert!(validate_input_scheme("double_pinyin"));
         assert!(validate_input_scheme("wubi"));
+        assert!(validate_input_scheme("t9"));
+        assert_eq!(schema_id_of("t9"), "shurufa_t9");
+        assert_eq!(schema_id_of("pinyin"), "rime_ice");
+        assert_eq!(schema_id_of("unknown"), "rime_ice");
         assert!(validate_input_scheme("cangjie"));
         assert!(!validate_input_scheme("abc"));
         assert!(!validate_input_scheme(""));

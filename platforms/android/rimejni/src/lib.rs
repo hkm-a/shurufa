@@ -24,6 +24,24 @@ mod sync_jni;
 static ENGINE: OnceLock<Result<Engine, String>> = OnceLock::new();
 static SESSION: Mutex<Option<Session<'static>>> = Mutex::new(None);
 
+/// options 方案 id → librime schema_id（与 schemas/ 文件名一致；事实源在
+/// shurufa_options::schema_id_of，这里仅是转发，避免 JNI 层重复维护）。
+fn schema_id_for(scheme: &str) -> &'static str {
+    shurufa_options::schema_id_of(scheme)
+}
+
+/// 把 options 的 input_scheme 应用到全局会话（librime select_schema）。
+/// 会话未就绪（引擎还在预热）时返回 false，调用方自行决定是否容忍。
+pub(crate) fn apply_input_scheme(scheme: &str) -> bool {
+    let session = SESSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match session.as_ref() {
+        Some(s) => s.select_schema(schema_id_for(scheme)),
+        None => false,
+    }
+}
+
 /// JNI 入口的统一 panic 守卫。
 ///
 /// 任何从 Rust panic 越出 `extern "C"`/`extern "system"` 函数回 Java
@@ -90,6 +108,9 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeInit(
                     Err(_) => return 0,
                 }
             }
+            // 把持久化的 input_scheme 应用到会话（M-A1-3：方案真正生效，
+            // 此前仅写偏好未切引擎；t9 等新方案依赖此步）。
+            let _ = apply_input_scheme(&shurufa_options::load().input_scheme);
             1
         },
         0,

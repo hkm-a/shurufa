@@ -117,7 +117,7 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeGetInputScheme(
     )
 }
 
-/// 列出 4 个可选方案 id（逗号分隔）；与 Kotlin 端轮播枚举及 options::validate 一一对应。
+/// 列出 5 个可选方案 id（逗号分隔）；与 Kotlin 端方案面板及 options::validate 一一对应。
 #[no_mangle]
 pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeListInputSchemes(
     env: JNIEnv,
@@ -125,13 +125,14 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeListInputSchemes(
 ) -> jstring {
     let default = to_jstring(&env, "pinyin");
     crate::jni_catch(
-        || to_jstring(&env, "pinyin,double_pinyin,wubi,cangjie"),
+        || to_jstring(&env, "pinyin,double_pinyin,wubi,cangjie,t9"),
         default,
     )
 }
 
-/// 选方案：scheme ∈ {"pinyin","double_pinyin","wubi","cangjie"}；
-/// 持久化 options.json + SharedPreferences + 进程内缓存，全部就绪返回 true。
+/// 选方案：scheme ∈ {"pinyin","double_pinyin","wubi","cangjie","t9"}；
+/// 持久化 options.json + SharedPreferences + 进程内缓存，并立即把方案应用到
+/// 当前会话（librime select_schema），全部就绪返回 true。
 /// 不合法 id 或 SharedPreferences 写入失败返回 false（options.json 已写时仍返回 false ——
 /// 因为 SharedPreferences 是 UI 长驻读的副本，失败即整体失败，wave 5 可再演化）。
 #[no_mangle]
@@ -161,8 +162,10 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeSetInputScheme(
                 return 0;
             }
             // 3) 更新进程内缓存 + 写计数
-            *CURRENT_SCHEME.lock().unwrap_or_else(|p| p.into_inner()) = Some(scheme_str);
+            *CURRENT_SCHEME.lock().unwrap_or_else(|p| p.into_inner()) = Some(scheme_str.clone());
             SCHEME_WRITE_GEN.fetch_add(1, Ordering::Relaxed);
+            // 4) 立即应用到当前会话；引擎未就绪时下次 nativeInit 兜底
+            let _ = crate::apply_input_scheme(&scheme_str);
             1
         },
         0,

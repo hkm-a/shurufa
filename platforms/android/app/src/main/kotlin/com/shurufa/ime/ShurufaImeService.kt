@@ -782,6 +782,8 @@ class ShurufaImeService : InputMethodService() {
             Toast.makeText(this, getString(R.string.scheme_selected_banner, label), Toast.LENGTH_SHORT).show()
             schemePanel?.visibility = View.GONE
             keyArea.visibility = View.VISIBLE
+            // M-A1-3：方案即时生效（rimejni select_schema），重建键盘以切换 T9/全键盘布局
+            rebuildKeys()
         } else {
             // 持久化失败不隐藏面板，让用户立刻看见
             Toast.makeText(this, "保存失败：$label", Toast.LENGTH_SHORT).show()
@@ -2188,12 +2190,17 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun buildLetterPage() {
-        // 微信输入法 S2 键盘整块布局（反编译 JSON 直接渲染）
+        // M-A1-3：t9 方案下渲染九键 T9 键盘，其余方案走微信 S2 QWERTY 布局
+        val page = if (currentSchemeId() == "t9") {
+            KeyboardLayoutSpec.Page.T9
+        } else {
+            KeyboardLayoutSpec.Page.LETTERS
+        }
         val asciiMode = engineReady && RimeBridge.nativeIsAscii()
         keyArea.addView(
             WetypeKeyboardView(
                 this,
-                KeyboardLayoutSpec.Page.LETTERS,
+                page,
                 isDark(),
                 palette,
                 asciiMode,
@@ -2235,6 +2242,10 @@ class ShurufaImeService : InputMethodService() {
                 } else {
                     currentInputConnection?.commitText(c, 1)
                 }
+            }
+            is WetypeKeyboardView.WetypeAction.Digit -> {
+                // T9 数字键：整键送引擎（shurufa_t9 吃 2-9），拒绝时直接上屏数字
+                a.value.firstOrNull()?.let { onLetter(it) }
             }
             WetypeKeyboardView.WetypeAction.Backspace -> onBackspace()
             WetypeKeyboardView.WetypeAction.Shift -> {
