@@ -64,6 +64,8 @@ val syncSchemas = tasks.register<Copy>("syncSchemas") {
         include(
             "rime_ice.schema.yaml",
             "rime_ice.dict.yaml",
+            "shurufa_t9.schema.yaml",
+            "shurufa_t9.dict.yaml",
             "cn_dicts/8105.dict.yaml",
             "cn_dicts/base.dict.yaml",
             "cn_dicts/ext.dict.yaml",

@@ -1,0 +1,63 @@
+# Rime schema
+# encoding: utf-8
+schema:
+  schema_id: shurufa_t9
+  name: 9 键拼音
+  version: "1.0"
+  author:
+    - Shurufa
+  description: |
+    9 键 T9 拼音（M-A1-2，搜狗安卓 1.40 九宫格 / 8.13 大九键）。
+    数字键编码：2abc 3def 4ghi 5jkl 6mno 7pqrs 8tuv 9wxyz。
+    词库由 scripts/gen-t9-dict.py 从雾凇拼音基础词库生成（整词数字串单码索引）。
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 西文 ]
+  - name: full_shape
+    states: [ 半角, 全角 ]
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - table_translator
+  filters:
+    - uniquifier
+
+speller:
+  alphabet: '23456789'
+  delimiter: " '"
+  max_code_length: 64
+
+translator:
+  dictionary: shurufa_t9
+  enable_user_dict: false
+  enable_completion: false
+  preedit_format:
+    - xform/^/九键:/
+
+punctuator:
+  import_preset: symbols
+
+key_binder:
+  import_preset: default
+
+recognizer:
+  import_preset: default
+  patterns:
+    punct: "^/([0-9]+[a-z]*|[a-z]+)$"

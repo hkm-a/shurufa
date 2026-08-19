@@ -5,11 +5,12 @@ config_version: '0.50'
 
 schema_list:
   - schema: rime_ice
-  # 候选方案（双拼/五笔/仓颉）：加入 schema_list 后 librime 默认 maintenance
+  # 候选方案（双拼/五笔/仓颉/9键T9）：加入 schema_list 后 librime 默认 maintenance
   # 会一并编译，`select_schema` 才能使用。
   - schema: shurufa_double_pinyin
   - schema: shurufa_wubi
   - schema: shurufa_cangjie
+  - schema: shurufa_t9
 
 switcher:
   caption: 〔方案選單〕

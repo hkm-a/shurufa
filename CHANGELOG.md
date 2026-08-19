@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 新增（安卓 M-A1-2：9 键 T9 拼音引擎，2026-08-19）
+- **T9 词库**：scripts/gen-t9-dict.py 从雾凇拼音基础词库（base+others）生成
+  shurufa_t9.dict.yaml（542,559 词条，整词 T9 数字串作单码索引；
+  2abc 3def 4ghi 5jkl 6mno 7pqrs 8tuv 9wxyz，ü/v 并入 u 组）。
+- **9 键方案**：schemas/shurufa_t9.schema.yaml（digit alphabet + table_translator，
+  无整句学习/补全，preedit 前缀「九键:」）；已加入 PC/安卓 default.yaml schema_list
+  与安卓 gradle 资产同步清单。
+- **引擎集成测试**：t9_dict.rs 验证 7487832→输入法、64426→你好 可打（翻页查找）；
+  修复了扁平 schema 格式不被 librime 接受的问题（改用 schema: 包装 + 完整 processors）。
+- 验证：ime-bridge 全量测试通过（含双拼/场景词/生僻字回归）；APK 重建并装实机
+  （含 T9 词库资产，体积 +~15MB）。
+
 ### 新增（安卓 M-A1-1：键盘快捷设置——高度 / 按键音 / 振动 / 单手模式，2026-08-19）
 - **键盘设置面板**：功能行新增 ⚙️ 入口（搜狗安卓 3.7 快捷设置 / 5.1 键盘调节 /
   5.4 按键反馈），面板内提供键盘高度滑块（40%–120%，松手即重建生效并持久化）、
