@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-19
+
 ### 新增（v1.2-2 读屏无障碍：候选窗 UIA + Android TalkBack，2026-08-19）
 - **Windows 候选窗 UIA Provider（阶段一）**：新增 uia_provider.rs，实现
   IRawElementProviderSimple（#[implement] 生成 COM vtable）：Name = 当前候选行
