@@ -153,6 +153,13 @@ class ShurufaImeService : InputMethodService() {
     private var aiInputBox: EditText? = null
     private var aiStatusLine: TextView? = null
     private var aiDraftView: TextView? = null
+    /** M-A4 AI 面板模式/风格/场景（搜狗 11.48/11.49/20.2）。 */
+    private var aiMode: AiMode = AiMode.WRITE
+    private var aiStyle: AiStyle = AiStyle.DEFAULT
+    private var aiScene: AiScene = AiScene.DEFAULT
+    private var aiModeChipsRow: LinearLayout? = null
+    private var aiStyleChipsRow: LinearLayout? = null
+    private var aiSceneChipsRow: LinearLayout? = null
     private var aiPasteButton: TextView? = null
     /// 最近一次成功返回的 AI 草稿；点击「粘贴」写入编辑器。
     private var aiLastDraft: String? = null
@@ -1733,6 +1740,24 @@ class ShurufaImeService : InputMethodService() {
         }, LinearLayout.LayoutParams(dp(44f), dp(40f)))
         root.addView(header)
 
+        // M-A4 模式/风格/场景 chips（帮写模式显示风格与场景行）
+        aiModeChipsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(aiModeChipsRow, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dp(4f) })
+        aiStyleChipsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(aiStyleChipsRow, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dp(4f) })
+        aiSceneChipsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(aiSceneChipsRow, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dp(4f) })
+        refreshAiChips()
+
         // 提示输入框（单行；回车由 onEditorAction 提交）
         val input = EditText(this).apply {
             hint = getString(R.string.ai_panel_input_hint)
@@ -1836,6 +1861,61 @@ class ShurufaImeService : InputMethodService() {
         return root
     }
 
+    // ---------- M-A4 AI 模式 / 风格 / 场景 ----------
+
+    private fun aiChip(label: String, selected: Boolean, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = label
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(if (selected) 0xFFFFFFFF.toInt() else palette.panelText)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(12f).toFloat()
+                setColor(if (selected) palette.accent else palette.panelCard)
+                if (!selected) setStroke(dp(1f), palette.panelStroke)
+            }
+            setPadding(dp(12f), dp(4f), dp(12f), dp(4f))
+            setOnClickListener { onClick() }
+        }
+
+    private fun refreshAiChips() {
+        val modeRow = aiModeChipsRow ?: return
+        modeRow.removeAllViews()
+        for (m in enumValues<AiMode>()) {
+            modeRow.addView(
+                aiChip(m.label, m == aiMode) { aiMode = m; refreshAiChips() },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { setMargins(0, 0, dp(6f), 0) },
+            )
+        }
+        val styleRow = aiStyleChipsRow ?: return
+        styleRow.removeAllViews()
+        for (s in enumValues<AiStyle>()) {
+            styleRow.addView(
+                aiChip(s.label, s == aiStyle) { aiStyle = s; refreshAiChips() },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { setMargins(0, 0, dp(6f), 0) },
+            )
+        }
+        val sceneRow = aiSceneChipsRow ?: return
+        sceneRow.removeAllViews()
+        for (sc in enumValues<AiScene>()) {
+            sceneRow.addView(
+                aiChip(sc.label, sc == aiScene) { aiScene = sc; refreshAiChips() },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { setMargins(0, 0, dp(6f), 0) },
+            )
+        }
+        styleRow.visibility = if (aiMode == AiMode.WRITE) View.VISIBLE else View.GONE
+        sceneRow.visibility = if (aiMode == AiMode.WRITE) View.VISIBLE else View.GONE
+    }
+
     /** 真正调用 Agnes API。network 一律走 ioExecutor → 主线程 setText。 */
     private fun requestAiDraft() {
         val prompt = aiInputBox?.text?.toString()?.trim().orEmpty()
@@ -1858,8 +1938,9 @@ class ShurufaImeService : InputMethodService() {
         updateAiThinkingStatus()
         aiDraftView?.text = ""
         aiPasteButton?.isEnabled = false
+        val system = AiPrompt.systemFor(aiMode, aiStyle, aiScene)
         ioExecutor.execute {
-            val result = callAgnesChat(apiKey, prompt) { partial ->
+            val result = callAgnesChat(apiKey, prompt, system = system) { partial ->
                 // SSE 流式增量节流：累积 12 个新字符以上才推到主线程刷新，
                 // 避免逐 token setText 触发高频重排。
                 if (partial.length - aiLastPushedLen >= 12) {
@@ -1955,6 +2036,7 @@ class ShurufaImeService : InputMethodService() {
     private fun callAgnesChat(
         apiKey: String,
         prompt: String,
+        system: String = "你是用户输入法里的‘AI 帮写’助手。直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。",
         onPartial: ((String) -> Unit)? = null,
     ): AiResult {
         val endpoint = java.net.URL("https://apihub.agnes-ai.com/v1/chat/completions")
@@ -1974,8 +2056,7 @@ class ShurufaImeService : InputMethodService() {
                 .put("stream", stream)
                 .put("temperature", 0.5)
                 .put("messages", org.json.JSONArray()
-                    .put(org.json.JSONObject().put("role", "system").put("content",
-                        "你是用户输入法里的‘AI 帮写’助手。直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。"))
+                    .put(org.json.JSONObject().put("role", "system").put("content", system))
                     .put(org.json.JSONObject().put("role", "user").put("content", prompt)))
                 .toString()
             conn.outputStream.use { os ->
