@@ -6,12 +6,15 @@ import android.content.res.Configuration
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
+import android.media.AudioManager
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.SoundEffectConstants
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -34,6 +37,9 @@ internal class WetypeKeyboardView(
     private val asciiMode: Boolean,
     private val uppercaseLetters: Boolean,
     private val onAction: (WetypeAction) -> Unit,
+    private val heightPercent: Int = 100,
+    private val keySoundEnabled: Boolean = true,
+    private val hapticEnabled: Boolean = true,
 ) : LinearLayout(context) {
 
     sealed class WetypeAction {
@@ -72,7 +78,9 @@ internal class WetypeKeyboardView(
         KeyboardLayoutSpec.Page.SYMBOLS -> KeyboardLayoutSpec.symbolRows()
     }
     // 横屏不能继续按短边比例压缩：四行按键至少44dp，才有稳定的触控面积和视觉节奏。
-    private val normalKeyboardHeight = KeyboardHeightSpec.normalHeight(resources.displayMetrics.heightPixels)
+    // 高度百分比（M-A1-1，搜狗 5.1 键盘调节）缩放自然高度与可用余量两个输入。
+    private val heightScale = KeyboardPrefs.clampHeight(heightPercent) / 100f
+    private val normalKeyboardHeight = (KeyboardHeightSpec.normalHeight(resources.displayMetrics.heightPixels) * heightScale).toInt()
     private val preferredKeyboardHeight = KeyboardHeightSpec.preferredHeight(
         normalHeightPx = normalKeyboardHeight,
         rowCount = rows.size,
@@ -96,7 +104,8 @@ internal class WetypeKeyboardView(
      * 不能直接依赖完整显示屏高度：分屏、自由窗口和系统受限输入区都会比它小。
      */
     fun setAvailableKeyboardHeight(availableHeightPx: Int) {
-        val targetHeight = KeyboardHeightSpec.resolve(preferredKeyboardHeight, availableHeightPx)
+        val scaledAvailable = (availableHeightPx * heightScale).toInt()
+        val targetHeight = KeyboardHeightSpec.resolve(preferredKeyboardHeight, scaledAvailable)
         if (targetHeight == renderedKeyboardHeight) return
         renderedKeyboardHeight = targetHeight
         renderRows(targetHeight)
@@ -114,6 +123,17 @@ internal class WetypeKeyboardView(
                 (keyboardHeight * row.height / rowUnits).toInt().also { allocatedHeight += it }
             }
             addView(buildRow(row, rowHeight), LayoutParams(LayoutParams.MATCH_PARENT, rowHeight))
+        }
+    }
+
+    /** M-A1-1 按键反馈：振动（系统触觉设置内）＋ 按键音（系统音效音量内），均受偏好门控。 */
+    private fun playKeyFeedback() {
+        if (hapticEnabled) {
+            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        }
+        if (keySoundEnabled) {
+            (context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+                ?.playSoundEffect(SoundEffectConstants.CLICK)
         }
     }
 
@@ -170,7 +190,10 @@ internal class WetypeKeyboardView(
                 contentDescription = key.description
                 val repeatAction = key.longKind?.let { longKind -> actionFor(key.copy(kind = longKind), label) }
                 if (repeatAction == null && !key.swipeUpClears) {
-                    setOnClickListener { onAction(action) }
+                    setOnClickListener {
+                        playKeyFeedback()
+                        onAction(action)
+                    }
                 } else {
                     var downY = 0f
                     var cleared = false
@@ -190,6 +213,7 @@ internal class WetypeKeyboardView(
                                 downY = event.y
                                 cleared = false
                                 repeated = false
+                                playKeyFeedback()
                                 if (repeatAction != null) {
                                     view.postDelayed(startRepeat, BackspaceGestureSpec.REPEAT_DELAY_MILLIS)
                                 }
@@ -298,6 +322,7 @@ internal class WetypeKeyboardView(
                                 onAction(WetypeAction.VoiceEnd)
                             } else if (!voiceActive) {
                                 // 短按：普通空格。
+                                playKeyFeedback()
                                 onAction(WetypeAction.Space)
                             }
                             true
@@ -342,7 +367,10 @@ internal class WetypeKeyboardView(
                         rightMargin = dp(1f)
                     })
                 }
-                setOnClickListener { onAction(action) }
+                setOnClickListener {
+                    playKeyFeedback()
+                    onAction(action)
+                }
                 (key.longKind?.let { longKind -> actionFor(key.copy(kind = longKind), label) }
                     ?: key.secondary?.let { secondary -> WetypeAction.Char(displaySecondary(secondary)) })?.let { longAction ->
                     setOnLongClickListener {

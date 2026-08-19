@@ -49,6 +49,7 @@
     <string name="ime_chip_history">剪贴板历史</string>
     <string name="ime_chip_images">图片历史</string>
     <string name="ime_chip_ai_write">AI 帮写</string>
+    <string name="ime_chip_settings">键盘设置</string>
 
     <!-- 历史面板 -->
     <string name="history_title_text">剪贴板历史 · 点击上屏 · 再点 ▾▦ 返回</string>
@@ -93,6 +94,17 @@
 
     <!-- 输入方案（wave 4 新增） -->
     <string name="scheme_chip_label">方案</string>
+
+    <!-- M-A1-1 键盘快捷设置面板 -->
+    <string name="kb_settings_title">键盘设置</string>
+    <string name="kb_settings_height">键盘高度</string>
+    <string name="kb_settings_key_sound">按键音</string>
+    <string name="kb_settings_haptic">按键振动</string>
+    <string name="kb_settings_single_hand">单手模式</string>
+    <string name="kb_single_off">关闭</string>
+    <string name="kb_single_left">左手</string>
+    <string name="kb_single_right">右手</string>
+    <string name="kb_settings_close">收起设置</string>
     <string name="scheme_dialog_title">切换输入方案</string>
     <string name="scheme_dialog_close">关闭</string>
     <string name="scheme_dialog_hint">预览方案需重启输入法后引擎才生效</string>

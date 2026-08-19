@@ -49,6 +49,7 @@
     <string name="ime_chip_history">Clipboard history</string>
     <string name="ime_chip_images">Image history</string>
     <string name="ime_chip_ai_write">AI Writer</string>
+    <string name="ime_chip_settings">Keyboard settings</string>
 
     <!-- History panel -->
     <string name="history_title_text">Clipboard history · tap to insert · tap ▾▦ to go back</string>
@@ -93,6 +94,17 @@
 
     <!-- Input scheme (wave 4) -->
     <string name="scheme_chip_label">Scheme</string>
+
+    <!-- M-A1-1 keyboard settings panel -->
+    <string name="kb_settings_title">Keyboard settings</string>
+    <string name="kb_settings_height">Keyboard height</string>
+    <string name="kb_settings_key_sound">Key sound</string>
+    <string name="kb_settings_haptic">Key vibration</string>
+    <string name="kb_settings_single_hand">One-handed mode</string>
+    <string name="kb_single_off">Off</string>
+    <string name="kb_single_left">Left</string>
+    <string name="kb_single_right">Right</string>
+    <string name="kb_settings_close">Close settings</string>
     <string name="scheme_dialog_title">Switch input scheme</string>
     <string name="scheme_dialog_close">Close</string>
     <string name="scheme_dialog_hint">Preview schemes take effect after restarting the host app</string>

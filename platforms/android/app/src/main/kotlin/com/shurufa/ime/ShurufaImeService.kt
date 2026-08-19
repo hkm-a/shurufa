@@ -30,6 +30,8 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.FileProvider
@@ -103,6 +105,9 @@ class ShurufaImeService : InputMethodService() {
     private var voiceStatusBar: TextView? = null
     private var inputRoot: LinearLayout? = null
     private var symbolMode = false
+    /** M-A1-1 键盘偏好：高度 / 按键音 / 振动 / 单手模式。 */
+    private lateinit var kbPrefs: KeyboardPrefs
+    private var settingsPanel: LinearLayout? = null
     /// 大写锁定（微信输入法同款 capslock 键：行首图标键）
     private var shiftMode = false
     private var historyPanel: LinearLayout? = null
@@ -442,6 +447,7 @@ class ShurufaImeService : InputMethodService() {
 
     override fun onCreateInputView(): View {
         palette = loadPalette()
+        kbPrefs = KeyboardPrefs.load(this)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -585,6 +591,14 @@ class ShurufaImeService : InputMethodService() {
         // 输入方案（wave 4）：点击弹出方案切换小面板（拼音 / 双拼 / 五笔 / 仓颉）
         functionRow.addView(
             functionChip("⌨️", getString(R.string.scheme_chip_label)) { toggleSchemePanel() },
+            LinearLayout.LayoutParams(
+                clipButtonSize,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
+        )
+        // M-A1-1 键盘快捷设置：高度调节 / 按键音 / 振动 / 单手模式（搜狗 3.7/5.1/5.4）
+        functionRow.addView(
+            functionChip("⚙️", getString(R.string.ime_chip_settings)) { toggleKeyboardSettings() },
             LinearLayout.LayoutParams(
                 clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
@@ -773,6 +787,167 @@ class ShurufaImeService : InputMethodService() {
             Toast.makeText(this, "保存失败：$label", Toast.LENGTH_SHORT).show()
         }
     }
+
+    // ---------- M-A1-1 键盘快捷设置面板（高度 / 按键音 / 振动 / 单手模式） ----------
+
+    private fun toggleKeyboardSettings() {
+        val existing = settingsPanel
+        if (existing != null && existing.visibility == View.VISIBLE) {
+            existing.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+            return
+        }
+        if (existing == null) {
+            val built = buildKeyboardSettingsPanel()
+            settingsPanel = built
+            inputRoot?.addView(
+                built,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+        // 关掉其它面板，独占当前面板位
+        historyPanel?.visibility = View.GONE
+        aiPanel?.visibility = View.GONE
+        previewKeyboard?.visibility = View.GONE
+        schemePanel?.visibility = View.GONE
+        keyArea.visibility = View.GONE
+        settingsPanel?.visibility = View.VISIBLE
+    }
+
+    private fun buildKeyboardSettingsPanel(): LinearLayout {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(palette.key)
+            visibility = View.GONE
+            setPadding(dp(14f), dp(10f), dp(14f), dp(12f))
+        }
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.kb_settings_title)
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(palette.panelText)
+        })
+        // 键盘高度：40%–120%，松手后重建键盘生效
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.kb_settings_height)
+            textSize = 14f
+            setTextColor(palette.panelText)
+            setPadding(0, dp(12f), 0, dp(2f))
+        })
+        panel.addView(SeekBar(this).apply {
+            max = KeyboardPrefs.MAX_HEIGHT_PERCENT - KeyboardPrefs.MIN_HEIGHT_PERCENT
+            progress = kbPrefs.heightPercent - KeyboardPrefs.MIN_HEIGHT_PERCENT
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        kbPrefs = kbPrefs.copy(
+                            heightPercent = KeyboardPrefs.clampHeight(
+                                progress + KeyboardPrefs.MIN_HEIGHT_PERCENT
+                            )
+                        )
+                        KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
+                    }
+                }
+                override fun onStartTrackingTouch(bar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(bar: SeekBar?) = rebuildKeys()
+            })
+        })
+        panel.addView(
+            switchRow(getString(R.string.kb_settings_key_sound), kbPrefs.keySound) { on ->
+                kbPrefs = kbPrefs.copy(keySound = on)
+                KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
+                rebuildKeys()
+            }
+        )
+        panel.addView(
+            switchRow(getString(R.string.kb_settings_haptic), kbPrefs.haptic) { on ->
+                kbPrefs = kbPrefs.copy(haptic = on)
+                KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
+                rebuildKeys()
+            }
+        )
+        // 单手模式：关闭 / 左手 / 右手
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.kb_settings_single_hand)
+            textSize = 14f
+            setTextColor(palette.panelText)
+            setPadding(0, dp(10f), 0, dp(4f))
+        })
+        val handRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((mode, label) in listOf(
+            SingleHandMode.OFF to getString(R.string.kb_single_off),
+            SingleHandMode.LEFT to getString(R.string.kb_single_left),
+            SingleHandMode.RIGHT to getString(R.string.kb_single_right),
+        )) {
+            val chip = TextView(this).apply {
+                text = label
+                textSize = 13f
+                gravity = Gravity.CENTER
+                tag = mode
+                setPadding(dp(18f), dp(8f), dp(18f), dp(8f))
+                setOnClickListener {
+                    kbPrefs = kbPrefs.copy(singleHand = mode)
+                    KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
+                    refreshHandChips(handRow)
+                    rebuildKeys()
+                }
+            }
+            handRow.addView(
+                chip,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { setMargins(0, 0, dp(10f), 0) },
+            )
+        }
+        refreshHandChips(handRow)
+        panel.addView(handRow)
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.kb_settings_close)
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(palette.accent)
+            setPadding(0, dp(14f), 0, dp(2f))
+            setOnClickListener { toggleKeyboardSettings() }
+        })
+        return panel
+    }
+
+    private fun refreshHandChips(handRow: LinearLayout) {
+        for (i in 0 until handRow.childCount) {
+            val chip = handRow.getChildAt(i) as? TextView ?: continue
+            val mode = chip.tag as? SingleHandMode ?: continue
+            val selected = mode == kbPrefs.singleHand
+            chip.setTextColor(if (selected) 0xFFFFFFFF.toInt() else palette.panelText)
+            (chip.background as? GradientDrawable)?.setColor(
+                if (selected) palette.accent else palette.keyPressed
+            )
+        }
+    }
+
+    private fun switchRow(title: String, initial: Boolean, onChange: (Boolean) -> Unit): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8f), 0, 0)
+            addView(
+                TextView(this@ShurufaImeService).apply {
+                    text = title
+                    textSize = 14f
+                    setTextColor(palette.panelText)
+                },
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            addView(
+                Switch(this@ShurufaImeService).apply {
+                    isChecked = initial
+                    setOnCheckedChangeListener { _, checked -> onChange(checked) }
+                },
+            )
+        }
 
     private fun buildSchemePanel(): LinearLayout {
         val bg = palette.panelBackground
@@ -1996,6 +2171,22 @@ class ShurufaImeService : InputMethodService() {
         if (keyspace > 0) keyboard.setAvailableKeyboardHeight(keyspace)
     }
 
+    /** M-A1-1 单手模式：键区收窄到屏幕 70%，按方向吸附；关闭时占满。 */
+    private fun keyboardLayoutParams(): LinearLayout.LayoutParams {
+        val width = if (kbPrefs.singleHand == SingleHandMode.OFF) {
+            LinearLayout.LayoutParams.MATCH_PARENT
+        } else {
+            resources.displayMetrics.widthPixels * 7 / 10
+        }
+        return LinearLayout.LayoutParams(width, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = when (kbPrefs.singleHand) {
+                SingleHandMode.LEFT -> Gravity.START
+                SingleHandMode.RIGHT -> Gravity.END
+                SingleHandMode.OFF -> Gravity.NO_GRAVITY
+            }
+        }
+    }
+
     private fun buildLetterPage() {
         // 微信输入法 S2 键盘整块布局（反编译 JSON 直接渲染）
         val asciiMode = engineReady && RimeBridge.nativeIsAscii()
@@ -2008,8 +2199,11 @@ class ShurufaImeService : InputMethodService() {
                 asciiMode,
                 asciiMode || shiftMode,
                 onAction = { onWetypeAction(it) },
+                heightPercent = kbPrefs.heightPercent,
+                keySoundEnabled = kbPrefs.keySound,
+                hapticEnabled = kbPrefs.haptic,
             ),
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+            keyboardLayoutParams(),
         )
     }
 
@@ -2024,8 +2218,11 @@ class ShurufaImeService : InputMethodService() {
                 false,
                 false,
                 onAction = { onWetypeAction(it) },
+                heightPercent = kbPrefs.heightPercent,
+                keySoundEnabled = kbPrefs.keySound,
+                hapticEnabled = kbPrefs.haptic,
             ),
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+            keyboardLayoutParams(),
         )
     }
 

@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新增（安卓 M-A1-1：键盘快捷设置——高度 / 按键音 / 振动 / 单手模式，2026-08-19）
+- **键盘设置面板**：功能行新增 ⚙️ 入口（搜狗安卓 3.7 快捷设置 / 5.1 键盘调节 /
+  5.4 按键反馈），面板内提供键盘高度滑块（40%–120%，松手即重建生效并持久化）、
+  按键音开关、按键振动开关、单手模式三态（关闭 / 左手 / 右手，键区收窄至 70%
+  并按方向吸附）；全部偏好经 SharedPreferences 记忆，重启不丢。
+- **按键反馈**：WetypeKeyboardView 按下键触发 performHapticFeedback(KEYBOARD_TAP)
+  ＋ AudioManager.playSoundEffect(CLICK)（分别尊重系统触觉/音效设置，且受偏好门控）；
+  长按连删/滑行清空等手势仅首触反馈一次，不随重复触发轰炸。
+- **键盘高度**：高度百分比缩放自然高度与可用余量两个输入，分屏/受限输入区下
+  不破版；候选行与功能行高度不受影响。
+- 测试：新增 KeyboardPrefsTest 3 项（高度夹取 40–120、单手模式解析回退、默认值
+  保持既有行为）；Android JVM 全量单测通过；APK 已装实机（Redmi 23113RKC6C），
+  冷启动无崩溃。安卓路线图见 [开发计划-Android](docs/开发计划-Android.md)（M-A1..M-A5）。
+
 ### 新增（读屏无障碍阶段二：候选窗 ITextProvider，2026-08-19）
 - **Windows 候选窗 ITextProvider / ITextRangeProvider**：uia_provider.rs 新增
   CandidateTextProvider 与 CandidateRange（#[implement] 完整 COM vtable）：
