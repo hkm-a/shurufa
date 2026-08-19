@@ -28,7 +28,7 @@
 //! 环境变量、不落盘、不进日志、不进剪贴板；key 缺失时 polish 静默回退 raw，
 //! 不报错面板，日志只记"缺少 key 已回退"。
 
-use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -122,6 +122,15 @@ static SESSION_SEQ: AtomicU64 = AtomicU64::new(1);
 /// 面板 HWND 单独存放（AtomicIsize 0 = 未建）；只在 UI 线程读写，跨线程只读用于
 /// worker PostMessage 目标。
 static SPEECH_HWND: AtomicIsize = AtomicIsize::new(0);
+/// 云端录音停止信号（v1.2）：Listening 开始时清零；手动热键收尾 / 自动收尾
+/// 定时器 / 会话超时置位，采集线程看到后停止录音并进入转写。
+static CAPTURE_STOP: OnceLock<std::sync::Arc<AtomicBool>> = OnceLock::new();
+
+fn capture_stop_flag() -> std::sync::Arc<AtomicBool> {
+    CAPTURE_STOP
+        .get_or_init(|| std::sync::Arc::new(AtomicBool::new(false)))
+        .clone()
+}
 
 #[derive(Debug)]
 pub(crate) enum SpeechEvent {
@@ -193,6 +202,8 @@ fn toggle_inner() -> Result<(), String> {
             st.polish_attempted = false;
             let sid = st.session_id;
             drop(st);
+            // 云端后端：清零录音停止信号（引擎线程轮询）
+            capture_stop_flag().store(false, AtomicOrdering::Relaxed);
             let hwnd = ensure_panel()?;
             let skin = Skin::current();
             skin::apply_appearance(hwnd, &skin);
@@ -201,16 +212,22 @@ fn toggle_inner() -> Result<(), String> {
                 let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                 let _ = InvalidateRect(Some(hwnd), None, true);
             }
-            spawn_engine(sid);
-            crate::log_line(&format!("语音：会话 {sid} 开始（stub STT）"));
+            spawn_engine(sid, capture_stop_flag());
+            let backend = shurufa_options::load().speech.backend;
+            crate::log_line(&format!("语音：会话 {sid} 开始（{backend} 后端）"));
         }
         Phase::Listening => {
             let sid = st.session_id;
             st.phase = Phase::Processing;
             drop(st);
             crate::log_line(&format!("语音：会话 {sid} 手动收尾"));
-            let snapshot = read_committed_snapshot(sid);
-            post_event(sid, SpeechEvent::Final { raw_text: snapshot });
+            if shurufa_options::load().speech.backend == "cloud" {
+                // 云端：置位停止信号，由采集线程完成录音 → 转写 → Final
+                capture_stop_flag().store(true, AtomicOrdering::Relaxed);
+            } else {
+                let snapshot = read_committed_snapshot(sid);
+                post_event(sid, SpeechEvent::Final { raw_text: snapshot });
+            }
         }
         Phase::Processing => {
             crate::log_line("语音：正在 Processing，忽略重复热键");
@@ -233,7 +250,7 @@ fn read_committed_snapshot(sid: u64) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// stub 引擎（节奏与事件面同真实引擎；wave 6 换实现即可）
+// 引擎分发（v1.2）：stub（演示节奏）/ cloud（waveIn 录音 → 云端转写）
 // ---------------------------------------------------------------------------
 
 /// (分段文本, 距会话起点 ms)
@@ -241,7 +258,15 @@ const STUB_STAGES: &[(&str, u64)] = &[("你", 250), ("你好", 750), ("你好，
 const STUB_FINAL_TEXT: &str = "你好，世界。";
 const STUB_FINAL_DELAY_MS: u64 = 750;
 
-fn spawn_engine(session_id: u64) {
+fn spawn_engine(session_id: u64, stop: std::sync::Arc<AtomicBool>) {
+    if shurufa_options::load().speech.backend == "cloud" {
+        spawn_cloud_engine(session_id, stop);
+    } else {
+        spawn_stub_engine(session_id);
+    }
+}
+
+fn spawn_stub_engine(session_id: u64) {
     std::thread::spawn(move || {
         let mut acc = String::new();
         for (chunk, hold) in STUB_STAGES {
@@ -262,6 +287,114 @@ fn spawn_engine(session_id: u64) {
                 raw_text: STUB_FINAL_TEXT.to_owned(),
             },
         );
+    });
+}
+
+/// v1.2 云端转写引擎：waveIn 录音 → 停止信号/超时 → WAV → OpenAI 兼容
+/// /v1/audio/transcriptions → Partial + Final（复用既有收尾/书面语化/粘贴链路）。
+fn spawn_cloud_engine(session_id: u64, stop: std::sync::Arc<AtomicBool>) {
+    let max_secs = shurufa_options::load().speech.max_session_secs.max(1) as u64;
+    std::thread::spawn(move || {
+        post_event(
+            session_id,
+            SpeechEvent::Partial {
+                text: "（正在录音…说完后再次按 Ctrl+Shift+S 收尾）".to_owned(),
+                replace: true,
+            },
+        );
+        let capture = match crate::audio_capture::AudioCapture::start() {
+            Ok(c) => c,
+            Err(e) => {
+                crate::log_line(&format!("语音：会话 {session_id} 打开麦克风失败：{e}"));
+                post_event(
+                    session_id,
+                    SpeechEvent::Partial {
+                        text: format!("（麦克风不可用：{e}）"),
+                        replace: true,
+                    },
+                );
+                post_event(
+                    session_id,
+                    SpeechEvent::Final {
+                        raw_text: String::new(),
+                    },
+                );
+                return;
+            }
+        };
+        let started = Instant::now();
+        while !stop.load(AtomicOrdering::Relaxed) && started.elapsed().as_secs() < max_secs {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let wav = capture.stop();
+        crate::log_line(&format!(
+            "语音：会话 {session_id} 录音完成，WAV {} 字节（{} 秒）",
+            wav.len(),
+            (wav.len().saturating_sub(44)) / 32_000
+        ));
+        if wav.len() <= 44 {
+            crate::log_line("语音：录音为空，放弃转写");
+            post_event(
+                session_id,
+                SpeechEvent::Final {
+                    raw_text: String::new(),
+                },
+            );
+            return;
+        }
+        let opts = shurufa_options::load();
+        let cfg = match crate::asr::AsrConfig::from_options(&opts.speech) {
+            Ok(c) => c,
+            Err(e) => {
+                crate::log_line(&format!("语音：会话 {session_id} {e}"));
+                post_event(
+                    session_id,
+                    SpeechEvent::Partial {
+                        text: format!("（{e}）"),
+                        replace: true,
+                    },
+                );
+                post_event(
+                    session_id,
+                    SpeechEvent::Final {
+                        raw_text: String::new(),
+                    },
+                );
+                return;
+            }
+        };
+        match crate::asr::transcribe(&cfg, &wav) {
+            Ok(text) => {
+                crate::log_line(&format!(
+                    "语音：会话 {session_id} 转写成功（{} 字符）",
+                    text.chars().count()
+                ));
+                post_event(
+                    session_id,
+                    SpeechEvent::Partial {
+                        text: text.clone(),
+                        replace: true,
+                    },
+                );
+                post_event(session_id, SpeechEvent::Final { raw_text: text });
+            }
+            Err(e) => {
+                crate::log_line(&format!("语音：会话 {session_id} 转写失败：{e}"));
+                post_event(
+                    session_id,
+                    SpeechEvent::Partial {
+                        text: format!("（转写失败：{e}）"),
+                        replace: true,
+                    },
+                );
+                post_event(
+                    session_id,
+                    SpeechEvent::Final {
+                        raw_text: String::new(),
+                    },
+                );
+            }
+        }
     });
 }
 
@@ -560,8 +693,13 @@ unsafe extern "system" fn wnd_proc(
                         .expect("speech session 锁中毒");
                     st.session_id
                 };
-                let snapshot = read_committed_snapshot(sid);
-                post_event(sid, SpeechEvent::Final { raw_text: snapshot });
+                if shurufa_options::load().speech.backend == "cloud" {
+                    // 云端：置位停止信号，由采集线程收尾转写
+                    capture_stop_flag().store(true, AtomicOrdering::Relaxed);
+                } else {
+                    let snapshot = read_committed_snapshot(sid);
+                    post_event(sid, SpeechEvent::Final { raw_text: snapshot });
+                }
             }
             LRESULT(0)
         }
@@ -598,13 +736,19 @@ fn paint(hwnd: HWND) {
 
         let dpi = GetDpiForWindow(hwnd).max(GetDpiForSystem()).max(96);
 
-        // 标题
+        // 标题（v1.2：cloud 后端显示云端标签）
         let phase = current_phase();
+        let backend = shurufa_options::load().speech.backend;
+        let tag = if backend == "cloud" {
+            "云端转写"
+        } else {
+            "dev-stub"
+        };
         let title = match phase {
-            Phase::Idle => "语音转写 (dev-stub) · 空闲",
-            Phase::Listening => "语音转写 (dev-stub) · ⏺ 正在听…",
-            Phase::Processing => "语音转写 (dev-stub) · 处理中…",
-            Phase::Failed => "语音转写 (dev-stub) · 失败",
+            Phase::Idle => format!("语音转写 ({tag}) · 空闲"),
+            Phase::Listening => format!("语音转写 ({tag}) · ⏺ 正在听…"),
+            Phase::Processing => format!("语音转写 ({tag}) · 处理中…"),
+            Phase::Failed => format!("语音转写 ({tag}) · 失败"),
         };
         let title_font = CreateFontW(
             -scale_px(BASE_TITLE_FONT, dpi),

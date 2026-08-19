@@ -6,6 +6,8 @@
 //! 查询与管理，供验收与后续 UI 面板复用。
 
 mod ai_panel;
+mod asr;
+mod audio_capture;
 mod dict_update;
 mod listener;
 mod onscreen_kbd;

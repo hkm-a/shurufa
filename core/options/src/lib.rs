@@ -246,6 +246,17 @@ pub struct SpeechSettings {
     /// 单次会话最长时长，超时自动停止并提交当前结果
     #[serde(default = "default_max_session_secs")]
     pub max_session_secs: u32,
+    /// v1.2 语音后端：stub（演示节奏）/ cloud（真实录音 → OpenAI 兼容
+    /// /v1/audio/transcriptions 云端转写）
+    #[serde(default = "default_speech_backend")]
+    pub backend: String,
+    /// 云端转写 Base URL（如 https://api.openai.com/v1）；留空时读环境变量
+    /// SHURUFA_ASR_BASE_URL，再回退到默认值
+    #[serde(default = "default_cloud_base_url")]
+    pub cloud_base_url: String,
+    /// 云端转写模型（默认 whisper-1）
+    #[serde(default = "default_cloud_model")]
+    pub cloud_model: String,
 }
 
 fn default_auto_commit_threshold_secs() -> u32 {
@@ -256,6 +267,23 @@ fn default_max_session_secs() -> u32 {
     120
 }
 
+pub fn default_speech_backend() -> String {
+    "stub".to_owned()
+}
+
+pub fn default_cloud_base_url() -> String {
+    "https://api.openai.com/v1".to_owned()
+}
+
+pub fn default_cloud_model() -> String {
+    "whisper-1".to_owned()
+}
+
+/// 校验语音后端 id（v1.2）。
+pub fn validate_speech_backend(s: &str) -> bool {
+    matches!(s, "stub" | "cloud")
+}
+
 impl Default for SpeechSettings {
     fn default() -> Self {
         Self {
@@ -264,6 +292,9 @@ impl Default for SpeechSettings {
             auto_commit_threshold_secs: default_auto_commit_threshold_secs(),
             written_style_polish: false,
             max_session_secs: default_max_session_secs(),
+            backend: default_speech_backend(),
+            cloud_base_url: default_cloud_base_url(),
+            cloud_model: default_cloud_model(),
         }
     }
 }

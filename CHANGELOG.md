@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新增（v1.2-1 语音输入云端转写试点，2026-08-19）
+- **真实录音（waveIn）→ 云端转写闭环**：audio_capture.rs（16kHz/16bit/单声道
+  waveIn 回调采集，WAV 组装纯函数单测）+ asr.rs（OpenAI 兼容
+  /v1/audio/transcriptions，手写 multipart，ureq 60s 超时，响应解析单测）。
+- **设置中心语音页**：转写后端下拉（演示 stub / 云端转写）+ Base URL + 模型
+  （默认 https://api.openai.com/v1 + whisper-1）；API Key 只从环境变量
+  SHURUFA_ASR_API_KEY（回退 AGNES_API_KEY）读取，不落盘。
+- **交互**：Ctrl+Shift+S 开始录音 → 再次按下/超时（max_session_secs）收尾 →
+  转写 → Partial/Final → 既有书面语化与剪贴板粘贴链路复用；面板标题随后端
+  显示（云端转写 / dev-stub）。
+- 测试：host 61（+6：WAV 头/组装、multipart、响应解析、配置缺 Key 报错）；
+  设置中心后端校验；options SpeechSettings 新字段 serde 兼容。实机麦克风/
+  真实 API 留用户验证（无 Key 时面板明确提示）。
+
 ### 新增（v1.2-3 常用生僻字词库包 + GB18030 合规清单，2026-08-19）
 - **常用生僻字 449 词库包**：从 base/ext/others 词库提取"出现但不在《通用规范汉字表》
   8105 的字"（按 25 亿字语料字频权重排序，437 字）+ 知名扩展 B 常用字补充（龘靐齉爩…

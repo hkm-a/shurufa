@@ -1873,7 +1873,7 @@ function generalPage() {
       </article>
 
       <article class="setting-panel">
-        <div class="panel-heading"><div class="row-icon coral"><i data-lucide="mic-2"></i></div><div><h3>语音转写 <span class="pill pill-dev">dev-stub</span></h3><p>Ctrl+Shift+S · 当前为 stub（固定文字"你好，世界。"）；真实引擎 wave 6 接入</p></div></div>
+        <div class="panel-heading"><div class="row-icon coral"><i data-lucide="mic-2"></i></div><div><h3>语音转写 <span class="pill ${speechSettings?.backend === "cloud" ? "" : "pill-dev"}">${speechSettings?.backend === "cloud" ? "云端转写" : "dev-stub"}</span></h3><p>Ctrl+Shift+S · stub 为演示节奏；云端 = waveIn 录音 → OpenAI 兼容 /v1/audio/transcriptions</p></div></div>
         ${!speechSettings ? `<div class="setting-row"><div class="row-icon dim"><i data-lucide="mic-2"></i></div><div><h3>语音设置读取中…</h3><p>请稍候或检查后台服务</p></div></div>` : `
         <div class="setting-row">
           <div class="row-icon"><i data-lucide="power"></i></div>
@@ -1899,6 +1899,28 @@ function generalPage() {
             <h3>单次会话最长 <output id="speech-max-label">${speechSettings.max_session_secs}</output> 秒</h3>
             <input type="range" min="30" max="600" step="30" value="${speechSettings.max_session_secs}" data-speech-field="max_session_secs" />
             <p class="field-note">到点即自动收尾并提交当前累计文本</p>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="cloud"></i></div>
+          <div>
+            <h3>转写后端</h3>
+            <select data-speech-field="backend" aria-label="语音转写后端">
+              <option value="stub" ${speechSettings.backend === "stub" ? "selected" : ""}>演示（stub）</option>
+              <option value="cloud" ${speechSettings.backend === "cloud" ? "selected" : ""}>云端转写（需 API Key）</option>
+            </select>
+            <p class="field-note">云端：录音 3-10s → 发送到下方 Base URL 的 /v1/audio/transcriptions；API Key 从环境变量 SHURUFA_ASR_API_KEY（或 AGNES_API_KEY）读取，不落盘</p>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="server"></i></div>
+          <div>
+            <h3>云端 Base URL</h3>
+            <input type="text" value="${speechSettings.cloud_base_url || ""}" data-speech-field="cloud_base_url" placeholder="https://api.openai.com/v1" spellcheck="false" />
+            <h3 style="margin-top:10px">模型</h3>
+            <input type="text" value="${speechSettings.cloud_model || ""}" data-speech-field="cloud_model" placeholder="whisper-1" spellcheck="false" />
           </div>
         </div>`}
       </article>

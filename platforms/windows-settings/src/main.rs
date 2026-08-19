@@ -1546,6 +1546,15 @@ struct SpeechDto {
     hotkey_enabled: bool,
     written_style_polish: bool,
     max_session_secs: u32,
+    /// v1.2 语音后端：stub（演示）/ cloud（真实录音 → 云端转写）
+    #[serde(default = "shurufa_options::default_speech_backend")]
+    backend: String,
+    /// 云端转写 Base URL
+    #[serde(default = "shurufa_options::default_cloud_base_url")]
+    cloud_base_url: String,
+    /// 云端转写模型
+    #[serde(default = "shurufa_options::default_cloud_model")]
+    cloud_model: String,
 }
 
 impl From<SpeechSettings> for SpeechDto {
@@ -1555,6 +1564,9 @@ impl From<SpeechSettings> for SpeechDto {
             hotkey_enabled: s.hotkey_enabled,
             written_style_polish: s.written_style_polish,
             max_session_secs: s.max_session_secs,
+            backend: s.backend,
+            cloud_base_url: s.cloud_base_url,
+            cloud_model: s.cloud_model,
         }
     }
 }
@@ -1570,12 +1582,21 @@ fn save_speech_settings(s: SpeechDto) -> Result<(), String> {
     if !(30..=600).contains(&s.max_session_secs) {
         return Err(format!("最长会话秒数须在 30..=600：{}", s.max_session_secs));
     }
+    if !shurufa_options::validate_speech_backend(&s.backend) {
+        return Err(format!("未知语音后端：{}（合法值 stub/cloud）", s.backend));
+    }
+    if s.cloud_base_url.trim().is_empty() {
+        return Err("云端转写 Base URL 不能为空（如 https://api.openai.com/v1）".to_owned());
+    }
     shurufa_options::modify(|current| ImeOptions {
         speech: SpeechSettings {
             enabled: s.enabled,
             hotkey_enabled: s.hotkey_enabled,
             written_style_polish: s.written_style_polish,
             max_session_secs: s.max_session_secs,
+            backend: s.backend,
+            cloud_base_url: s.cloud_base_url.trim().to_owned(),
+            cloud_model: s.cloud_model.trim().to_owned(),
             // 引擎参数不被 UI 卡片覆盖：保留磁盘现值
             ..current.speech.clone()
         },
