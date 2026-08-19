@@ -65,7 +65,10 @@ fn 笔画方案与拆字词条可用() {
     );
     assert!(session.simulate("niuniuniu"), "niuniuniu 键序未被接受");
     let (found, seen) = find_candidate(&session, "犇");
-    assert!(found, "niuniuniu 应出「犇」（拆字词条），实际候选：{seen:?}");
+    assert!(
+        found,
+        "niuniuniu 应出「犇」（拆字词条），实际候选：{seen:?}"
+    );
 
     // 3) mamama → 骉
     assert!(session.simulate("{Escape}"));
