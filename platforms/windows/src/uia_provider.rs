@@ -76,11 +76,16 @@ impl IRawElementProviderSimple_Impl for CandidateProvider_Impl {
     }
 }
 
+/// 进程级单例 Provider：UIA 会持有该指针，必须与进程同生命周期。
+/// 初始化时泄漏一个引用计数由静态永久持有；每次 from_raw 只借用另一份
+/// 引用，首个 WM_GETOBJECT 后对象不会因包装释放而消亡（若每次新建，
+/// 读屏器将拿到悬垂指针 → 堆损坏）。
 static PROVIDER_RAW: OnceLock<usize> = OnceLock::new();
 
 fn provider() -> IRawElementProviderSimple {
     let raw = *PROVIDER_RAW.get_or_init(|| {
         let p: IRawElementProviderSimple = CandidateProvider(()).into();
+        std::mem::forget(p.clone());
         windows::core::Interface::into_raw(p) as usize
     });
     unsafe { windows::core::Interface::from_raw(raw as *mut core::ffi::c_void) }
@@ -338,5 +343,97 @@ mod tests {
             unsafe { p.GetPatternProvider(windows::Win32::UI::Accessibility::UIA_TextPatternId) }
                 .unwrap();
         let _ = unknown.cast::<ITextProvider>().unwrap();
+    }
+
+    /// 端到端探针：真实窗口 + WM_GETOBJECT → UIA 客户端查询 Name 与 TextPattern，
+    /// 等价于 NVDA / 讲述人读取候选窗的协议链路（不含读屏器本身）。
+    #[test]
+    fn uia_runtime_probe_roundtrip() {
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+        use windows::Win32::Graphics::Gdi::HBRUSH;
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+            COINIT_APARTMENTTHREADED,
+        };
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, UIA_TextPatternId};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, PostQuitMessage, RegisterClassW,
+            ShowWindow, CS_HREDRAW, CS_VREDRAW, SW_SHOW, WM_DESTROY, WM_GETOBJECT, WNDCLASSW,
+        };
+
+        const PROBE_CLASS: PCWSTR = w!("ShurufaUiaProbeWindow");
+
+        unsafe extern "system" fn probe_wnd_proc(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            if msg == WM_GETOBJECT {
+                if let Some(lr) = on_wm_getobject(hwnd, wparam, lparam) {
+                    return lr;
+                }
+            }
+            if msg == WM_DESTROY {
+                PostQuitMessage(0);
+                return LRESULT(0);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let hinstance = unsafe { GetModuleHandleW(PCWSTR::null()) }.unwrap();
+        let class = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(probe_wnd_proc),
+            hInstance: hinstance.into(),
+            lpszClassName: PROBE_CLASS,
+            hbrBackground: HBRUSH::default(),
+            ..Default::default()
+        };
+        unsafe { RegisterClassW(&class) };
+        let hwnd = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                PROBE_CLASS,
+                w!(""),
+                Default::default(),
+                0,
+                0,
+                320,
+                48,
+                None,
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+        }
+        .unwrap();
+        let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
+
+        update_candidate_text("1.你好，2.世界");
+
+        let uia: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
+                .expect("创建 CUIAutomation 失败");
+        let el = unsafe { uia.ElementFromHandle(hwnd) }.expect("ElementFromHandle 失败");
+        let name = unsafe { el.CurrentName() }.unwrap().to_string();
+        assert_eq!(name, "1.你好，2.世界", "Name 属性应暴露候选行文本");
+
+        // 读屏器同款路径：客户端模式对象（IUIAutomationTextPattern）→ DocumentRange → GetText
+        let tp_client: windows::Win32::UI::Accessibility::IUIAutomationTextPattern =
+            unsafe { el.GetCurrentPatternAs(UIA_TextPatternId) }.expect("候选窗应支持 TextPattern");
+        let range = unsafe { tp_client.DocumentRange() }.expect("DocumentRange 失败");
+        let text = unsafe { range.GetText(-1) }.unwrap().to_string();
+        assert_eq!(text, "1.你好，2.世界", "DocumentRange 应覆盖整条候选行");
+
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+            CoUninitialize();
+        }
     }
 }

@@ -11,9 +11,18 @@
   GetText 支持 maxlength 截断、GetSelection 返回空数组、SupportedTextSelection=None；
   GetPatternProvider(UIA_TextPatternId) 现在返回 ITextProvider。只读"全文范围"
   口径：逐候选偏移/选区/滚动等按 UIA 规范返回 E_NOTIMPL / 0，与 M11 验收报告一致。
-- 测试：TSF 56（+5：DocumentRange 全文、GetText 截断、VisibleRanges 单范围、
-  Selection 空数组、TextPattern 可达）；workspace 全绿；clippy 0 告警（顺带清理
-  shurufa-host 5 项既有告警：asr mut、audio_capture 死代码/vec_box/fn 转型）。
+- **修复 Provider 生命周期缺陷（实测发现）**：原实现每次 WM_GETOBJECT 都
+  from_raw 重新包装静态指针，而 from_raw 不增加引用计数——首个请求返回后
+  对象即被释放，读屏器拿到悬垂指针导致堆损坏（0xc0000374）。改为初始化时
+  泄漏一个引用计数由静态永久持有（进程生命周期单例），与 MSDN 推荐模式一致。
+- **端到端 UIA 运行时探针**：新增单测创建真实窗口 + WM_GETOBJECT 注册，
+  经 CUIAutomation 客户端走读屏器同款路径验证：ElementFromHandle →
+  CurrentName == 候选行文本 → 客户端 TextPattern（IUIAutomationTextPattern）
+  → DocumentRange → GetText 全文一致。
+- 测试：TSF 57（+6：DocumentRange 全文、GetText 截断、VisibleRanges 单范围、
+  Selection 空数组、TextPattern 可达、运行时探针）；workspace 全绿；clippy 0
+  告警（顺带清理 shurufa-host 5 项既有告警：asr mut、audio_capture 死代码/
+  vec_box/fn 转型）。
 
 ## [1.2.0] - 2026-08-19
 
