@@ -56,12 +56,14 @@
     <string name="history_title_images">斗图 · 点图片预览 · 再点 ▾▦ 返回</string>
     <string name="history_search_hint">搜索历史…</string>
     <string name="history_menu_pin">置顶</string>
+    <string name="history_menu_speak">🔊 朗读</string>
     <string name="history_menu_unpin">取消置顶</string>
     <string name="history_menu_delete">删除</string>
     <string name="history_stats_typing">今日 %1$d 字 · 累计 %2$d 字</string>
 
     <!-- 候选词长按菜单 -->
     <string name="candidate_menu_copy">复制</string>
+    <string name="candidate_menu_speak">🔊 朗读</string>
     <string name="candidate_menu_forget">删除该词</string>
 
     <!-- AI 帮写面板 -->
@@ -142,6 +144,7 @@
     <string name="scheme_wubi">五笔 86</string>
     <string name="scheme_cangjie">仓颉五代</string>
     <string name="scheme_t9">9 键拼音</string>
+    <string name="scheme_stroke">笔画</string>
     <string name="scheme_selected_banner">已切换到 %1$s</string>
     <string name="main_card_scheme_title">当前输入方案</string>
 </resources>

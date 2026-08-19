@@ -550,3 +550,14 @@ M4
 䲳	hang	1000
 䴙	pi	1000
 䴘	ti	1000
+
+# M-A3-2 生僻字拆字词条（搜狗安卓 11.13.1「拼音输入牛牛牛就出犇」/ PC 4.1 拆字）：
+# 叠字拆字输入，拼音重叠码直达生僻/常用叠字，权重 1 不干扰常规拼音。
+犇	niuniuniu	1
+骉	mamama	1
+焱	huohuohuo	1
+磊	shishishi	1
+鑫	jinjinjin	1
+淼	shuishuishui	1
+垚	tututu	1
+森	mumumu	1

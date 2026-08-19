@@ -11,6 +11,7 @@ schema_list:
   - schema: shurufa_wubi
   - schema: shurufa_cangjie
   - schema: shurufa_t9
+  - schema: stroke
 
 switcher:
   caption: 〔方案選單〕

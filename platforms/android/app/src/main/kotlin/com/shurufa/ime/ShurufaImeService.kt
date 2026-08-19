@@ -20,6 +20,7 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -81,6 +82,12 @@ class ShurufaImeService : InputMethodService() {
     )
 
     companion object {
+        /** M-A3-3 笔画字形 → librime stroke 码（含康熙部首变体）。 */
+        private val STROKE_CODE = mapOf(
+            "一" to 'h', "丨" to 's', "丿" to 'p', "丶" to 'n', "乙" to 'z',
+            "㇐" to 'h', "㇑" to 's', "㇒" to 'p', "㇏" to 'n', "㇠" to 'z',
+            "⼀" to 'h', "⼁" to 's', "⼃" to 'p', "⼂" to 'n', "⼄" to 'z',
+        )
         private const val XK_BACKSPACE = 0xff08
         private const val XK_RETURN = 0xff0d
         // 方案资源变化时递增，确保同一应用版本也会重新解包词典。
@@ -130,6 +137,10 @@ class ShurufaImeService : InputMethodService() {
     private var calcExpr: TextView? = null
     private var calcPreview: TextView? = null
     private val calculator = Calculator()
+    /** M-A3-1 触觉输入：组合当前预编辑，供末位强振判定。 */
+    private var currentPreedit: String = ""
+    /** M-A3-4 文字转语音（声文互转半边）。 */
+    private var ttsSpeaker: TtsSpeaker? = null
     /// 大写锁定（微信输入法同款 capslock 键：行首图标键）
     private var shiftMode = false
     private var historyPanel: LinearLayout? = null
@@ -819,6 +830,8 @@ class ShurufaImeService : InputMethodService() {
             "double_pinyin" to getString(R.string.scheme_double_pinyin),
             "wubi" to getString(R.string.scheme_wubi),
             "cangjie" to getString(R.string.scheme_cangjie),
+            "t9" to getString(R.string.scheme_t9),
+            "stroke" to getString(R.string.scheme_stroke),
         )
         for ((id, _) in schemes) {
             panel.findViewWithTag<TextView>("scheme_row_$id")?.let { row ->
@@ -1541,6 +1554,13 @@ class ShurufaImeService : InputMethodService() {
         calcPreview?.text = if (value == null) "" else "= " + calculator.formatResult(value)
     }
 
+    /** M-A3-4 文字转语音（声文互转半边）：懒初始化系统 TTS 并朗读。 */
+    private fun speakText(text: String) {
+        if (text.isBlank()) return
+        val tts = ttsSpeaker ?: TtsSpeaker(this).also { ttsSpeaker = it }
+        tts.speak(text)
+    }
+
     private fun sendEmoji(emoji: String) {
         currentInputConnection?.commitText(emoji, 1)
         val recent = EmojiPanel.pushRecent(recentEmojis(), emoji)
@@ -1629,12 +1649,14 @@ class ShurufaImeService : InputMethodService() {
         }, LinearLayout.LayoutParams(dp(44f), dp(40f)))
         root.addView(header)
 
-        // 4 个方案行
+        // 6 个方案行
         val schemes = listOf(
             "pinyin" to getString(R.string.scheme_pinyin),
             "double_pinyin" to getString(R.string.scheme_double_pinyin),
             "wubi" to getString(R.string.scheme_wubi),
             "cangjie" to getString(R.string.scheme_cangjie),
+            "t9" to getString(R.string.scheme_t9),
+            "stroke" to getString(R.string.scheme_stroke),
         )
         for ((id, label) in schemes) {
             val row = TextView(this).apply {
@@ -2459,14 +2481,23 @@ class ShurufaImeService : InputMethodService() {
             getString(R.string.history_menu_unpin),
             getString(R.string.history_menu_delete),
         )
-        // 仅图/文件类条目追加 v3 文件同步入口
-        val sendIndex: Int?
-        val options = if (entry.kind == "image" || entry.kind == "files") {
-            sendIndex = base.size
-            (base + "发送为文件").toTypedArray()
-        } else {
-            sendIndex = null
-            base.toTypedArray()
+        // 文本条目追加朗读入口（M-A3-4 文字转语音）；图/文件条目追加 v3 同步入口
+        var speakIndex: Int? = null
+        var sendIndex: Int? = null
+        val options: Array<String> = when (entry.kind) {
+            "text" -> {
+                speakIndex = base.size
+                (base + getString(R.string.history_menu_speak)).toTypedArray()
+            }
+            "image", "files" -> {
+                sendIndex = base.size
+                (base + "发送为文件").toTypedArray()
+            }
+            else -> {
+                speakIndex = null
+                sendIndex = null
+                base.toTypedArray()
+            }
         }
         android.app.AlertDialog.Builder(this)
             .setTitle(entry.text.replace('\n', ' ').take(24))
@@ -2475,7 +2506,9 @@ class ShurufaImeService : InputMethodService() {
                     0 -> ClipStore.setPinned(entry.id, true)
                     1 -> ClipStore.setPinned(entry.id, false)
                     2 -> ClipStore.delete(entry.id)
-                    else -> if (sendIndex != null && which == sendIndex) {
+                    else -> if (which == speakIndex) {
+                        speakText(entry.text)
+                    } else if (which == sendIndex) {
                         // 同步 v3：把本地落盘文件经 SyncBridge 分块下发
                         val path = entry.text.lineSequence().firstOrNull()?.trim()
                         if (!path.isNullOrEmpty()) {
@@ -2865,11 +2898,12 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun buildLetterPage() {
-        // M-A1-3：t9 方案下渲染九键 T9 键盘，其余方案走微信 S2 QWERTY 布局
-        val page = if (currentSchemeId() == "t9") {
-            KeyboardLayoutSpec.Page.T9
-        } else {
-            KeyboardLayoutSpec.Page.LETTERS
+        // M-A1-3 / M-A3-3：t9 方案渲染九键 T9、stroke 方案渲染笔画键盘，
+        // 其余方案走微信 S2 QWERTY 布局
+        val page = when (currentSchemeId()) {
+            "t9" -> KeyboardLayoutSpec.Page.T9
+            "stroke" -> KeyboardLayoutSpec.Page.STROKE
+            else -> KeyboardLayoutSpec.Page.LETTERS
         }
         val asciiMode = engineReady && RimeBridge.nativeIsAscii()
         keyArea.addView(
@@ -2921,6 +2955,10 @@ class ShurufaImeService : InputMethodService() {
             is WetypeKeyboardView.WetypeAction.Digit -> {
                 // T9 数字键：整键送引擎（shurufa_t9 吃 2-9），拒绝时直接上屏数字
                 a.value.firstOrNull()?.let { onLetter(it) }
+            }
+            is WetypeKeyboardView.WetypeAction.Stroke -> {
+                // 笔画键 → h/s/p/n/z 送引擎（stroke 方案）
+                STROKE_CODE[a.value]?.let { onLetter(it) }
             }
             WetypeKeyboardView.WetypeAction.Backspace -> onBackspace()
             WetypeKeyboardView.WetypeAction.Shift -> {
@@ -3015,9 +3053,14 @@ class ShurufaImeService : InputMethodService() {
             enqueueDuringWarmup(PendingInput.Backspace)
             return
         }
+        val wasComposing = currentPreedit.isNotEmpty()
         val eaten = engineReady && RimeBridge.nativeProcessKey(XK_BACKSPACE, 0)
         if (!eaten) currentInputConnection?.deleteSurroundingText(1, 0)
         sync()
+        // M-A3-1 末位强振：删空组合时给出最强反馈（搜狗 11.13.1）
+        if (wasComposing && currentPreedit.isEmpty()) {
+            inputRoot?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        }
     }
 
     private fun onSpace() {
@@ -3158,6 +3201,7 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun updateCandidates(preedit: String, candidates: List<String>, highlighted: Int) {
+        currentPreedit = preedit
         if (!::candidateBar.isInitialized) return
         candidateBar.removeAllViews()
         expandedCandidateBar.removeAllViews()
@@ -3227,11 +3271,13 @@ class ShurufaImeService : InputMethodService() {
         val options = arrayOf(
             getString(R.string.candidate_menu_copy),
             getString(R.string.candidate_menu_forget),
+            getString(R.string.candidate_menu_speak),
         )
         android.app.AlertDialog.Builder(this)
             .setTitle(text)
             .setItems(options) { dialog, which ->
                 when (which) {
+                    2 -> speakText(text)
                     0 -> {
                         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         cm.setPrimaryClip(ClipData.newPlainText("候选词", text))
@@ -3319,6 +3365,8 @@ class ShurufaImeService : InputMethodService() {
         super.onDestroy()
         voice?.cancel()
         voice = null
+        ttsSpeaker?.shutdown()
+        ttsSpeaker = null
         ioExecutor.shutdownNow()
     }
 

@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### 新增（安卓 M-A3：无障碍与生僻字——触觉输入 / 笔画键盘 / 拆字 / 文字转语音，2026-08-19）
+- **触觉输入**（搜狗 11.13.1）：长按连续删除振动分层——启动 LONG_PRESS、每 tick
+  CONTEXT_CLICK、删空组合末位强振（LONG_PRESS）；HapticProfile.kt 纯逻辑 + 单测 3 项。
+- **笔画键盘**（搜狗 11.13.1 生僻字键盘 / 1.6 笔画输入）：方案面板新增「笔画」，
+  stroke 方案接入 Android（schema_list + gradle 资产 + rimejni 列表）；键盘渲染
+  五笔画键（一丨丿丶乙 → h/s/p/n/z）+ 数字直选行 + 底栏；引擎测试：h → 一。
+- **生僻字拆字**（搜狗 11.13.1「牛牛牛→犇」/ PC 4.1）：rime_ice 词库内联 8 条
+  拆字词条（犇 niuniuniu / 骉 mamama / 焱 huohuohuo / 磊 shishishi / 鑫 jinjinjin /
+  淼 shuishuishui / 垚 tututu / 森 mumumu）；引擎测试 niuniuniu→犇、mamama→骉。
+- **文字转语音**（搜狗 11.4 声文互转半边）：TtsSpeaker 系统 TTS 懒初始化；
+  剪贴板历史文本条目与候选长按菜单新增「🔊 朗读」，onDestroy 释放。
+- **修复 A1-3 缺口**：方案面板此前漏挂「9 键拼音」入口（两个方案列表都缺 t9），
+  本次连同「笔画」一并补上（面板共 6 方案）。
+- 验证：引擎测试 +2（stroke_and_chai）；JVM 单测 +6（触觉 3 + 笔画布局 1 + 既有）；
+  APK 装实机冒烟无崩溃。
+
 ## [1.4.0] - 2026-08-19
 
 ### 新增（安卓 M-A2-4：键盘计算器，2026-08-19）

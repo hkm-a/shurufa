@@ -46,6 +46,8 @@ internal class WetypeKeyboardView(
         data class Char(val value: String) : WetypeAction()
         /** T9 数字键：整键送引擎（shurufa_t9 方案吃 2-9），引擎拒绝时由 IME 上屏数字。 */
         data class Digit(val value: String) : WetypeAction()
+        /** 笔画键（一丨丿丶乙）：由 Service 映射为 h/s/p/n/z 送引擎。 */
+        data class Stroke(val value: String) : WetypeAction()
         object Backspace : WetypeAction()
         object Shift : WetypeAction()
         object NumberPage : WetypeAction()
@@ -79,6 +81,9 @@ internal class WetypeKeyboardView(
         )
         KeyboardLayoutSpec.Page.SYMBOLS -> KeyboardLayoutSpec.symbolRows()
         KeyboardLayoutSpec.Page.T9 -> KeyboardLayoutSpec.t9Rows(
+            KeyboardLayoutSpec.languageLabel(asciiMode)
+        )
+        KeyboardLayoutSpec.Page.STROKE -> KeyboardLayoutSpec.strokeRows(
             KeyboardLayoutSpec.languageLabel(asciiMode)
         )
     }
@@ -203,12 +208,21 @@ internal class WetypeKeyboardView(
                     var downY = 0f
                     var cleared = false
                     var repeated = false
+                    var repeatTick = 0
                     // 长按重复触发后：连续删除；提示由 Service 顶部状态条统一显示。
                     val startRepeat = object : Runnable {
                         override fun run() {
                             if (!repeated) onAction(WetypeAction.BackspaceStart)
                             onAction(repeatAction ?: action)
                             repeated = true
+                            // M-A3-1 触觉层次：启动 LONG_PRESS，之后每 tick CONTEXT_CLICK
+                            when (HapticProfile.deleteFeedback(repeatTick)) {
+                                HapticProfile.LONG_PRESS ->
+                                    performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                                else ->
+                                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                            }
+                            repeatTick++
                             postDelayed(this, BackspaceGestureSpec.REPEAT_INTERVAL_MILLIS)
                         }
                     }
@@ -218,6 +232,7 @@ internal class WetypeKeyboardView(
                                 downY = event.y
                                 cleared = false
                                 repeated = false
+                                repeatTick = 0
                                 playKeyFeedback()
                                 if (repeatAction != null) {
                                     view.postDelayed(startRepeat, BackspaceGestureSpec.REPEAT_DELAY_MILLIS)
@@ -405,6 +420,7 @@ internal class WetypeKeyboardView(
     private fun actionFor(key: KeyboardLayoutSpec.Key, label: String): WetypeAction = when (key.kind) {
         KeyboardLayoutSpec.Kind.CHAR -> WetypeAction.Char(label)
         KeyboardLayoutSpec.Kind.DIGIT -> WetypeAction.Digit(label)
+        KeyboardLayoutSpec.Kind.STROKE -> WetypeAction.Stroke(label)
         KeyboardLayoutSpec.Kind.BACKSPACE -> WetypeAction.Backspace
         KeyboardLayoutSpec.Kind.SHIFT -> WetypeAction.Shift
         KeyboardLayoutSpec.Kind.NUMBER -> WetypeAction.NumberPage
@@ -468,9 +484,9 @@ internal object KeyboardHeightSpec {
 
 /** 键盘页面与键位语义的纯规格，便于单元测试验证视觉顺序不会影响输入功能。 */
 internal object KeyboardLayoutSpec {
-    enum class Page { LETTERS, SYMBOLS, T9 }
+    enum class Page { LETTERS, SYMBOLS, T9, STROKE }
     enum class Icon { BACKSPACE, SHIFT, BACK }
-    enum class Kind { CHAR, BACKSPACE, SHIFT, NUMBER, BACK, ENTER, SPACE, LANG, DIGIT }
+    enum class Kind { CHAR, BACKSPACE, SHIFT, NUMBER, BACK, ENTER, SPACE, LANG, DIGIT, STROKE }
 
     data class Key(
         val label: String = "",
@@ -517,6 +533,38 @@ internal object KeyboardLayoutSpec {
             ),
         ),
     )
+
+    /** M-A3-3 笔画键盘（搜狗 11.13.1 生僻字键盘 / 1.6 笔画输入）：五笔画
+     * 键（一丨丿丶乙 → h/s/p/n/z）+ 数字直选行 + 底栏功能键。 */
+    fun strokeRows(languageLabel: String = languageLabel(false)): List<Row> {
+        val strokes = listOf(
+            "一" to "h", "丨" to "s", "丿" to "p", "丶" to "n", "乙" to "z",
+        )
+        return listOf(
+            Row(strokes.map { (glyph, _) ->
+                Key(glyph, kind = Kind.STROKE, textSize = 24f, bold = true, description = "笔画 $glyph")
+            }),
+            Row((1..5).map { n ->
+                Key(n.toString(), kind = Kind.DIGIT, textSize = 21f, bold = true, description = "选第 $n 个候选")
+            }),
+            Row(
+                listOf(
+                    Key("符", kind = Kind.NUMBER, functional = true, textSize = 14f, bold = true, description = "符号键盘"),
+                    Key(languageLabel, kind = Kind.LANG, textSize = 14f, description = "切换中英文"),
+                    Key("", kind = Kind.SPACE, weight = 1.8f, description = "空格"),
+                    Key(
+                        icon = Icon.BACKSPACE,
+                        kind = Kind.BACKSPACE,
+                        functional = true,
+                        description = "删除；长按连续删除，上滑清空拼音",
+                        longKind = Kind.BACKSPACE,
+                        swipeUpClears = true,
+                    ),
+                    Key("换行", kind = Kind.ENTER, weight = 1.2f, functional = true, textSize = 15f, description = "换行"),
+                ),
+            ),
+        )
+    }
 
     /** M-A1-3 九键 T9 键盘：3×3 数字键（整词数字串喂引擎，shurufa_t9 方案）
      * + 底栏 符/中英/空格/删除/换行；1 键不在引擎 alphabet 内，引擎拒绝后

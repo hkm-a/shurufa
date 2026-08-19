@@ -125,7 +125,7 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeListInputSchemes(
 ) -> jstring {
     let default = to_jstring(&env, "pinyin");
     crate::jni_catch(
-        || to_jstring(&env, "pinyin,double_pinyin,wubi,cangjie,t9"),
+        || to_jstring(&env, "pinyin,double_pinyin,wubi,cangjie,t9,stroke"),
         default,
     )
 }

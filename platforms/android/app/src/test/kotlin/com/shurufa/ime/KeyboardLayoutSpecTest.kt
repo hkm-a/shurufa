@@ -49,6 +49,28 @@ class KeyboardLayoutSpecTest {
     }
 
     @Test
+    fun 笔画页五行笔画加数字直选与底栏() {
+        val rows = KeyboardLayoutSpec.strokeRows()
+        assertEquals(3, rows.size)
+        assertEquals(
+            listOf("一", "丨", "丿", "丶", "乙"),
+            rows[0].keys.map { it.label },
+        )
+        assertTrue(rows[0].keys.all { it.kind == KeyboardLayoutSpec.Kind.STROKE })
+        assertEquals(listOf("1", "2", "3", "4", "5"), rows[1].keys.map { it.label })
+        assertEquals(
+            listOf(
+                KeyboardLayoutSpec.Kind.NUMBER,
+                KeyboardLayoutSpec.Kind.LANG,
+                KeyboardLayoutSpec.Kind.SPACE,
+                KeyboardLayoutSpec.Kind.BACKSPACE,
+                KeyboardLayoutSpec.Kind.ENTER,
+            ),
+            rows[2].keys.map { it.kind },
+        )
+    }
+
+    @Test
     fun 默认页底栏保留完整的中英文与输入功能() {
         val row = KeyboardLayoutSpec.letterRows(false).last()
         assertEquals(
