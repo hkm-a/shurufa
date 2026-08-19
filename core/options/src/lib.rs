@@ -224,10 +224,7 @@ fn default_input_scheme() -> String {
 /// 供 settings UI / TSF watcher / JNI 三端共享同一事实源；wave 5 引入
 /// 新方案时只改这一个函数。
 pub fn validate_input_scheme(s: &str) -> bool {
-    matches!(
-        s,
-        "pinyin" | "double_pinyin" | "wubi" | "cangjie" | "t9"
-    )
+    matches!(s, "pinyin" | "double_pinyin" | "wubi" | "cangjie" | "t9")
 }
 
 /// options 方案 id → librime schema_id 的映射（与 schemas/ 文件名一致）；
