@@ -4,6 +4,39 @@
 
 ## [Unreleased]
 
+### 修复（悬浮球白屏，2026-08-19 实机复现）
+- **dev 构建白屏根治与自救**：白屏根因 = 运行的是 target/debug/Shurufa.exe
+  （dev 构建，devUrl 指向 http://localhost:1420 vite），vite 未启动时
+  WebView2 加载失败 → 白屏 + 滚动条（2026-08-12 两次事故同源）。本次：
+  - 新增 scripts/start-control-center.ps1：杀残留 dev 实例 →（可选 -Deploy
+    提权部署 release）→ 拉起 ProgramData/shurufa/Shurufa.exe（release 内嵌
+    ui-dist，无需 vite）；
+  - scripts/update-all.ps1 -Cc 部署完成后自动拉起控制中心（-NoStart 仍跳过）；
+  - 已实机验证：v1.1.0 release 悬浮球（38px 橙球 F）与菜单/子菜单正常渲染。
+
+### 修复（host worker 启动 panic，2026-08-19 实机复现）
+- **Skin::current() RefCell 双重借用**：ai_panel::warm_up()（M9-2 启动预热）在
+  新线程首次调用 Skin::current() 时，with_borrow_mut 闭包内嵌套调用 load_with()
+  （内部再 borrow 同一线程缓存）→ RefCell already mutably borrowed panic（exit 101）
+  → worker 反复崩溃、同步端口 48632 起不来。重构为「先读缓存命中，未命中则释放
+  借用后由 load_with 装载再读回」（Skin 为 Copy，无行为差异）；已实机验证 worker
+  稳定运行，TSF 与 host 共用该文件同时受益。
+
+### 实机联调（跨设备同步，2026-08-19 手机 23113RKC6C）
+- **补齐 M8 遗留「双端实机联调」**：手机安装 v1.1.0（versionCode 33）debug APK
+  （adb 安装 + IME 启用并设为默认），同 Wi-Fi mDNS 自动发现 → 配对（确认码比对）
+  → 直连 192.168.31.172:48632（协议 v2，启用 msg_id）。
+- 验证通过：**文本双端**（PC→手机标记文本手机日志确认；手机复制小说正文→PC
+  host list 出现条目 + host 日志「收到 23113RKC6C 的剪贴板（124 字符）」）；
+  **图片 PC→手机**（4537 B PNG 写入手机系统剪贴板）；**文件 PC→手机**（剪贴板
+  文件投递手机）。活动流 sync-activity.json 正确落盘（direction=in/peer=23113RKC6C/
+  status=ok），设置中心「最近同步」数据源闭环。
+- **顺带修复部署陈旧**：Program Files\FOX 的 host/algo 为 8月16 旧版（无活动流
+  记录/失败重试），已重建并替换部署（stop → 提权复制 → supervise 重启），并清理
+  旧安装遗留的僵尸 peer 记录（旧指纹空连 42102 的日志噪音消失）。
+- **已知问题（联调发现，待修）**：弱连接下同一剪贴板条目被重复投递（文本 ×2、
+  图片/文件 ×3），疑与广播队列重连重发缺少去重有关；不阻塞使用。
+
 ## [1.1.0] - 2026-08-18
 
 ### 新增（M10-1 专业词模式，搜狗 16.2 场景词库同类）

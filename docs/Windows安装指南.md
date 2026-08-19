@@ -54,6 +54,26 @@ DLL 时，关闭占用程序后重试即可。
 跨设备和偏好五个页面，可保存或关闭自托管中继地址、启动后台服务、触发内置热门
 词库 `rime-ice` 更新，并打开 Windows 的输入法设置。中继设置会在后台服务下次启动时生效。
 
+## 悬浮球白屏自救
+
+**症状**：桌面悬浮球变成一块白色/浅灰面板（右上残留一条滚动条），点击无反应。
+**根因**：运行的是 target/debug/Shurufa.exe（dev 构建，devUrl 指向
+http://localhost:1420 的 vite 开发服务器）；vite 未启动时 WebView2 加载失败即白屏。
+release 版（ProgramData/shurufa/Shurufa.exe）内嵌前端资源，不依赖 vite，正常。
+
+**处理**：
+
+```powershell
+# 仓库根目录：杀掉 dev 白屏实例并用已部署的 release 版拉起
+.\scripts\start-control-center.ps1
+
+# 若 release 版也没部署/版本旧，先构建部署再拉起（会弹 UAC）
+.\scripts\update-all.ps1 -Cc            # 构建 + 部署 + 自动拉起悬浮球
+```
+
+日常开发请勿直接双击 target/debug/Shurufa.exe；需要 dev 模式时用
+npm run tauri dev（vite 与 app 同生命周期）。
+
 ## 卸载
 
 在管理员终端中执行：

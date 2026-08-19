@@ -175,6 +175,16 @@ if ($LASTEXITCODE -ne 0) {
 if ($Cc) {
   $f = Get-Item "$dst\Shurufa.exe" -ErrorAction SilentlyContinue
   if ($f) { Log "控制中心：$($f.Length) bytes（release 应为 $((Get-Item "$repo\target\release\Shurufa.exe").Length)）" }
+  if (-not $NoStart) {
+    # 悬浮球拉起：release 版内嵌 ui-dist，无需 vite；务必先杀掉 dev 白屏实例
+    Get-Process -Name Shurufa -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 800
+    Start-Process -FilePath "$dst\Shurufa.exe"
+    Start-Sleep -Seconds 3
+    $cc = Get-Process -Name Shurufa -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cc) { Log "控制中心已启动（$($cc.Path)）" }
+    else { Log "WARN: 控制中心未检测到进程（可能被系统拦截，请手动运行 $dst\Shurufa.exe）" }
+  }
 }
 Log "=== 更新完成 ==="
 exit 0

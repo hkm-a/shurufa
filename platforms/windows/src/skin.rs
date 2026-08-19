@@ -322,18 +322,18 @@ impl Skin {
 
     /// 线程本地缓存的当前 Skin；未初始化时按默认路径加载。
     pub fn current() -> Skin {
-        SKIN_CACHE.with_borrow_mut(|slot| match slot {
-            Some(cached) => cached.skin,
-            None => {
-                let skin = load_with(|| None);
-                *slot = Some(CachedSkin {
-                    skin,
-                    source: resolved_skin_path(None),
-                    mtime: None,
-                });
-                skin
-            }
-        })
+        // 缓存命中直接返回（Skin 为 Copy）。
+        if let Some(skin) = SKIN_CACHE.with_borrow(|slot| slot.as_ref().map(|c| c.skin)) {
+            return skin;
+        }
+        // 缓存为空：先释放借用再装载。load_with 内部会写入同一个线程缓存，
+        // 若在 with_borrow_mut 闭包内调用会触发 RefCell 双重借用 panic
+        // （2026-08-19 实机复现：host worker 启动预热 ai_panel → Skin::current()，
+        // “RefCell already mutably borrowed”）。
+        let skin = load_with(|| None);
+        SKIN_CACHE
+            .with_borrow(|slot| slot.as_ref().map(|c| c.skin))
+            .unwrap_or(skin)
     }
 
     /// WM_SETTINGCHANGE 到达后调用：重读系统主题 + 皮肤文件，刷新线程缓存。
