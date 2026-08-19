@@ -116,6 +116,12 @@
     <string name="qp_deleted">已删除常用语</string>
     <string name="qp_all">全部</string>
     <string name="qp_empty">（没有匹配的常用语）</string>
+
+    <!-- M-A2-3 时间/日期/邮箱后缀快捷输入 -->
+    <string name="ime_chip_quick_insert">快捷输入</string>
+    <string name="qi_section_time">时间</string>
+    <string name="qi_section_date">日期</string>
+    <string name="qi_section_email">邮箱后缀</string>
     <string name="scheme_dialog_title">切换输入方案</string>
     <string name="scheme_dialog_close">关闭</string>
     <string name="scheme_dialog_hint">切换即时生效</string>

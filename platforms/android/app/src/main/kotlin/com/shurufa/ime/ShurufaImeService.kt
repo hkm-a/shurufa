@@ -41,6 +41,7 @@ import androidx.core.view.inputmethod.InputContentInfoCompat
 import java.io.File
 import java.io.ByteArrayOutputStream
 import java.net.URLConnection
+import java.util.Calendar
 import kotlin.concurrent.thread
 
 /**
@@ -116,6 +117,8 @@ class ShurufaImeService : InputMethodService() {
     private var phraseAddBox: EditText? = null
     private val phraseList: MutableList<QuickPhrase> = mutableListOf()
     private var phraseCategory: String? = null
+    /** M-A2-3 时间/日期/邮箱后缀快捷输入面板（搜狗 7.4）。 */
+    private var quickInsertPanel: LinearLayout? = null
     /// 大写锁定（微信输入法同款 capslock 键：行首图标键）
     private var shiftMode = false
     private var historyPanel: LinearLayout? = null
@@ -616,6 +619,14 @@ class ShurufaImeService : InputMethodService() {
         // M-A2-1 常用语（搜狗 8.0 快捷短语 / 11.46 常用语）
         functionRow.addView(
             functionChip("💬", getString(R.string.ime_chip_phrases)) { toggleQuickPhrases() },
+            LinearLayout.LayoutParams(
+                clipButtonSize,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
+        )
+        // M-A2-3 时间/日期/邮箱后缀（搜狗 7.4）
+        functionRow.addView(
+            functionChip("⏱", getString(R.string.ime_chip_quick_insert)) { toggleQuickInsert() },
             LinearLayout.LayoutParams(
                 clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
@@ -1185,6 +1196,76 @@ class ShurufaImeService : InputMethodService() {
 
     private fun commitQuickPhrase(phrase: QuickPhrase) {
         currentInputConnection?.commitText(phrase.text, 1)
+    }
+
+    // ---------- M-A2-3 时间/日期/邮箱后缀快捷输入 ----------
+
+    private fun toggleQuickInsert() {
+        val existing = quickInsertPanel
+        if (existing != null && existing.visibility == View.VISIBLE) {
+            existing.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+            return
+        }
+        if (existing == null) {
+            val built = buildQuickInsertPanel()
+            quickInsertPanel = built
+            inputRoot?.addView(
+                built,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+        historyPanel?.visibility = View.GONE
+        aiPanel?.visibility = View.GONE
+        previewKeyboard?.visibility = View.GONE
+        schemePanel?.visibility = View.GONE
+        settingsPanel?.visibility = View.GONE
+        quickPhrasePanel?.visibility = View.GONE
+        keyArea.visibility = View.GONE
+        quickInsertPanel?.visibility = View.VISIBLE
+    }
+
+    private fun buildQuickInsertPanel(): LinearLayout {
+        val now = Calendar.getInstance()
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(palette.key)
+            visibility = View.GONE
+            setPadding(dp(10f), dp(8f), dp(10f), dp(10f))
+        }
+        fun section(title: String): TextView = TextView(this).apply {
+            text = title
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(palette.accent)
+            setPadding(0, dp(8f), 0, dp(2f))
+        }
+        fun row(item: QuickInsertItem): TextView = TextView(this).apply {
+            text = item.label
+            textSize = 16f
+            setTextColor(palette.panelText)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6f), 0, dp(6f), 0)
+            setOnClickListener { currentInputConnection?.commitText(item.value, 1) }
+        }
+        val timeItems = QuickInsert.timeItems(now)
+        val dateItems = QuickInsert.dateItems(now)
+        panel.addView(section(getString(R.string.qi_section_time)))
+        timeItems.forEach {
+            panel.addView(row(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40f)))
+        }
+        panel.addView(section(getString(R.string.qi_section_date)))
+        dateItems.forEach {
+            panel.addView(row(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40f)))
+        }
+        panel.addView(section(getString(R.string.qi_section_email)))
+        QuickInsert.emailItems().forEach {
+            panel.addView(row(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40f)))
+        }
+        return panel
     }
 
     private fun buildSchemePanel(): LinearLayout {

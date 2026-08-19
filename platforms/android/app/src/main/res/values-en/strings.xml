@@ -116,6 +116,12 @@
     <string name="qp_deleted">Phrase deleted</string>
     <string name="qp_all">All</string>
     <string name="qp_empty">(No matching phrases)</string>
+
+    <!-- M-A2-3 quick insert panel -->
+    <string name="ime_chip_quick_insert">Quick insert</string>
+    <string name="qi_section_time">Time</string>
+    <string name="qi_section_date">Date</string>
+    <string name="qi_section_email">Email suffixes</string>
     <string name="scheme_dialog_title">Switch input scheme</string>
     <string name="scheme_dialog_close">Close</string>
     <string name="scheme_dialog_hint">Switching applies immediately</string>
