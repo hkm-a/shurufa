@@ -38,6 +38,10 @@ const SENSITIVE_APPS: &[&str] = &[
 
 /// 每捕获多少条执行一次留存清理
 const RETENTION_INTERVAL: u64 = 50;
+
+/// 同一次复制的多事务写入去重窗口（毫秒）：内容指纹一致且间隔小于该值
+/// 视为同一次复制，跳过重复处理。
+const DUP_WINDOW_MS: u128 = 1500;
 #[cfg(debug_assertions)]
 pub const WM_TEST_SET_IMAGE: u32 = WM_APP + 41;
 const WM_WRITE_CLIPBOARD: u32 = WM_APP + 42;
@@ -67,6 +71,11 @@ struct ListenerState {
     /// 资源管理器等来源一次复制会连续多次更新剪贴板（先文本路径
     /// 再文件对象），短时间窗内内容一致时合并为一条。
     last_insert: Option<(i64, String, std::time::Instant)>,
+    /// 最近一次广播内容指纹：(指纹, 时刻)。浏览器/Office/微信等会把
+    /// 一次复制拆成多个格式、多次事务写入剪贴板，序列号各不相同但内容
+    /// 相同；短时间窗内指纹一致时整体跳过，避免重复入库与重复广播
+    /// （2026-08-19 实机：.NET SetText ×2 / SetImage、SetFileDropList ×3）。
+    last_broadcast: Option<(String, std::time::Instant)>,
 }
 
 // 消息窗口回调无法携带参数，监听进程单实例，用静态槽转交状态
@@ -107,6 +116,7 @@ pub fn run(store: ClipboardStore) -> Result<()> {
             last_sequence: GetClipboardSequenceNumber(),
             captured: 0,
             last_insert: None,
+            last_broadcast: None,
         });
         AddClipboardFormatListener(hwnd)?;
         let hotkey = crate::panel::register_hotkey();
@@ -368,6 +378,28 @@ impl ListenerState {
         }
 
         if let Some(capture) = read_clipboard(hwnd) {
+            // 内容指纹覆盖全部类型（图片也纳入）：同一次复制拆成多次
+            // 事务写剪贴板时序列号各不相同，但内容一致——短窗口内整体跳过，
+            // 避免重复入库/重复广播（2026-08-19 实机复现 ×2/×3 投递）。
+            let fingerprint = match &capture {
+                Capture::Files(paths) => paths.join(
+                    "
+",
+                ),
+                Capture::Text(text) => text.clone(),
+                Capture::Image(bmp) => {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    bmp.hash(&mut h);
+                    format!("img:{:016x}", h.finish())
+                }
+            };
+            if let Some((last_fp, at)) = &self.last_broadcast {
+                if *last_fp == fingerprint && at.elapsed().as_millis() < DUP_WINDOW_MS {
+                    return;
+                }
+            }
+
             // 同一次复制的多重更新：与上一条内容一致且间隔极短时，
             // 删除旧条目改存新条目（文件对象优先于纯文本路径）
             let normalized = match &capture {
@@ -406,6 +438,7 @@ impl ListenerState {
                     if !normalized.is_empty() {
                         self.last_insert = Some((id, normalized, std::time::Instant::now()));
                     }
+                    self.last_broadcast = Some((fingerprint, std::time::Instant::now()));
                     self.captured += 1;
                     if self.captured.is_multiple_of(RETENTION_INTERVAL) {
                         let _ = self.store.apply_retention(&RetentionPolicy::default());
