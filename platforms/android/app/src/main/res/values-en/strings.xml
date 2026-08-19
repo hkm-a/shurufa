@@ -17,6 +17,9 @@
     <string name="main_card_sync_desc">Pair with your PC to sync clipboard / images / files</string>
     <string name="main_card_ai_title">AI Writer</string>
     <string name="main_card_skin_title">Skins</string>
+    <string name="main_card_keyboard_title">Keyboard settings &amp; tips</string>
+    <string name="main_card_keyboard_desc">Open the keyboard then tap ⚙️: height / key sound / vibration / one-handed / toolbar customization; schemes ⌨️ six kinds (incl. 9-key &amp; stroke)</string>
+    <string name="main_card_keyboard_toast">Open the keyboard in any input field → tap ⚙️; long-press space to speak, long-press delete to delete continuously</string>
     <string name="main_ai_status_configured">✓ API key configured, ready in the keyboard toolbar</string>
     <string name="main_ai_status_missing">No API key — set AGNES_API_KEY in gradle.properties and rebuild</string>
     <string name="main_skin_light">Light</string>
@@ -107,6 +110,8 @@
     <string name="kb_single_left">Left</string>
     <string name="kb_single_right">Right</string>
     <string name="kb_settings_close">Close settings</string>
+    <string name="kb_settings_toolbar">Toolbar · show/hide &amp; order</string>
+    <string name="kb_settings_pro">Professional scenario dictionaries (doctor/lawyer/code/rare) are bundled and active</string>
 
     <!-- M-A2-1 quick phrases panel -->
     <string name="ime_chip_phrases">Phrases</string>

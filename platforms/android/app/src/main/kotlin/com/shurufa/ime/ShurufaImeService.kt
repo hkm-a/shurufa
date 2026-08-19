@@ -132,6 +132,8 @@ class ShurufaImeService : InputMethodService() {
     private var emojiGrid: LinearLayout? = null
     private var emojiCategoryId: String? = null
     private var emojiChipsRow: LinearLayout? = null
+    /** M-A5-1 工具栏配置行容器（设置面板内）。 */
+    private var settingsToolbarRows: LinearLayout? = null
     /** M-A2-4 键盘计算器面板（搜狗 9.5）。 */
     private var calcPanel: LinearLayout? = null
     private var calcExpr: TextView? = null
@@ -584,8 +586,6 @@ class ShurufaImeService : InputMethodService() {
         // 功能行：候选不再占用本行，改为承载剪贴板历史 / 图片历史 / 表情入口等功能键。
         val compactFunctionRow = isLandscape()
         val functionRowHeight = dp(if (compactFunctionRow) 30f else 38f)
-        val clipButtonSize = dp(if (compactFunctionRow) 24f else 30f)
-        val clipVerticalMargin = dp(if (compactFunctionRow) 4f else 5f)
         val functionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -594,89 +594,9 @@ class ShurufaImeService : InputMethodService() {
                 LinearLayout.LayoutParams.MATCH_PARENT, functionRowHeight
             )
         }
-        fun functionChip(glyph: String, description: String, onClick: () -> Unit): TextView =
-            TextView(this).apply {
-                text = glyph
-                contentDescription = description
-                gravity = Gravity.CENTER
-                textSize = 15f
-                setTextColor(0xFFFFFFFF.toInt())
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(palette.accent)
-                }
-                setOnClickListener { onClick() }
-            }
-        functionRow.addView(
-            functionChip("▾▦", getString(R.string.ime_chip_history)) { toggleHistory() },
-            LinearLayout.LayoutParams(
-                clipButtonSize,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            ).apply { setMargins(dp(8f), clipVerticalMargin, dp(4f), clipVerticalMargin) }
-        )
-        functionRow.addView(
-            functionChip("🖼", getString(R.string.ime_chip_images)) { toggleImageHistory() },
-            LinearLayout.LayoutParams(
-                clipButtonSize,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
-        )
-        // AI 帮写入口：缺 AGNES_API_KEY 时点击显示「未配置」提示。
-        functionRow.addView(
-            functionChip("🪄", getString(R.string.ime_chip_ai_write)) { toggleAiPanel() },
-            LinearLayout.LayoutParams(
-                clipButtonSize,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
-        )
-        // 输入方案（wave 4）：点击弹出方案切换小面板（拼音 / 双拼 / 五笔 / 仓颉）
-        functionRow.addView(
-            functionChip("⌨️", getString(R.string.scheme_chip_label)) { toggleSchemePanel() },
-            LinearLayout.LayoutParams(
-                clipButtonSize,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
-        )
-        // M-A1-1 键盘快捷设置：高度调节 / 按键音 / 振动 / 单手模式（搜狗 3.7/5.1/5.4）
-        functionRow.addView(
-            functionChip("⚙️", getString(R.string.ime_chip_settings)) { toggleKeyboardSettings() },
-            LinearLayout.LayoutParams(
-                clipButtonSize,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
-        )
-        // M-A2-1 常用语（搜狗 8.0 快捷短语 / 11.46 常用语）
-        functionRow.addView(
-            functionChip("💬", getString(R.string.ime_chip_phrases)) { toggleQuickPhrases() },
-            LinearLayout.LayoutParams(
-                clipButtonSize,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
-        )
-        // M-A2-3 时间/日期/邮箱后缀（搜狗 7.4）
-        functionRow.addView(
-            functionChip("⏱", getString(R.string.ime_chip_quick_insert)) { toggleQuickInsert() },
-            LinearLayout.LayoutParams(
-                clipButtonSize,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
-        )
-        // M-A2-2 表情面板（搜狗 8.0 表情面板 / 4.8 表情搜索）
-        functionRow.addView(
-            functionChip("😀", getString(R.string.ime_chip_emoji)) { toggleEmojiPanel() },
-            LinearLayout.LayoutParams(
-                clipButtonSize,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
-        )
-        // M-A2-4 键盘计算器（搜狗 9.5）
-        functionRow.addView(
-            functionChip("🧮", getString(R.string.ime_chip_calc)) { toggleCalculatorPanel() },
-            LinearLayout.LayoutParams(
-                clipButtonSize,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
-        )
+        functionRow.tag = "function_row"
+        // M-A5-1 工具栏自定义：按配置渲染（显隐/排序持久化）
+        renderFunctionRow(functionRow)
         root.addView(functionRow)
         // 功能行与键区之间的细分隔线，避免浅灰功能行和浅灰键区粘连。
         root.addView(View(this).apply {
@@ -982,6 +902,24 @@ class ShurufaImeService : InputMethodService() {
         }
         refreshHandChips(handRow)
         panel.addView(handRow)
+        // M-A5-1 工具栏自定义（显隐 + 排序，搜狗 20.10/20.11）
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.kb_settings_toolbar)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(palette.panelText)
+            setPadding(0, dp(10f), 0, dp(2f))
+        })
+        settingsToolbarRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        panel.addView(settingsToolbarRows)
+        refreshSettingsToolbar()
+        // M-A5-3 专业模式：场景词库已随包内联启用（M10 机制）
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.kb_settings_pro)
+            textSize = 12f
+            setTextColor(palette.panelMuted)
+            setPadding(0, dp(8f), 0, 0)
+        })
         panel.addView(TextView(this).apply {
             text = getString(R.string.kb_settings_close)
             textSize = 14f
@@ -1025,6 +963,71 @@ class ShurufaImeService : InputMethodService() {
                 },
             )
         }
+
+    // ---------- M-A5-1 工具栏自定义（搜狗 20.10/20.11） ----------
+
+    private data class ToolbarItem(
+        val id: String,
+        val glyph: String,
+        val description: String,
+        val action: () -> Unit,
+    )
+
+    private fun toolbarItems(): List<ToolbarItem> = listOf(
+        ToolbarItem("history", "▾▦", getString(R.string.ime_chip_history)) { toggleHistory() },
+        ToolbarItem("images", "🖼", getString(R.string.ime_chip_images)) { toggleImageHistory() },
+        ToolbarItem("ai", "🪄", getString(R.string.ime_chip_ai_write)) { toggleAiPanel() },
+        ToolbarItem("scheme", "⌨️", getString(R.string.scheme_chip_label)) { toggleSchemePanel() },
+        ToolbarItem("settings", "⚙️", getString(R.string.ime_chip_settings)) { toggleKeyboardSettings() },
+        ToolbarItem("phrases", "💬", getString(R.string.ime_chip_phrases)) { toggleQuickPhrases() },
+        ToolbarItem("quick", "⏱", getString(R.string.ime_chip_quick_insert)) { toggleQuickInsert() },
+        ToolbarItem("emoji", "😀", getString(R.string.ime_chip_emoji)) { toggleEmojiPanel() },
+        ToolbarItem("calc", "🧮", getString(R.string.ime_chip_calc)) { toggleCalculatorPanel() },
+    )
+
+    private fun functionChip(glyph: String, description: String, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = glyph
+            contentDescription = description
+            gravity = Gravity.CENTER
+            textSize = 15f
+            setTextColor(0xFFFFFFFF.toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(palette.accent)
+            }
+            setOnClickListener { onClick() }
+        }
+
+    private fun toolbarSavedIds(): List<String> =
+        ToolbarPrefs.decode(
+            getSharedPreferences("shurufa", Context.MODE_PRIVATE)
+                .getString(ToolbarPrefs.KEY, null)
+        )
+
+    private fun persistToolbar(ids: List<String>) {
+        getSharedPreferences("shurufa", Context.MODE_PRIVATE)
+            .edit()
+            .putString(ToolbarPrefs.KEY, ToolbarPrefs.encode(ids))
+            .apply()
+        inputRoot?.findViewWithTag<LinearLayout>("function_row")?.let { renderFunctionRow(it) }
+    }
+
+    private fun renderFunctionRow(row: LinearLayout) {
+        row.removeAllViews()
+        val all = toolbarItems()
+        val ids = ToolbarPrefs.resolve(toolbarSavedIds(), all.map { it.id })
+        val compact = isLandscape()
+        val size = dp(if (compact) 24f else 30f)
+        val vm = dp(if (compact) 4f else 5f)
+        for (item in all.filter { it.id in ids }) {
+            row.addView(
+                functionChip(item.glyph, item.description, item.action),
+                LinearLayout.LayoutParams(size, LinearLayout.LayoutParams.MATCH_PARENT)
+                    .apply { setMargins(dp(2f), vm, dp(6f), vm) },
+            )
+        }
+    }
 
     // ---------- M-A2-1 常用语 / 快捷短语面板 ----------
 
@@ -1616,6 +1619,71 @@ class ShurufaImeService : InputMethodService() {
             panel.addView(row(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40f)))
         }
         return panel
+    }
+
+    /** M-A5-1 设置面板内工具栏配置行（显隐 Switch + ⇧⇩ 排序）。 */
+    private fun refreshSettingsToolbar() {
+        val container = settingsToolbarRows ?: return
+        container.removeAllViews()
+        val savedRaw = toolbarSavedIds()
+        val saved = if (savedRaw.isEmpty()) ToolbarPrefs.defaultIds.toMutableList() else savedRaw.toMutableList()
+        for (item in toolbarItems()) {
+            val enabled = item.id in saved
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(
+                TextView(this).apply {
+                    text = item.glyph + " " + item.description
+                    textSize = 13f
+                    setTextColor(palette.panelText)
+                },
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            fun arrow(label: String, delta: Int) = TextView(this).apply {
+                text = label
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setTextColor(palette.panelText)
+                setPadding(dp(6f), 0, dp(6f), 0)
+                setOnClickListener {
+                    val ids = ToolbarPrefs.move(
+                        if (toolbarSavedIds().isEmpty()) ToolbarPrefs.defaultIds else toolbarSavedIds(),
+                        item.id,
+                        delta,
+                    )
+                    persistToolbar(ids)
+                    refreshSettingsToolbar()
+                }
+            }
+            row.addView(arrow("⇧", -1))
+            row.addView(arrow("⇩", 1))
+            row.addView(Switch(this).apply {
+                isChecked = enabled
+                setOnCheckedChangeListener { _, checked ->
+                    val base = if (toolbarSavedIds().isEmpty()) {
+                        ToolbarPrefs.defaultIds.toMutableList()
+                    } else {
+                        toolbarSavedIds().toMutableList()
+                    }
+                    val ids = if (checked) {
+                        if (item.id !in base) base + item.id else base
+                    } else {
+                        base - item.id
+                    }
+                    persistToolbar(ids)
+                    refreshSettingsToolbar()
+                }
+            })
+            container.addView(
+                row,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(34f),
+                ),
+            )
+        }
     }
 
     private fun buildSchemePanel(): LinearLayout {
@@ -2422,6 +2490,30 @@ class ShurufaImeService : InputMethodService() {
                             setPadding(dp(10f), dp(4f), dp(10f), dp(4f))
                             setOnClickListener {
                                 currentInputConnection?.commitText(item, 1)
+                            }
+                            // M-A5-5 链接直达（搜狗 20.9）：长按网址直接打开浏览器
+                            setOnLongClickListener {
+                                if (ClipboardInsights.labelOf(item).contains("网址")) {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(item)).apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
+                                        startActivity(intent)
+                                    } catch (_: Throwable) {
+                                        Toast.makeText(
+                                            this@ShurufaImeService,
+                                            "无法打开链接",
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                } else {
+                                    Toast.makeText(
+                                        this@ShurufaImeService,
+                                        getString(R.string.history_menu_speak),
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                                true
                             }
                         },
                         LinearLayout.LayoutParams(

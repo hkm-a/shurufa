@@ -133,6 +133,18 @@ class MainActivity : Activity() {
             "",
             onClick = null,
         )
+        // M-A5-2 设置极简：键盘设置与小秘籍卡片（搜狗 20.3.1「设置极简」）
+        addCard(
+            root,
+            getString(R.string.main_card_keyboard_title),
+            getString(R.string.main_card_keyboard_desc),
+        ) {
+            Toast.makeText(
+                this,
+                R.string.main_card_keyboard_toast,
+                Toast.LENGTH_LONG,
+            ).show()
+        }
 
         // About 行（长按：重置引导标记并重新打开向导）
         root.addView(TextView(this).apply {

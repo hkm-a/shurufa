@@ -17,6 +17,9 @@
     <string name="main_card_sync_desc">与电脑配对，同步剪贴板 / 图片 / 文件</string>
     <string name="main_card_ai_title">AI 帮写</string>
     <string name="main_card_skin_title">皮肤</string>
+    <string name="main_card_keyboard_title">键盘设置与小秘籍</string>
+    <string name="main_card_keyboard_desc">调出键盘后点 ⚙️：高度/按键音/振动/单手/工具栏自定义（显隐+排序）；方案 ⌨️ 六种（含 9 键与笔画）</string>
+    <string name="main_card_keyboard_toast">在任意输入框调出键盘 → 点 ⚙️ 设置；长按空格说话、长按删除连删</string>
     <string name="main_ai_status_configured">✓ 已配置 API Key，键盘工具条可直接使用</string>
     <string name="main_ai_status_missing">未配置 API Key — 在 gradle.properties 写 AGNES_API_KEY 重新打包</string>
     <string name="main_skin_light">浅色</string>
@@ -107,6 +110,8 @@
     <string name="kb_single_left">左手</string>
     <string name="kb_single_right">右手</string>
     <string name="kb_settings_close">收起设置</string>
+    <string name="kb_settings_toolbar">工具栏 · 显隐与排序</string>
+    <string name="kb_settings_pro">专业场景词库（医生/律师/代码/生僻字）已随包启用</string>
 
     <!-- M-A2-1 常用语面板 -->
     <string name="ime_chip_phrases">常用语</string>
