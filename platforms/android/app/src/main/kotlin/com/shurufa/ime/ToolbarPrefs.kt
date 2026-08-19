@@ -4,12 +4,14 @@ package com.shurufa.ime
  * M-A5-1 键盘工具栏自定义（搜狗安卓 20.10/20.11「工具栏 icon 扩增、自定义
  * 左中右、最近使用」）。
  *
- * 持久化：逗号分隔的启用 id 顺序列表；隐藏 = 从列表移除，显示 = 追加
- * （resolve 时按全量默认顺序补齐缺失项），排序 = move 上移/下移。
- * 纯函数便于 JVM 单测。
+ * 持久化：toolbar_ids = 逗号分隔的启用 id 顺序列表（空 = 未配置）；
+ * toolbar_hidden = 逗号分隔的被隐藏 id 列表（显隐与排序分离，隐藏项不会被
+ * resolve 当缺失项补回）；新版本新增的默认项仍会追加到可见列表末尾。
+ * 排序 = move 上移/下移。纯函数便于 JVM 单测。
  */
 object ToolbarPrefs {
     const val KEY = "toolbar_ids"
+    const val HIDDEN_KEY = "toolbar_hidden"
 
     val defaultIds: List<String> = listOf(
         "history", "images", "ai", "scheme", "settings",
@@ -21,11 +23,17 @@ object ToolbarPrefs {
     fun decode(raw: String?): List<String> =
         raw?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
 
-    /** 收敛出最终渲染顺序：已存顺序在前，缺省项按全量顺序补在末尾。 */
-    fun resolve(saved: List<String>, all: List<String>): List<String> {
+    /** 收敛出最终渲染顺序：已存顺序在前；隐藏项（hidden）永不复活；
+     * 其余缺省项（如新版本新增的工具）按全量顺序补在末尾。 */
+    fun resolve(saved: List<String>, hidden: List<String>, all: List<String>): List<String> {
         val valid = all.toSet()
-        if (saved.isEmpty()) return defaultIds.filter { it in valid }
-        return saved.filter { it in valid } + all.filter { it !in saved }
+        val hiddenSet = hidden.toSet()
+        val base = if (saved.isEmpty()) {
+            defaultIds.filter { it in valid && it !in hiddenSet }
+        } else {
+            saved.filter { it in valid }
+        }
+        return base + all.filter { it !in base && it !in hiddenSet }
     }
 
     /** 显隐切换：显示则追加到末尾，隐藏则移除。 */

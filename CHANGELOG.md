@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+### 修复（模拟器联调，2026-08-19）
+- **面板互斥**：设置/短语/快捷插入/表情/计算器/方案等开关面板时只隐藏各自的
+  旧面板，计算器开着时开设置会出现双面板叠加；新增统一 hideAllPanels()，
+  所有面板开关与 onStartInput/onFinishInput/图片预览共用，互斥生效。
+- **工具栏显隐失效（M-A5 回归）**：ToolbarPrefs.resolve 把被用户隐藏的项当
+  「缺失的新项」补回，隐藏开关永远无效（UI 会复活被隐藏的入口）；新增
+  toolbar_hidden 持久化，显隐与排序分离，隐藏项不复活、新版本新增默认项
+  仍补在末尾；ToolbarPrefsTest 增至 7 项（含隐藏不复活 / 新项补齐用例）。
+- **rimejni 部署自死锁**：nativeInit 持 SESSION 锁期间调用 apply_input_scheme
+  （内部重入 SESSION 锁），引擎就绪后方案切换全部阻塞；改为先 drop(session)
+  再应用持久化方案，模拟器实测引擎就绪 ~40s、engineReady=true。
+- **方案切换 ANR 防护**：引擎部署（约 40s）期间 handleDebugCommand 方案命令
+  已加 engineReady 门控，避免主线程 select_schema 卡死弹 ANR。
+- 新增 Debug APK 自动化验收工具（DebugUiActivity 前台驱动 / 面板、方案、
+  键序命令 + 脚本），模拟器全流程回归：T9 九键打字、笔画键盘、短语/表情/
+  计算器/设置面板互斥、工具栏 9→8→9 显隐、计算器 7+3=10 上屏均通过。
+
 ## [1.7.0] - 2026-08-19
 
 ### 新增（安卓 M-A5：跨端生态与设置——工具栏自定义 / 设置极简 / 专业词 / 链接直达，2026-08-19）

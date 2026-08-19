@@ -17,14 +17,33 @@ class ToolbarPrefsTest {
 
     @Test
     fun 空配置回退默认顺序() {
-        assertEquals(ToolbarPrefs.defaultIds, ToolbarPrefs.resolve(emptyList(), ToolbarPrefs.defaultIds))
+        assertEquals(
+            ToolbarPrefs.defaultIds,
+            ToolbarPrefs.resolve(emptyList(), emptyList(), ToolbarPrefs.defaultIds),
+        )
     }
 
     @Test
     fun 保存顺序优先且缺省补齐() {
-        assertEquals(listOf("c", "a", "b", "d"), ToolbarPrefs.resolve(listOf("c", "a"), all))
+        assertEquals(listOf("c", "a", "b", "d"), ToolbarPrefs.resolve(listOf("c", "a"), emptyList(), all))
         // 非法 id 被过滤，保存项仍排前
-        assertEquals(listOf("b", "a", "c", "d"), ToolbarPrefs.resolve(listOf("zzz", "b"), all))
+        assertEquals(listOf("b", "a", "c", "d"), ToolbarPrefs.resolve(listOf("zzz", "b"), emptyList(), all))
+    }
+
+    @Test
+    fun 隐藏项不会复活() {
+        // 隐藏 b：即使 saved 缺 b，也不补回
+        assertEquals(listOf("a", "c", "d"), ToolbarPrefs.resolve(listOf("a", "c", "d"), listOf("b"), all))
+        // 未配置顺序时，默认列表也剔除隐藏项
+        assertEquals(listOf("a", "c", "d"), ToolbarPrefs.resolve(emptyList(), listOf("b"), all))
+    }
+
+    @Test
+    fun 新默认项仍会补齐且不覆盖隐藏() {
+        val allWithNew = all + "new"
+        assertEquals(listOf("c", "a", "b", "d", "new"), ToolbarPrefs.resolve(listOf("c", "a"), emptyList(), allWithNew))
+        // 隐藏 b 时新增项 new 照常补在末尾
+        assertEquals(listOf("a", "c", "d", "new"), ToolbarPrefs.resolve(listOf("a", "c", "d"), listOf("b"), allWithNew))
     }
 
     @Test

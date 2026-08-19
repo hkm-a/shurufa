@@ -110,7 +110,12 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeInit(
             }
             // 把持久化的 input_scheme 应用到会话（M-A1-3：方案真正生效，
             // 此前仅写偏好未切引擎；t9 等新方案依赖此步）。
-            let _ = apply_input_scheme(&shurufa_options::load().input_scheme);
+            // 注意：必须先释放 SESSION 锁再调用（apply_input_scheme 会再次
+            // 加锁，Mutex 非重入——模拟器实测在持有锁时调用会自死锁，导致
+            // 部署线程永不返回、engineReady 永远为 false）。
+            let scheme = shurufa_options::load().input_scheme;
+            drop(session);
+            let _ = apply_input_scheme(&scheme);
             1
         },
         0,

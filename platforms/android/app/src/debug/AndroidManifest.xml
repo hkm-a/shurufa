@@ -15,5 +15,17 @@
                 <action android:name="com.shurufa.ime.DEBUG_START_SYNC" />
             </intent-filter>
         </receiver>
+        <receiver
+            android:name=".DebugUiControlReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.shurufa.ime.DEBUG_UI" />
+            </intent-filter>
+        </receiver>
+        <activity
+            android:name=".DebugUiActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay" />
     </application>
 </manifest>

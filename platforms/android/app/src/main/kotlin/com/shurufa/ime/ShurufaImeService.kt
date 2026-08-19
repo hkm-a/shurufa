@@ -82,6 +82,9 @@ class ShurufaImeService : InputMethodService() {
     )
 
     companion object {
+        /** 仅 Debug APK 自动化使用（模拟器验收）：当前 IME 服务实例。 */
+        @Volatile
+        internal var debugInstance: ShurufaImeService? = null
         /** M-A3-3 笔画字形 → librime stroke 码（含康熙部首变体）。 */
         private val STROKE_CODE = mapOf(
             "一" to 'h', "丨" to 's', "丿" to 'p', "丶" to 'n', "乙" to 'z',
@@ -208,6 +211,7 @@ class ShurufaImeService : InputMethodService() {
 
     override fun onCreate() {
         super.onCreate()
+        debugInstance = this
         // 不在 onCreate 中启动剪贴板同步服务——IME 刚创建时就启动
         // 会触发系统（尤其 MIUI/HyperOS）的剪贴板访问面板，导致每次点开
         // 文本框时弹出剪贴板而非键盘。改为大幅延迟启动，等用户稳定使用后再捕获。
@@ -240,9 +244,8 @@ class ShurufaImeService : InputMethodService() {
         inputGeneration += 1
         warmupQueue.clear()
         // 每次打开新输入框时，强制关闭历史面板和图片预览，只展示纯键盘。
-        historyPanel?.visibility = View.GONE
+        hideAllPanels()
         previewImageId = null
-        previewKeyboard?.visibility = View.GONE
         if (::keyArea.isInitialized) keyArea.visibility = View.VISIBLE
     }
 
@@ -250,9 +253,7 @@ class ShurufaImeService : InputMethodService() {
         resetCompositionForInputChange()
         inputGeneration += 1
         warmupQueue.clear()
-        historyPanel?.visibility = View.GONE
-        previewKeyboard?.visibility = View.GONE
-        aiPanel?.visibility = View.GONE
+        hideAllPanels()
         aiLastDraft = null
         aiDraftView?.text = ""
         aiStatusLine?.text = ""
@@ -647,6 +648,19 @@ class ShurufaImeService : InputMethodService() {
         return root
     }
 
+    /** 面板互斥：打开任意面板时先隐藏其它全部面板（含历史/AI/预览/方案/设置/短语/快捷插入/表情/计算器）。 */
+    private fun hideAllPanels() {
+        historyPanel?.visibility = View.GONE
+        aiPanel?.visibility = View.GONE
+        previewKeyboard?.visibility = View.GONE
+        schemePanel?.visibility = View.GONE
+        settingsPanel?.visibility = View.GONE
+        quickPhrasePanel?.visibility = View.GONE
+        quickInsertPanel?.visibility = View.GONE
+        emojiPanel?.visibility = View.GONE
+        calcPanel?.visibility = View.GONE
+    }
+
     // ---------- 剪贴板历史面板 ----------
 
     private fun toggleHistory() {
@@ -658,6 +672,7 @@ class ShurufaImeService : InputMethodService() {
             // 每次打开面板清空搜索框（A6）
             historySearchRunnable?.let { mainHandler.removeCallbacks(it) }
             historySearchBox?.setText("")
+            hideAllPanels()
             populateHistory(panel, onlyImages = false, query = "")
             panel.visibility = View.VISIBLE
             keyArea.visibility = View.GONE
@@ -673,6 +688,7 @@ class ShurufaImeService : InputMethodService() {
         } else {
             historySearchRunnable?.let { mainHandler.removeCallbacks(it) }
             historySearchBox?.setText("")
+            hideAllPanels()
             populateHistory(panel, onlyImages = true, query = "")
             panel.visibility = View.VISIBLE
             keyArea.visibility = View.GONE
@@ -688,6 +704,7 @@ class ShurufaImeService : InputMethodService() {
             keyArea.visibility = View.VISIBLE
         } else {
             // 打开时重置：清空输入框与状态，保留上次草稿预览以便复制
+            hideAllPanels()
             aiInputBox?.setText("")
             aiStatusLine?.text = if (hasAiApiKey()) "" else getString(R.string.ai_panel_no_key)
             aiDraftView?.text = aiLastDraft.orEmpty()
@@ -733,9 +750,7 @@ class ShurufaImeService : InputMethodService() {
             )
         }
         // 关掉功能行上方其它面板（历史 / AI 帮写 / 图片预览），独占当前面板位
-        historyPanel?.visibility = View.GONE
-        aiPanel?.visibility = View.GONE
-        previewKeyboard?.visibility = View.GONE
+        hideAllPanels()
         keyArea.visibility = View.GONE
         refreshSchemePanelState()
         schemePanel?.visibility = View.VISIBLE
@@ -768,6 +783,12 @@ class ShurufaImeService : InputMethodService() {
     }
 
     private fun onSchemeChosen(id: String, label: String) {
+        // 引擎部署（约 40s）期间 SESSION 锁被占用，主线程 select_schema 会
+        // 卡死弹 ANR；与调试命令一致，先门控提示。
+        if (!engineReady) {
+            showStatus("引擎部署中，请稍候再切换方案", palette.accent)
+            return
+        }
         val ok = try {
             RimeBridge.nativeSetInputScheme(this, id)
         } catch (_: Throwable) {
@@ -806,10 +827,7 @@ class ShurufaImeService : InputMethodService() {
             )
         }
         // 关掉其它面板，独占当前面板位
-        historyPanel?.visibility = View.GONE
-        aiPanel?.visibility = View.GONE
-        previewKeyboard?.visibility = View.GONE
-        schemePanel?.visibility = View.GONE
+        hideAllPanels()
         keyArea.visibility = View.GONE
         settingsPanel?.visibility = View.VISIBLE
     }
@@ -1005,10 +1023,17 @@ class ShurufaImeService : InputMethodService() {
                 .getString(ToolbarPrefs.KEY, null)
         )
 
-    private fun persistToolbar(ids: List<String>) {
+    private fun toolbarHiddenIds(): List<String> =
+        ToolbarPrefs.decode(
+            getSharedPreferences("shurufa", Context.MODE_PRIVATE)
+                .getString(ToolbarPrefs.HIDDEN_KEY, null)
+        )
+
+    private fun persistToolbar(ids: List<String>, hidden: List<String> = toolbarHiddenIds()) {
         getSharedPreferences("shurufa", Context.MODE_PRIVATE)
             .edit()
             .putString(ToolbarPrefs.KEY, ToolbarPrefs.encode(ids))
+            .putString(ToolbarPrefs.HIDDEN_KEY, ToolbarPrefs.encode(hidden))
             .apply()
         inputRoot?.findViewWithTag<LinearLayout>("function_row")?.let { renderFunctionRow(it) }
     }
@@ -1016,7 +1041,7 @@ class ShurufaImeService : InputMethodService() {
     private fun renderFunctionRow(row: LinearLayout) {
         row.removeAllViews()
         val all = toolbarItems()
-        val ids = ToolbarPrefs.resolve(toolbarSavedIds(), all.map { it.id })
+        val ids = ToolbarPrefs.resolve(toolbarSavedIds(), toolbarHiddenIds(), all.map { it.id })
         val compact = isLandscape()
         val size = dp(if (compact) 24f else 30f)
         val vm = dp(if (compact) 4f else 5f)
@@ -1069,11 +1094,7 @@ class ShurufaImeService : InputMethodService() {
             )
         }
         // 关掉其它面板，独占当前面板位
-        historyPanel?.visibility = View.GONE
-        aiPanel?.visibility = View.GONE
-        previewKeyboard?.visibility = View.GONE
-        schemePanel?.visibility = View.GONE
-        settingsPanel?.visibility = View.GONE
+        hideAllPanels()
         phraseSearchBox?.setText("")
         phraseCategory = null
         refreshPhraseChips()
@@ -1268,12 +1289,7 @@ class ShurufaImeService : InputMethodService() {
                 ),
             )
         }
-        historyPanel?.visibility = View.GONE
-        aiPanel?.visibility = View.GONE
-        previewKeyboard?.visibility = View.GONE
-        schemePanel?.visibility = View.GONE
-        settingsPanel?.visibility = View.GONE
-        quickPhrasePanel?.visibility = View.GONE
+        hideAllPanels()
         keyArea.visibility = View.GONE
         quickInsertPanel?.visibility = View.VISIBLE
     }
@@ -1298,13 +1314,7 @@ class ShurufaImeService : InputMethodService() {
                 ),
             )
         }
-        historyPanel?.visibility = View.GONE
-        aiPanel?.visibility = View.GONE
-        previewKeyboard?.visibility = View.GONE
-        schemePanel?.visibility = View.GONE
-        settingsPanel?.visibility = View.GONE
-        quickPhrasePanel?.visibility = View.GONE
-        quickInsertPanel?.visibility = View.GONE
+        hideAllPanels()
         emojiSearchBox?.setText("")
         emojiCategoryId = null
         refreshEmojiChips()
@@ -1459,14 +1469,7 @@ class ShurufaImeService : InputMethodService() {
                 ),
             )
         }
-        historyPanel?.visibility = View.GONE
-        aiPanel?.visibility = View.GONE
-        previewKeyboard?.visibility = View.GONE
-        schemePanel?.visibility = View.GONE
-        settingsPanel?.visibility = View.GONE
-        quickPhrasePanel?.visibility = View.GONE
-        quickInsertPanel?.visibility = View.GONE
-        emojiPanel?.visibility = View.GONE
+        hideAllPanels()
         calculator.clear()
         renderCalc()
         keyArea.visibility = View.GONE
@@ -1626,7 +1629,7 @@ class ShurufaImeService : InputMethodService() {
         val container = settingsToolbarRows ?: return
         container.removeAllViews()
         val savedRaw = toolbarSavedIds()
-        val saved = if (savedRaw.isEmpty()) ToolbarPrefs.defaultIds.toMutableList() else savedRaw.toMutableList()
+        val saved = ToolbarPrefs.resolve(savedRaw, toolbarHiddenIds(), toolbarItems().map { it.id }).toMutableList()
         for (item in toolbarItems()) {
             val enabled = item.id in saved
             val row = LinearLayout(this).apply {
@@ -1662,17 +1665,21 @@ class ShurufaImeService : InputMethodService() {
             row.addView(Switch(this).apply {
                 isChecked = enabled
                 setOnCheckedChangeListener { _, checked ->
-                    val base = if (toolbarSavedIds().isEmpty()) {
-                        ToolbarPrefs.defaultIds.toMutableList()
+                    val visible = toolbarSavedIds()
+                    val hidden = toolbarHiddenIds().toMutableList()
+                    val base = if (visible.isEmpty()) {
+                        ToolbarPrefs.defaultIds.filter { it !in hidden }.toMutableList()
                     } else {
-                        toolbarSavedIds().toMutableList()
+                        visible.toMutableList()
                     }
-                    val ids = if (checked) {
-                        if (item.id !in base) base + item.id else base
+                    if (checked) {
+                        if (item.id !in base) base += item.id
+                        hidden.remove(item.id)
                     } else {
-                        base - item.id
+                        base -= item.id
+                        if (item.id !in hidden) hidden += item.id
                     }
-                    persistToolbar(ids)
+                    persistToolbar(base, hidden)
                     refreshSettingsToolbar()
                 }
             })
@@ -1683,6 +1690,38 @@ class ShurufaImeService : InputMethodService() {
                     dp(34f),
                 ),
             )
+        }
+    }
+
+    /** 仅 Debug APK 自动化使用（模拟器验收）：面板 / 方案 / 键序命令。 */
+    internal fun handleDebugCommand(kind: String, value: String?) {
+        android.util.Log.i("shurufa-debug-ui", "cmd kind=$kind value=$value engineReady=$engineReady")
+        try {
+            when (kind) {
+                "panel" -> when (value) {
+                    "settings" -> toggleKeyboardSettings()
+                    "scheme" -> toggleSchemePanel()
+                    "phrases" -> toggleQuickPhrases()
+                    "emoji" -> toggleEmojiPanel()
+                    "calc" -> toggleCalculatorPanel()
+                    "quick" -> toggleQuickInsert()
+                }
+                "scheme" -> {
+                    if (!engineReady) {
+                        // 引擎部署期间 select_schema 会持锁阻塞主线程（模拟器实测 ANR）
+                        showStatus("引擎部署中，请稍候再切换方案", palette.accent)
+                        return
+                    }
+                    val id = value ?: "pinyin"
+                    if (RimeBridge.nativeSetInputScheme(this, id)) {
+                        rebuildKeys()
+                    }
+                }
+                "type" -> value?.forEach { c ->
+                    if (c.isLetterOrDigit()) onLetter(c.lowercaseChar())
+                }
+            }
+        } catch (_: Throwable) {
         }
     }
 
@@ -2427,7 +2466,7 @@ class ShurufaImeService : InputMethodService() {
         if (bmp != null) image.setImageBitmap(bmp)
         previewImageId = id
         // 隐藏一切可能挤压预览区的元素。
-        historyPanel?.visibility = View.GONE
+        hideAllPanels()
         keyArea.visibility = View.GONE
         panel.visibility = View.VISIBLE
         android.util.Log.i("shurufa", "打开图片预览 历史ID=$id 字节=${png.size}")
@@ -3536,6 +3575,7 @@ class ShurufaImeService : InputMethodService() {
     /** 按目标边长下采样解码，避免全分辨率大图在主线程 OOM/卡顿。 */
     override fun onDestroy() {
         super.onDestroy()
+        if (debugInstance === this) debugInstance = null
         voice?.cancel()
         voice = null
         ttsSpeaker?.shutdown()
