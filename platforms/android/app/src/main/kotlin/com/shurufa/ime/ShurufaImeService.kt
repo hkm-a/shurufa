@@ -23,6 +23,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.accessibility.AccessibilityEvent
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.HorizontalScrollView
@@ -2314,6 +2315,8 @@ class ShurufaImeService : InputMethodService() {
         }
         if (candidates.isNotEmpty()) {
             addExpandedCandidates(candidates, highlighted)
+            // v1.2 读屏：候选行内容变更事件，TalkBack 聚焦候选行时可朗读新候选
+            candidateBar.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
         }
     }
 
@@ -2325,6 +2328,8 @@ class ShurufaImeService : InputMethodService() {
             setTextColor(if (index == highlighted) palette.candidateHl else palette.candidate)
             if (index == highlighted) typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(if (compact) 15f else 8f), 0, dp(if (compact) 15f else 8f), 0)
+            // v1.2 读屏：候选词显式对 TalkBack 可见（含序号，读屏可朗读候选）
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
             contentDescription = "第 ${index + 1} 候选词：$text"
             setOnClickListener { onCandidateSelect(index) }
             // B8 长按菜单：复制 / 删除该词（用户词典词条）

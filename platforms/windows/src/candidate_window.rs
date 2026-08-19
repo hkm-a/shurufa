@@ -37,8 +37,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, LoadCursorW, MoveWindow, RegisterClassW, SetWindowPos, ShowWindow,
     TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, MF_SEPARATOR, MF_STRING,
     SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE, WNDCLASSW,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT, WM_LBUTTONDOWN,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE, WNDCLASSW,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
@@ -1061,6 +1061,15 @@ impl CandidateUi {
             if content_changed || rect_changed || !was_visible {
                 let _ = InvalidateRect(Some(hwnd), None, true);
             }
+            // v1.2 读屏：候选文本 → UIA Provider Name（NVDA/讲述人朗读候选）
+            let uia_text = ctx
+                .candidates
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{}.{}", i + 1, c.text))
+                .collect::<Vec<_>>()
+                .join("，");
+            crate::uia_provider::update_candidate_text(&uia_text);
         }
     }
 
@@ -1072,6 +1081,7 @@ impl CandidateUi {
             }
         }
         self.visible = false;
+        crate::uia_provider::clear_candidate_text();
     }
 
     /// 触发一次重绘：模式角标 / 长按大写提示等不发新候选、仅刷新外观的场景用。
@@ -1157,7 +1167,17 @@ unsafe extern "system" fn wnd_proc(
         value if value == WM_DESTROY => {
             crate::candidate_window_d2d::shutdown();
             crate::candidate_window_dcomp::shutdown();
+            crate::uia_provider::clear_candidate_text();
             DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        value if value == WM_GETOBJECT => {
+            // v1.2 读屏：UIA 原始元素 Provider（WM_GETOBJECT → UiaRootObjectId）
+            if let Some(lr) = unsafe { crate::uia_provider::on_wm_getobject(hwnd, wparam, lparam) }
+            {
+                lr
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
         }
         value if value == WM_LBUTTONDOWN => {
             select_candidate_at(lparam);

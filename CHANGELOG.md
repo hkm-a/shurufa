@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 新增（v1.2-2 读屏无障碍：候选窗 UIA + Android TalkBack，2026-08-19）
+- **Windows 候选窗 UIA Provider（阶段一）**：新增 uia_provider.rs，实现
+  IRawElementProviderSimple（#[implement] 生成 COM vtable）：Name = 当前候选行
+  文本（"1.你，2.你好…"，随候选刷新更新）/ ControlType = Text / IsEnabled /
+  IsKeyboardFocusable；候选窗 wnd_proc 处理 WM_GETOBJECT → UiaReturnRawElementProvider，
+  NVDA / 讲述人聚焦候选窗即可朗读候选。完整 ITextProvider（逐候选范围朗读/
+  导航）按评估口径列为阶段二。
+- **Android IME**：候选词 TextView 显式 importantForAccessibility = YES（配合既有
+  contentDescription "第 N 候选词：X"），候选刷新发 TYPE_WINDOW_CONTENT_CHANGED，
+  TalkBack 可朗读候选与序号；APK 已重建（v1.1.0 code 33）。
+
 ### 新增（v1.2-1 语音输入云端转写试点，2026-08-19）
 - **真实录音（waveIn）→ 云端转写闭环**：audio_capture.rs（16kHz/16bit/单声道
   waveIn 回调采集，WAV 组装纯函数单测）+ asr.rs（OpenAI 兼容
