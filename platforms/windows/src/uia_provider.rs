@@ -1,8 +1,10 @@
-//! 候选窗 UI Automation Provider（v1.2 读屏阶段一）。
+//! 候选窗 UI Automation Provider（v1.2 读屏）。
 //!
-//! 暴露 Name（当前候选行文本，随候选刷新更新）/ ControlType(Text) /
+//! 阶段一：Name（当前候选行文本，随候选刷新更新）/ ControlType(Text) /
 //! IsEnabled / IsKeyboardFocusable，NVDA / 讲述人聚焦候选窗时可朗读候选。
-//! 完整 ITextProvider（逐候选范围朗读与导航）列为阶段二（评估报告口径）。
+//! 阶段二：ITextProvider / ITextRangeProvider 只读全文范围（DocumentRange /
+//! GetVisibleRanges / GetText(maxlength)），逐候选偏移与编辑能力按 UIA 规范
+//! 返回 E_NOTIMPL / 0；运行时探针单测走读屏器同款客户端路径验证。
 use std::sync::{Mutex, OnceLock};
 use windows::core::{implement, IUnknown, Interface, Result};
 use windows::Win32::Foundation::VARIANT_TRUE;
