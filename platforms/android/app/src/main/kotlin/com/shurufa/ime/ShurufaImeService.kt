@@ -125,6 +125,11 @@ class ShurufaImeService : InputMethodService() {
     private var emojiGrid: LinearLayout? = null
     private var emojiCategoryId: String? = null
     private var emojiChipsRow: LinearLayout? = null
+    /** M-A2-4 键盘计算器面板（搜狗 9.5）。 */
+    private var calcPanel: LinearLayout? = null
+    private var calcExpr: TextView? = null
+    private var calcPreview: TextView? = null
+    private val calculator = Calculator()
     /// 大写锁定（微信输入法同款 capslock 键：行首图标键）
     private var shiftMode = false
     private var historyPanel: LinearLayout? = null
@@ -641,6 +646,14 @@ class ShurufaImeService : InputMethodService() {
         // M-A2-2 表情面板（搜狗 8.0 表情面板 / 4.8 表情搜索）
         functionRow.addView(
             functionChip("😀", getString(R.string.ime_chip_emoji)) { toggleEmojiPanel() },
+            LinearLayout.LayoutParams(
+                clipButtonSize,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
+        )
+        // M-A2-4 键盘计算器（搜狗 9.5）
+        functionRow.addView(
+            functionChip("🧮", getString(R.string.ime_chip_calc)) { toggleCalculatorPanel() },
             LinearLayout.LayoutParams(
                 clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
@@ -1403,6 +1416,131 @@ class ShurufaImeService : InputMethodService() {
                 .getString(EmojiPanel.RECENT_KEY, "") ?: ""
         )
 
+    // ---------- M-A2-4 键盘计算器面板 ----------
+
+    private fun toggleCalculatorPanel() {
+        val existing = calcPanel
+        if (existing != null && existing.visibility == View.VISIBLE) {
+            existing.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+            return
+        }
+        if (existing == null) {
+            val built = buildCalculatorPanel()
+            calcPanel = built
+            inputRoot?.addView(
+                built,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+        historyPanel?.visibility = View.GONE
+        aiPanel?.visibility = View.GONE
+        previewKeyboard?.visibility = View.GONE
+        schemePanel?.visibility = View.GONE
+        settingsPanel?.visibility = View.GONE
+        quickPhrasePanel?.visibility = View.GONE
+        quickInsertPanel?.visibility = View.GONE
+        emojiPanel?.visibility = View.GONE
+        calculator.clear()
+        renderCalc()
+        keyArea.visibility = View.GONE
+        calcPanel?.visibility = View.VISIBLE
+    }
+
+    private fun buildCalculatorPanel(): LinearLayout {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(palette.key)
+            visibility = View.GONE
+            setPadding(dp(10f), dp(8f), dp(10f), dp(10f))
+        }
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.calc_title)
+            textSize = 13f
+            setTextColor(palette.panelText)
+        })
+        calcExpr = TextView(this).apply {
+            textSize = 28f
+            gravity = Gravity.END
+            setTextColor(palette.panelText)
+            setPadding(dp(4f), dp(10f), dp(4f), 0)
+            maxLines = 1
+        }
+        calcPreview = TextView(this).apply {
+            textSize = 15f
+            gravity = Gravity.END
+            setTextColor(palette.accent)
+            setPadding(dp(4f), dp(2f), dp(4f), dp(8f))
+        }
+        panel.addView(calcExpr)
+        panel.addView(calcPreview)
+        for (row in Calculator.KEYS) {
+            val rowView = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (label in row) {
+                rowView.addView(
+                    calcKey(label),
+                    LinearLayout.LayoutParams(0, dp(48f), 1f).apply {
+                        setMargins(dp(3f), dp(3f), dp(3f), dp(3f))
+                    },
+                )
+            }
+            panel.addView(rowView)
+        }
+        renderCalc()
+        return panel
+    }
+
+    private fun calcKey(label: String): TextView = TextView(this).apply {
+        text = when (label) {
+            "del" -> "⌫"
+            "C" -> "C"
+            else -> label
+        }
+        textSize = 20f
+        gravity = Gravity.CENTER
+        setTextColor(if (label == "=") 0xFFFFFFFF.toInt() else palette.panelText)
+        background = GradientDrawable().apply {
+            cornerRadius = dp(8f).toFloat()
+            setColor(if (label == "=") palette.accent else palette.keyPressed)
+        }
+        setOnClickListener { onCalcKey(label) }
+    }
+
+    private fun onCalcKey(label: String) {
+        when (label) {
+            "C" -> {
+                calculator.clear()
+                renderCalc()
+            }
+            "del" -> {
+                calculator.backspace()
+                renderCalc()
+            }
+            "=" -> {
+                val value = calculator.evaluate()
+                if (value != null) {
+                    currentInputConnection?.commitText(calculator.formatResult(value), 1)
+                    calculator.clear()
+                    renderCalc()
+                } else {
+                    calcPreview?.text = getString(R.string.calc_error)
+                }
+            }
+            else -> {
+                if (label.isNotEmpty() && calculator.input(label[0])) renderCalc()
+            }
+        }
+    }
+
+    private fun renderCalc() {
+        calcExpr?.text = calculator.expression.ifEmpty { "0" }
+        val value = calculator.evaluate()
+        calcPreview?.text = if (value == null) "" else "= " + calculator.formatResult(value)
+    }
+
     private fun sendEmoji(emoji: String) {
         currentInputConnection?.commitText(emoji, 1)
         val recent = EmojiPanel.pushRecent(recentEmojis(), emoji)
@@ -2158,6 +2296,41 @@ class ShurufaImeService : InputMethodService() {
         panel.addView(titleRow)
         refreshTypingStats(statsView)
 
+        // M-A2-5 关键内容提取（搜狗 11.46）：最新文本里的网址/手机号/邮箱一键上屏
+        if (!onlyImages && query.isEmpty()) {
+            val latestText = ClipStore.list(100).firstOrNull { it.kind == "text" }?.text.orEmpty()
+            val insights = ClipboardInsights.extract(latestText)
+            if (insights.isNotEmpty()) {
+                val insightsRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(dp(14f), 0, dp(14f), dp(6f))
+                }
+                insights.take(3).forEach { item ->
+                    insightsRow.addView(
+                        TextView(this).apply {
+                            text = ClipboardInsights.labelOf(item) + " " + item.take(24)
+                            textSize = 12f
+                            gravity = Gravity.CENTER
+                            setTextColor(0xFFFFFFFF.toInt())
+                            background = GradientDrawable().apply {
+                                cornerRadius = dp(12f).toFloat()
+                                setColor(palette.accent)
+                            }
+                            setPadding(dp(10f), dp(4f), dp(10f), dp(4f))
+                            setOnClickListener {
+                                currentInputConnection?.commitText(item, 1)
+                            }
+                        },
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        ).apply { setMargins(0, 0, dp(6f), 0) },
+                    )
+                }
+                panel.addView(insightsRow)
+            }
+        }
+
         // A6 搜索框：仅文本模式（非斗图）显示；空串走 list，非空走 search。
         historySearchBox = null
         if (!onlyImages) {
@@ -2205,9 +2378,9 @@ class ShurufaImeService : InputMethodService() {
         ioExecutor.execute {
             val entries = try {
                 if (query.isBlank()) {
-                    ClipStore.list(30)
+                    ClipStore.list(100)
                 } else {
-                    ClipStore.search(query, 30)
+                    ClipStore.search(query, 100)
                 }.filter { !onlyImages || it.kind == "image" }
             } catch (e: Throwable) {
                 emptyList()

@@ -129,6 +129,11 @@
     <string name="ep_search_hint">Search emoji (e.g. smile / weixiao)…</string>
     <string name="ep_recent">Recent</string>
     <string name="ep_empty">(No matching emoji)</string>
+
+    <!-- M-A2-4 keyboard calculator -->
+    <string name="ime_chip_calc">Calculator</string>
+    <string name="calc_title">Calculator · tap = to insert</string>
+    <string name="calc_error">Invalid expression</string>
     <string name="scheme_dialog_title">Switch input scheme</string>
     <string name="scheme_dialog_close">Close</string>
     <string name="scheme_dialog_hint">Switching applies immediately</string>
