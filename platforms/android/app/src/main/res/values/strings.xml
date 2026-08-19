@@ -105,6 +105,17 @@
     <string name="kb_single_left">左手</string>
     <string name="kb_single_right">右手</string>
     <string name="kb_settings_close">收起设置</string>
+
+    <!-- M-A2-1 常用语面板 -->
+    <string name="ime_chip_phrases">常用语</string>
+    <string name="qp_title">常用语 · 点击上屏 · 长按删除</string>
+    <string name="qp_search_hint">搜索常用语…</string>
+    <string name="qp_add_hint">输入要保存的常用语</string>
+    <string name="qp_add_button">保存</string>
+    <string name="qp_add_saved">已添加常用语</string>
+    <string name="qp_deleted">已删除常用语</string>
+    <string name="qp_all">全部</string>
+    <string name="qp_empty">（没有匹配的常用语）</string>
     <string name="scheme_dialog_title">切换输入方案</string>
     <string name="scheme_dialog_close">关闭</string>
     <string name="scheme_dialog_hint">切换即时生效</string>

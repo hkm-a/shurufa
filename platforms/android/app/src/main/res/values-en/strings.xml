@@ -105,6 +105,17 @@
     <string name="kb_single_left">Left</string>
     <string name="kb_single_right">Right</string>
     <string name="kb_settings_close">Close settings</string>
+
+    <!-- M-A2-1 quick phrases panel -->
+    <string name="ime_chip_phrases">Phrases</string>
+    <string name="qp_title">Quick phrases · tap to insert · long-press to delete</string>
+    <string name="qp_search_hint">Search phrases…</string>
+    <string name="qp_add_hint">New phrase to save</string>
+    <string name="qp_add_button">Save</string>
+    <string name="qp_add_saved">Phrase added</string>
+    <string name="qp_deleted">Phrase deleted</string>
+    <string name="qp_all">All</string>
+    <string name="qp_empty">(No matching phrases)</string>
     <string name="scheme_dialog_title">Switch input scheme</string>
     <string name="scheme_dialog_close">Close</string>
     <string name="scheme_dialog_hint">Switching applies immediately</string>

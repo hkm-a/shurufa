@@ -108,6 +108,14 @@ class ShurufaImeService : InputMethodService() {
     /** M-A1-1 键盘偏好：高度 / 按键音 / 振动 / 单手模式。 */
     private lateinit var kbPrefs: KeyboardPrefs
     private var settingsPanel: LinearLayout? = null
+    /** M-A2-1 常用语：默认短语 + 用户自定义（长按删除），SharedPreferences 行格式持久化。 */
+    private var quickPhrasePanel: LinearLayout? = null
+    private var phraseSearchBox: EditText? = null
+    private var phraseContainer: LinearLayout? = null
+    private var phraseChipsRow: LinearLayout? = null
+    private var phraseAddBox: EditText? = null
+    private val phraseList: MutableList<QuickPhrase> = mutableListOf()
+    private var phraseCategory: String? = null
     /// 大写锁定（微信输入法同款 capslock 键：行首图标键）
     private var shiftMode = false
     private var historyPanel: LinearLayout? = null
@@ -448,6 +456,7 @@ class ShurufaImeService : InputMethodService() {
     override fun onCreateInputView(): View {
         palette = loadPalette()
         kbPrefs = KeyboardPrefs.load(this)
+        loadQuickPhrases()
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -599,6 +608,14 @@ class ShurufaImeService : InputMethodService() {
         // M-A1-1 键盘快捷设置：高度调节 / 按键音 / 振动 / 单手模式（搜狗 3.7/5.1/5.4）
         functionRow.addView(
             functionChip("⚙️", getString(R.string.ime_chip_settings)) { toggleKeyboardSettings() },
+            LinearLayout.LayoutParams(
+                clipButtonSize,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            ).apply { setMargins(dp(2f), clipVerticalMargin, dp(6f), clipVerticalMargin) }
+        )
+        // M-A2-1 常用语（搜狗 8.0 快捷短语 / 11.46 常用语）
+        functionRow.addView(
+            functionChip("💬", getString(R.string.ime_chip_phrases)) { toggleQuickPhrases() },
             LinearLayout.LayoutParams(
                 clipButtonSize,
                 LinearLayout.LayoutParams.MATCH_PARENT
@@ -950,6 +967,225 @@ class ShurufaImeService : InputMethodService() {
                 },
             )
         }
+
+    // ---------- M-A2-1 常用语 / 快捷短语面板 ----------
+
+    private fun loadQuickPhrases() {
+        val prefs = getSharedPreferences("shurufa", Context.MODE_PRIVATE)
+        phraseList.clear()
+        phraseList.addAll(
+            if (prefs.contains("quick_phrases")) {
+                QuickPhrases.decode(prefs.getString("quick_phrases", "") ?: "")
+            } else {
+                QuickPhrases.defaults
+            }
+        )
+    }
+
+    private fun persistPhrases() {
+        getSharedPreferences("shurufa", Context.MODE_PRIVATE)
+            .edit()
+            .putString("quick_phrases", QuickPhrases.encode(phraseList))
+            .apply()
+    }
+
+    private fun toggleQuickPhrases() {
+        val existing = quickPhrasePanel
+        if (existing != null && existing.visibility == View.VISIBLE) {
+            existing.visibility = View.GONE
+            keyArea.visibility = View.VISIBLE
+            return
+        }
+        if (existing == null) {
+            val built = buildQuickPhrasePanel()
+            quickPhrasePanel = built
+            inputRoot?.addView(
+                built,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
+        // 关掉其它面板，独占当前面板位
+        historyPanel?.visibility = View.GONE
+        aiPanel?.visibility = View.GONE
+        previewKeyboard?.visibility = View.GONE
+        schemePanel?.visibility = View.GONE
+        settingsPanel?.visibility = View.GONE
+        phraseSearchBox?.setText("")
+        phraseCategory = null
+        refreshPhraseChips()
+        renderPhrases()
+        keyArea.visibility = View.GONE
+        quickPhrasePanel?.visibility = View.VISIBLE
+    }
+
+    private fun buildQuickPhrasePanel(): LinearLayout {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(palette.key)
+            visibility = View.GONE
+            setPadding(dp(10f), dp(8f), dp(10f), dp(10f))
+        }
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.qp_title)
+            textSize = 13f
+            setTextColor(palette.panelText)
+        })
+        val search = EditText(this).apply {
+            hint = getString(R.string.qp_search_hint)
+            textSize = 14f
+            setTextColor(palette.panelText)
+            setHintTextColor(if (isDark()) 0xFF8E949D.toInt() else 0xFF9AA0AA.toInt())
+            setSingleLine(true)
+            setOnEditorActionListener { _, _, _ ->
+                renderPhrases()
+                true
+            }
+        }
+        phraseSearchBox = search
+        panel.addView(
+            search,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(40f),
+            ).apply { topMargin = dp(6f) },
+        )
+        phraseChipsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        panel.addView(phraseChipsRow)
+        phraseContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        panel.addView(
+            ScrollView(this).apply { addView(phraseContainer) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+                topMargin = dp(6f)
+            },
+        )
+        val addRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6f), 0, 0)
+        }
+        val addBox = EditText(this).apply {
+            hint = getString(R.string.qp_add_hint)
+            textSize = 14f
+            setTextColor(palette.panelText)
+            setHintTextColor(if (isDark()) 0xFF8E949D.toInt() else 0xFF9AA0AA.toInt())
+            setSingleLine(true)
+        }
+        phraseAddBox = addBox
+        addRow.addView(addBox, LinearLayout.LayoutParams(0, dp(40f), 1f))
+        addRow.addView(
+            TextView(this).apply {
+                text = getString(R.string.qp_add_button)
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setTextColor(0xFFFFFFFF.toInt())
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(6f).toFloat()
+                    setColor(palette.accent)
+                }
+                setPadding(dp(14f), 0, dp(14f), 0)
+                setOnClickListener { saveQuickPhrase() }
+            },
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dp(40f),
+            ).apply { setMargins(dp(8f), 0, 0, 0) },
+        )
+        panel.addView(addRow)
+        return panel
+    }
+
+    private fun refreshPhraseChips() {
+        val row = phraseChipsRow ?: return
+        row.removeAllViews()
+        for (cat in listOf<String?>(null) + QuickPhrases.categories(phraseList)) {
+            val selected = cat == phraseCategory
+            val chip = TextView(this).apply {
+                text = cat ?: getString(R.string.qp_all)
+                textSize = 13f
+                gravity = Gravity.CENTER
+                tag = cat
+                setTextColor(if (selected) 0xFFFFFFFF.toInt() else palette.panelText)
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(12f).toFloat()
+                    setColor(if (selected) palette.accent else palette.keyPressed)
+                }
+                setPadding(dp(14f), dp(5f), dp(14f), dp(5f))
+                setOnClickListener {
+                    phraseCategory = cat
+                    refreshPhraseChips()
+                    renderPhrases()
+                }
+            }
+            row.addView(
+                chip,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { setMargins(0, dp(6f), dp(6f), 0) },
+            )
+        }
+    }
+
+    private fun renderPhrases() {
+        val container = phraseContainer ?: return
+        container.removeAllViews()
+        val query = phraseSearchBox?.text?.toString().orEmpty()
+        val items = QuickPhrases.filter(phraseList, phraseCategory, query)
+        if (items.isEmpty()) {
+            container.addView(TextView(this).apply {
+                text = getString(R.string.qp_empty)
+                textSize = 13f
+                setTextColor(palette.preedit)
+                setPadding(0, dp(10f), 0, 0)
+            })
+            return
+        }
+        for (phrase in items) {
+            container.addView(
+                TextView(this).apply {
+                    text = phrase.text
+                    textSize = 16f
+                    setTextColor(palette.panelText)
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(6f), 0, dp(6f), 0)
+                    setOnClickListener { commitQuickPhrase(phrase) }
+                    setOnLongClickListener {
+                        phraseList.remove(phrase)
+                        persistPhrases()
+                        renderPhrases()
+                        Toast.makeText(
+                            this@ShurufaImeService,
+                            getString(R.string.qp_deleted),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        true
+                    }
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(42f),
+                ),
+            )
+        }
+    }
+
+    private fun saveQuickPhrase() {
+        val text = phraseAddBox?.text?.toString()?.trim().orEmpty()
+        if (text.isEmpty()) return
+        val category = phraseCategory ?: QuickPhrases.CUSTOM_CATEGORY
+        phraseList.add(QuickPhrase(text, category))
+        persistPhrases()
+        phraseAddBox?.setText("")
+        renderPhrases()
+        Toast.makeText(this, getString(R.string.qp_add_saved), Toast.LENGTH_SHORT).show()
+    }
+
+    private fun commitQuickPhrase(phrase: QuickPhrase) {
+        currentInputConnection?.commitText(phrase.text, 1)
+    }
 
     private fun buildSchemePanel(): LinearLayout {
         val bg = palette.panelBackground
