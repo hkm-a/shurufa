@@ -79,18 +79,22 @@ impl IRawElementProviderSimple_Impl for CandidateProvider_Impl {
 }
 
 /// 进程级单例 Provider：UIA 会持有该指针，必须与进程同生命周期。
-/// 初始化时泄漏一个引用计数由静态永久持有；每次 from_raw 只借用另一份
-/// 引用，首个 WM_GETOBJECT 后对象不会因包装释放而消亡（若每次新建，
-/// 读屏器将拿到悬垂指针 → 堆损坏）。
+/// 静态持有 1 个引用计数（永不释放）；每次调用先 vtable AddRef 再 from_raw，
+/// 返回的包装拥有自己的引用，drop 后对象仍由静态引用保住（若直接 from_raw
+/// 共享同一引用，第二次调用后对象即被释放 → 读屏器悬垂指针 → 堆损坏）。
 static PROVIDER_RAW: OnceLock<usize> = OnceLock::new();
 
 fn provider() -> IRawElementProviderSimple {
     let raw = *PROVIDER_RAW.get_or_init(|| {
         let p: IRawElementProviderSimple = CandidateProvider(()).into();
-        std::mem::forget(p.clone());
         windows::core::Interface::into_raw(p) as usize
     });
-    unsafe { windows::core::Interface::from_raw(raw as *mut core::ffi::c_void) }
+    unsafe {
+        // 静态引用 +1：from_raw 不增加引用计数，必须手动 AddRef 后接管
+        let vtbl = *(raw as *mut *const windows::core::IUnknown_Vtbl);
+        ((*vtbl).AddRef)(raw as *mut core::ffi::c_void);
+        windows::core::Interface::from_raw(raw as *mut core::ffi::c_void)
+    }
 }
 
 /// 候选窗 wnd_proc 收到 WM_GETOBJECT 且 lParam == UiaRootObjectId 时调用。
