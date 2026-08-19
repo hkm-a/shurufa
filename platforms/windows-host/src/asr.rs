@@ -121,7 +121,7 @@ pub fn transcribe(cfg: &AsrConfig, wav: &[u8]) -> Result<String, String> {
         "{}/audio/transcriptions",
         cfg.base_url.trim_end_matches('/')
     );
-    let mut resp = ureq::post(&url)
+    let resp = ureq::post(&url)
         .timeout(std::time::Duration::from_secs(60))
         .set("Authorization", &format!("Bearer {}", cfg.api_key))
         .set(

@@ -73,6 +73,8 @@ struct WavBuffer {
 pub struct AudioCapture {
     hwi: HWAVEIN,
     ctx: &'static mut CaptureCtx,
+    /// Box 保证 waveIn 驱动的 WAVEHDR/数据地址不随 Vec 扩容而移动。
+    #[allow(clippy::vec_box)]
     buffers: Vec<Box<WavBuffer>>,
 }
 
@@ -99,7 +101,7 @@ impl AudioCapture {
                 Some(&mut hwi),
                 windows::Win32::Media::Audio::WAVE_MAPPER,
                 &fmt,
-                Some(wave_callback as usize),
+                Some(wave_callback as *const () as usize),
                 Some(ctx as *const CaptureCtx as usize),
                 MIDI_WAVE_OPEN_TYPE(196608u32),
             )
@@ -151,11 +153,6 @@ impl AudioCapture {
         Ok(Self { hwi, ctx, buffers })
     }
 
-    /// 已录制的 PCM 字节数（不含 WAV 头）。
-    pub fn recorded_bytes(&self) -> usize {
-        self.ctx.pcm.lock().map(|p| p.len()).unwrap_or(0)
-    }
-
     /// 停止采集并返回完整 WAV 文件字节（含 44 字节头）。
     pub fn stop(mut self) -> Vec<u8> {
         self.ctx.stop.store(true, Ordering::Relaxed);
@@ -164,6 +161,7 @@ impl AudioCapture {
             let _ = waveInReset(self.hwi);
         }
         for mut buf in self.buffers.drain(..) {
+            debug_assert!(buf.header.dwBytesRecorded as usize <= buf.data.len());
             unsafe {
                 let _ = waveInUnprepareHeader(
                     self.hwi,

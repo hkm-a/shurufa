@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 新增（读屏无障碍阶段二：候选窗 ITextProvider，2026-08-19）
+- **Windows 候选窗 ITextProvider / ITextRangeProvider**：uia_provider.rs 新增
+  CandidateTextProvider 与 CandidateRange（#[implement] 完整 COM vtable）：
+  DocumentRange / GetVisibleRanges 覆盖整条候选行文本（"1.你，2.你好…"），
+  GetText 支持 maxlength 截断、GetSelection 返回空数组、SupportedTextSelection=None；
+  GetPatternProvider(UIA_TextPatternId) 现在返回 ITextProvider。只读"全文范围"
+  口径：逐候选偏移/选区/滚动等按 UIA 规范返回 E_NOTIMPL / 0，与 M11 验收报告一致。
+- 测试：TSF 56（+5：DocumentRange 全文、GetText 截断、VisibleRanges 单范围、
+  Selection 空数组、TextPattern 可达）；workspace 全绿；clippy 0 告警（顺带清理
+  shurufa-host 5 项既有告警：asr mut、audio_capture 死代码/vec_box/fn 转型）。
+
 ## [1.2.0] - 2026-08-19
 
 ### 新增（v1.2-2 读屏无障碍：候选窗 UIA + Android TalkBack，2026-08-19）
