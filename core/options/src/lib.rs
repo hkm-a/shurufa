@@ -77,9 +77,9 @@ pub fn default_scenario_dict() -> String {
     "none".to_owned()
 }
 
-/// 校验专业词场景 id（M10-1）。
+/// 校验专业词场景 id（M10-1 / v1.2 生僻字）。
 pub fn validate_scenario_dict(s: &str) -> bool {
-    matches!(s, "none" | "doctor" | "lawyer" | "code")
+    matches!(s, "none" | "doctor" | "lawyer" | "code" | "rare")
 }
 
 /// 单个应用的输入法行为覆盖（weasel app_options 同款）。

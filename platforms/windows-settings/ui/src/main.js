@@ -1412,13 +1412,14 @@ function inputPage() {
         <button class="primary-action compact" data-action="save-shortcuts"><i data-lucide="save"></i>保存直达</button>
       </article>
       <article class="setting-panel">
-        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="stethoscope"></i></div><div><h3>专业词场景（M10-1）</h3><p>按领域挂载场景词库：医生 / 律师 / 代码；保存后重建词典生效（搜狗 16.2 场景词库同类）</p></div></div>
+        <div class="panel-heading"><div class="row-icon blue"><i data-lucide="stethoscope"></i></div><div><h3>专业词场景（M10-1 / v1.2）</h3><p>按领域挂载场景词库：医生 / 律师 / 代码 / 生僻字；保存后重建词典生效（搜狗 16.2 场景词库同类）</p></div></div>
         <div class="field-action">
           <select id="scenario-select" aria-label="专业词场景">
             <option value="none" ${(generalSettings?.scenario_dict || "none") === "none" ? "selected" : ""}>无（默认）</option>
             <option value="doctor" ${(generalSettings?.scenario_dict || "") === "doctor" ? "selected" : ""}>医生</option>
             <option value="lawyer" ${(generalSettings?.scenario_dict || "") === "lawyer" ? "selected" : ""}>律师</option>
             <option value="code" ${(generalSettings?.scenario_dict || "") === "code" ? "selected" : ""}>代码</option>
+            <option value="rare" ${(generalSettings?.scenario_dict || "") === "rare" ? "selected" : ""}>生僻字</option>
           </select>
           <button class="primary-action compact" data-action="save-scenario"><i data-lucide="save"></i>保存并重建词典</button>
         </div>

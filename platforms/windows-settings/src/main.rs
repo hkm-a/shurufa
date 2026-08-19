@@ -458,11 +458,12 @@ fn pair_ui_confirm(yes: bool) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
-// M10-1 专业词模式：场景词库文件放 schemas/scenario_*.dict.yaml，部署即生效
-// （实测 librime 编译 schemas/ 全部 dict，拼音可直接打场景词）。保存场景 =
-// 记录偏好到 options.json + 重建词典。注：实测 librime 1.17 的列表 patch
-// 不支持 "+item" 追加（会把 engine/translators 整体替换、拼音失效），
-// 因此不做 rime_ice.custom.yaml 挂载。
+// M10-1 专业词模式（2026-08-19 修正）：场景词条已**内联进 rime_ice.dict.yaml**
+// （含 v1.2 生僻字词库包）。实测 librime 的 import_tables 对这些补充词库
+// 不生效（词条不会进入编译表，原"部署即生效"实际靠 base 词库恰好收录场景词
+// 才成立），内联才是可靠路径。保存场景 = 记录偏好到 options.json + 重建词典。
+// librime 1.17 列表 patch 不支持 "+item" 追加（会把 engine/translators 整体
+// 替换、拼音失效），故不做 rime_ice.custom.yaml 挂载。
 // ---------------------------------------------------------------------------
 
 /// M10-1：保存专业词场景——写 options.json 并重建二进制词典（deploy）。
@@ -471,7 +472,7 @@ async fn save_scenario_dict(name: String) -> Result<String, String> {
     let name = name.trim().to_owned();
     if !shurufa_options::validate_scenario_dict(&name) {
         return Err(format!(
-            "未知专业词场景：{name}（合法值 none/doctor/lawyer/code）"
+            "未知专业词场景：{name}（合法值 none/doctor/lawyer/code/rare）"
         ));
     }
     shurufa_options::modify(|current| shurufa_options::ImeOptions {
@@ -483,6 +484,7 @@ async fn save_scenario_dict(name: String) -> Result<String, String> {
         "doctor" => "医生",
         "lawyer" => "律师",
         "code" => "代码",
+        "rare" => "生僻字",
         _ => "无",
     };
     let deploy = redeploy_dictionaries().await?;
@@ -2795,6 +2797,7 @@ mod tests {
         assert!(shurufa_options::validate_scenario_dict("doctor"));
         assert!(shurufa_options::validate_scenario_dict("lawyer"));
         assert!(shurufa_options::validate_scenario_dict("code"));
+        assert!(shurufa_options::validate_scenario_dict("rare"));
         assert!(shurufa_options::validate_scenario_dict("none"));
         assert!(!shurufa_options::validate_scenario_dict("xxx"));
         assert_eq!(shurufa_options::ImeOptions::default().scenario_dict, "none");
