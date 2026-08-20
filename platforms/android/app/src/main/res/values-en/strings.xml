@@ -106,6 +106,10 @@
     <string name="kb_settings_key_sound">Key sound</string>
     <string name="kb_settings_haptic">Key vibration</string>
     <string name="kb_settings_single_hand">One-handed mode</string>
+    <string name="kb_settings_height_hint">Drag to adjust keyboard height ratio; takes effect on release</string>
+    <string name="kb_settings_sound_hint">Plays a click when keys are pressed; volume follows system</string>
+    <string name="kb_settings_haptic_hint">Vibrates on key press; follows system haptics</string>
+    <string name="kb_settings_single_hand_hint">Aligns the keyboard to the left/right for one-handed use</string>
     <string name="kb_single_off">Off</string>
     <string name="kb_single_left">Left</string>
     <string name="kb_single_right">Right</string>

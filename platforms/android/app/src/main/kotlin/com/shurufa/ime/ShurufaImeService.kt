@@ -905,6 +905,7 @@ class ShurufaImeService : InputMethodService() {
                 override fun onStopTrackingTouch(bar: SeekBar?) = rebuildKeys()
             })
         })
+        panel.addView(subtext(getString(R.string.kb_settings_height_hint)))
         panel.addView(
             switchRow(getString(R.string.kb_settings_key_sound), kbPrefs.keySound) { on ->
                 kbPrefs = kbPrefs.copy(keySound = on)
@@ -912,6 +913,7 @@ class ShurufaImeService : InputMethodService() {
                 rebuildKeys()
             }
         )
+        panel.addView(subtext(getString(R.string.kb_settings_sound_hint)))
         panel.addView(
             switchRow(getString(R.string.kb_settings_haptic), kbPrefs.haptic) { on ->
                 kbPrefs = kbPrefs.copy(haptic = on)
@@ -919,6 +921,7 @@ class ShurufaImeService : InputMethodService() {
                 rebuildKeys()
             }
         )
+        panel.addView(subtext(getString(R.string.kb_settings_haptic_hint)))
         // 单手模式：关闭 / 左手 / 右手
         panel.addView(TextView(this).apply {
             text = getString(R.string.kb_settings_single_hand)
@@ -926,6 +929,7 @@ class ShurufaImeService : InputMethodService() {
             setTextColor(palette.panelText)
             setPadding(0, dp(10f), 0, dp(4f))
         })
+        panel.addView(subtext(getString(R.string.kb_settings_single_hand_hint)))
         val handRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for ((mode, label) in listOf(
             SingleHandMode.OFF to getString(R.string.kb_single_off),
@@ -995,6 +999,15 @@ class ShurufaImeService : InputMethodService() {
             )
         }
     }
+
+    /** UI-2 借鉴搜狗：设置项下加小号灰色说明副文本（用途/状态说明）。 */
+    private fun subtext(text: String): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 11f
+            setTextColor(if (isDark()) 0xFF8E949D.toInt() else 0xFF9AA0AA.toInt())
+            setPadding(0, dp(1f), 0, dp(2f))
+        }
 
     private fun switchRow(title: String, initial: Boolean, onChange: (Boolean) -> Unit): LinearLayout =
         LinearLayout(this).apply {
