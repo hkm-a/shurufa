@@ -112,6 +112,11 @@
     <string name="kb_settings_sound_hint">开启后按键播放音效，音量随系统</string>
     <string name="kb_settings_haptic_hint">开启后按键有振动反馈，跟随系统触觉设置</string>
     <string name="kb_settings_single_hand_hint">键盘靠左/靠右排列，方便单手操作</string>
+    <!-- P4-5 输入风格预设（搜狗 搜狗/ABC 风格的候选数差异） -->
+    <string name="kb_settings_style">输入风格</string>
+    <string name="kb_settings_style_hint">主候选行显示条数，展开列表始终显示全部候选</string>
+    <string name="kb_style_classic">经典（5 候选）</string>
+    <string name="kb_style_efficient">高效（9 候选）</string>
     <string name="kb_settings_candidate_size">候选字大小</string>
     <string name="kb_settings_candidate_size_hint">调节候选词文字大小，实时预览</string>
     <string name="cancel">取消</string>

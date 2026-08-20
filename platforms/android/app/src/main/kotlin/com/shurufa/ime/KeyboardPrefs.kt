@@ -16,6 +16,8 @@ data class KeyboardPrefs(
     val singleHand: SingleHandMode = SingleHandMode.OFF,
     /** 候选字大小百分比（UI-2 借鉴搜狗候选字大小设置）。 */
     val candidateSizePercent: Int = DEFAULT_CANDIDATE_SIZE_PERCENT,
+    /** P4-5 输入风格预设：主候选行显示条数（5=经典 / 9=高效，搜狗风格差异核心）。 */
+    val candidateCount: Int = DEFAULT_CANDIDATE_COUNT,
 ) {
     companion object {
         const val MIN_HEIGHT_PERCENT = 40
@@ -24,6 +26,15 @@ data class KeyboardPrefs(
         const val MIN_CANDIDATE_SIZE_PERCENT = 80
         const val MAX_CANDIDATE_SIZE_PERCENT = 140
         const val DEFAULT_CANDIDATE_SIZE_PERCENT = 100
+        const val CANDIDATE_COUNT_CLASSIC = 5
+        const val CANDIDATE_COUNT_EFFICIENT = 9
+        const val DEFAULT_CANDIDATE_COUNT = CANDIDATE_COUNT_CLASSIC
+
+        /** 候选条数夹取到 {5, 9}。 */
+        fun clampCandidateCount(count: Int): Int = when (count) {
+            CANDIDATE_COUNT_EFFICIENT -> CANDIDATE_COUNT_EFFICIENT
+            else -> CANDIDATE_COUNT_CLASSIC
+        }
 
         /** 候选字大小百分比夹取。 */
         fun clampCandidateSize(percent: Int): Int =
@@ -47,6 +58,7 @@ data class KeyboardPrefs(
                 haptic = sp.getBoolean("kb_haptic", true),
                 singleHand = parseSingleHand(sp.getString("kb_single_hand", null)),
                 candidateSizePercent = clampCandidateSize(sp.getInt("kb_candidate_size", DEFAULT_CANDIDATE_SIZE_PERCENT)),
+                candidateCount = clampCandidateCount(sp.getInt("kb_candidate_count", DEFAULT_CANDIDATE_COUNT)),
             )
         }
 
@@ -57,6 +69,7 @@ data class KeyboardPrefs(
                 .putBoolean("kb_haptic", prefs.haptic)
                 .putString("kb_single_hand", prefs.singleHand.name)
                 .putInt("kb_candidate_size", clampCandidateSize(prefs.candidateSizePercent))
+                .putInt("kb_candidate_count", clampCandidateCount(prefs.candidateCount))
                 .apply()
         }
     }

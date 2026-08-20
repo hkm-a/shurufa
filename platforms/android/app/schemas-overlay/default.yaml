@@ -21,8 +21,9 @@ switcher:
     - simplification
 
 menu:
-  # 移动端候选栏支持横滑和展开九宫格；保持与数字直选键范围一致。
-  page_size: 5
+  # P4-5 输入风格预设：引擎每页最多 9 候选，主行显示条数由 UI 按
+  # 经典(5)/高效(9) 截断（HorizontalScrollView 横滑浏览）。
+  page_size: 9
 
 punctuator:
   import_preset: punctuation

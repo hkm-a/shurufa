@@ -101,7 +101,7 @@ class ShurufaImeService : InputMethodService() {
         private const val XK_RETURN = 0xff0d
         // 方案资源变化时递增，确保同一应用版本也会重新解包词典。
         // 2026-08-20 P4-3：pinyin_simp 接入 uU 部件拆字反查（radical_lookup）。
-        private const val SCHEMA_BUNDLE_VERSION = "rime-ice-20260820-p4h"
+        private const val SCHEMA_BUNDLE_VERSION = "rime-ice-20260820-p4i"
         /// 缩略图采样目标边长（px），仅为展示用，不必保留原图尺寸
         private const val THUMBNAIL_TARGET = 260
         /// 预览图采样目标边长（px），兼顾清晰度与内存
@@ -1003,6 +1003,26 @@ class ShurufaImeService : InputMethodService() {
             })
         })
         panel.addView(controls.subtext(getString(R.string.kb_settings_height_hint)))
+        // P4-5 输入风格预设（搜狗 搜狗风格/ABC风格 的候选数差异）：经典 5 / 高效 9
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.kb_settings_style)
+            textSize = 14f
+            setTextColor(palette.panelText)
+            setPadding(0, dp(10f), 0, dp(4f))
+        })
+        panel.addView(controls.subtext(getString(R.string.kb_settings_style_hint)))
+        val (styleRow, renderStyle) = controls.radioGroup(
+            listOf(
+                KeyboardPrefs.CANDIDATE_COUNT_CLASSIC to getString(R.string.kb_style_classic),
+                KeyboardPrefs.CANDIDATE_COUNT_EFFICIENT to getString(R.string.kb_style_efficient),
+            ),
+            kbPrefs.candidateCount,
+        ) { count ->
+            kbPrefs = kbPrefs.copy(candidateCount = count)
+            KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
+            sync()
+        }
+        panel.addView(styleRow)
         // UI-2 借鉴搜狗：候选字大小 → 滑块+实时预览+保存 模态弹窗（右侧显示当前值）
         panel.addView(controls.linkRow(
             getString(R.string.kb_settings_candidate_size),
@@ -1889,6 +1909,13 @@ class ShurufaImeService : InputMethodService() {
                     } else if (c.isLetterOrDigit()) {
                         onLetter(c.lowercaseChar())
                     }
+                }
+                "reset" -> {
+                    try {
+                        RimeBridge.nativeReset()
+                    } catch (_: Throwable) {
+                    }
+                    sync()
                 }
                 "context" -> android.util.Log.i(
                     "shurufa-ctx",
@@ -3650,7 +3677,8 @@ class ShurufaImeService : InputMethodService() {
             )
             return
         }
-        all.forEachIndexed { i, text ->
+        // P4-5 输入风格预设：主候选行只显示候选数（5 经典 / 9 高效），展开列表全量
+        all.take(kbPrefs.candidateCount).forEachIndexed { i, text ->
             val item = candidateItem(text, i, hl, compact = true)
             candidateBar.addView(
                 item,

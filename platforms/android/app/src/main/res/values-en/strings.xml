@@ -112,6 +112,10 @@
     <string name="kb_settings_sound_hint">Plays a click when keys are pressed; volume follows system</string>
     <string name="kb_settings_haptic_hint">Vibrates on key press; follows system haptics</string>
     <string name="kb_settings_single_hand_hint">Aligns the keyboard to the left/right for one-handed use</string>
+    <string name="kb_settings_style">Input style</string>
+    <string name="kb_settings_style_hint">Candidates shown in main row; expanded list always shows all</string>
+    <string name="kb_style_classic">Classic (5 candidates)</string>
+    <string name="kb_style_efficient">Efficient (9 candidates)</string>
     <string name="kb_settings_candidate_size">Candidate font size</string>
     <string name="kb_settings_candidate_size_hint">Adjust candidate text size with live preview</string>
     <string name="cancel">Cancel</string>
