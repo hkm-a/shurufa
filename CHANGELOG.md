@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（真机验收，2026-08-19）
+- **候选上屏失效（真机发现，P0）**：RimeBridge.nativeSelectCandidate / nativeChangePage
+  在 Kotlin 声明为 external，但 rimejni 从未实现（git 历史亦无记录）；点击候选触发
+  UnsatisfiedLinkError 使进程重启，候选永远无法上屏。补齐两个 JNI 实现
+  （select_candidate_on_current_page + commit / change_page），并抽取
+  session_context_string 供 nativeContext / nativeChangePage 共用。真机实测：
+  拼音 nihao → 点击候选上屏「你好」、候选栏展开正常。
+
 ### 修复（模拟器联调，2026-08-19）
 - **面板互斥**：设置/短语/快捷插入/表情/计算器/方案等开关面板时只隐藏各自的
   旧面板，计算器开着时开设置会出现双面板叠加；新增统一 hideAllPanels()，

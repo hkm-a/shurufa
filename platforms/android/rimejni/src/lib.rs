@@ -75,6 +75,26 @@ fn to_jstring(env: &JNIEnv, s: &str) -> jstring {
         .map(|v| v.into_raw())
         .unwrap_or(std::ptr::null_mut())
 }
+/// 把会话上下文序列化为扁平串：`preedit \u{1} highlighted \u{1} cursor \u{1} 候选…`。
+/// 与 nativeContext / nativeChangePage 共用，避免两份重复逻辑漂移。
+fn session_context_string(s: &Session) -> String {
+    let ctx = s.context();
+    if ctx.preedit.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(64);
+    out.push_str(&ctx.preedit);
+    out.push('\u{1}');
+    out.push_str(&ctx.highlighted.to_string());
+    out.push('\u{1}');
+    out.push_str(&ctx.cursor_pos.to_string());
+    for c in &ctx.candidates {
+        out.push('\u{1}');
+        out.push_str(&c.text);
+    }
+    out
+}
+
 
 /// 初始化引擎并建立会话；重复调用幂等。阻塞直至部署完成，
 /// Kotlin 侧必须在后台线程调用。
@@ -186,21 +206,7 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeContext(
             let Some(s) = session.as_ref() else {
                 return to_jstring(&env, "");
             };
-            let ctx = s.context();
-            if ctx.preedit.is_empty() {
-                return to_jstring(&env, "");
-            }
-            let mut out = String::with_capacity(64);
-            out.push_str(&ctx.preedit);
-            out.push('\u{1}');
-            out.push_str(&ctx.highlighted.to_string());
-            out.push('\u{1}');
-            out.push_str(&ctx.cursor_pos.to_string());
-            for c in &ctx.candidates {
-                out.push('\u{1}');
-                out.push_str(&c.text);
-            }
-            to_jstring(&env, &out)
+            to_jstring(&env, &session_context_string(s))
         },
         default,
     )
@@ -367,3 +373,57 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeStatsTotals(
         default,
     )
 }
+/// 选择当前页第 `index` 个候选并上屏。返回提交文本（空串=失败/无上屏）。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeSelectCandidate(
+    env: JNIEnv,
+    _class: JClass,
+    index: jint,
+) -> jstring {
+    let default = to_jstring(&env, "");
+    jni_catch(
+        || {
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(s) = session.as_ref() else {
+                return to_jstring(&env, "");
+            };
+            // 选择当前页候选：librime 会把上屏文本压入提交队列，
+            // 随后 commit() 取出；失败（索引越界等）返回空串。
+            if !s.select_candidate_on_current_page(index.max(0) as usize) {
+                return to_jstring(&env, "");
+            }
+            let text = s.commit().unwrap_or_default();
+            if !text.is_empty() {
+                shurufa_options::stats::note_chars(text.chars().count());
+            }
+            to_jstring(&env, &text)
+        },
+        default,
+    )
+}
+
+/// 候选列表翻页；backward=true 为上一页。返回 `<上下文串>`（同 nativeContext 协议）。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeChangePage(
+    env: JNIEnv,
+    _class: JClass,
+    backward: jboolean,
+) -> jstring {
+    let default = to_jstring(&env, "");
+    jni_catch(
+        || {
+            let session = SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(s) = session.as_ref() else {
+                return to_jstring(&env, "");
+            };
+            s.change_page(backward != 0);
+            to_jstring(&env, &session_context_string(s))
+        },
+        default,
+    )
+}
+
