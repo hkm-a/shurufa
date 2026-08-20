@@ -65,6 +65,8 @@
     <string name="history_stats_typing">Today %1$d chars · Total %2$d chars</string>
 
     <!-- Candidate long-press menu -->
+    <string name="candidate_menu_first_char">Take first char</string>
+    <string name="candidate_menu_last_char">Take last char</string>
     <string name="candidate_menu_copy">Copy</string>
     <string name="candidate_menu_speak">🔊 Speak</string>
     <string name="candidate_menu_forget">Forget word</string>

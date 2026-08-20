@@ -3521,7 +3521,18 @@ class ShurufaImeService : InputMethodService() {
     /** 直接选中当前页第 index 个候选（Rime select API），不走数字键路径。 */
     private fun onCandidateSelect(index: Int) {
         if (!engineReady) return
-        val committed = RimeBridge.nativeSelectCandidate(index)
+        // P4-2 动态快捷码（rq/sj/xq/dt/ts/R金额）在引擎候选前，直接提交并清组合串
+        val dynamic = dynamicForPreedit(currentPreedit)
+        if (index < dynamic.size) {
+            currentInputConnection?.commitText(dynamic[index], 1)
+            try {
+                RimeBridge.nativeReset()
+            } catch (_: Throwable) {
+            }
+            sync()
+            return
+        }
+        val committed = RimeBridge.nativeSelectCandidate(index - dynamic.size)
         val ic = currentInputConnection ?: return
         if (committed.isNotEmpty()) {
             ic.commitText(committed, 1)
@@ -3562,13 +3573,26 @@ class ShurufaImeService : InputMethodService() {
         updateModeBadge()
     }
 
+    /** P4-2 动态快捷码匹配（preedit 可能带音节分隔空白，先去空白再匹配）。 */
+    private fun dynamicForPreedit(preedit: String): List<String> =
+        if (engineReady) {
+            DynamicCandidates.forPreedit(preedit.filter { !it.isWhitespace() }).orEmpty()
+        } else {
+            emptyList()
+        }
+
     private fun updateCandidates(preedit: String, candidates: List<String>, highlighted: Int) {
         currentPreedit = preedit
         if (!::candidateBar.isInitialized) return
         candidateBar.removeAllViews()
         expandedCandidateBar.removeAllViews()
-        candidateExpandButton.isEnabled = candidates.isNotEmpty()
-        if (candidates.isEmpty()) {
+        // P4-2 动态快捷码：rq/sj/xq/dt/ts/R金额 注入候选头部（引擎候选之前），
+        // 显示序号即引擎索引偏移量；选择时按偏移量转发给引擎。
+        val dynamic = dynamicForPreedit(preedit)
+        val all = dynamic + candidates
+        val hl = highlighted + dynamic.size
+        candidateExpandButton.isEnabled = all.isNotEmpty()
+        if (all.isEmpty()) {
             candidatesExpanded = false
         }
         candidateExpandButton.text = if (candidatesExpanded) "⌃" else "⌄"
@@ -3576,7 +3600,7 @@ class ShurufaImeService : InputMethodService() {
         expandedCandidateBar.visibility = if (candidatesExpanded) View.VISIBLE else View.GONE
         // 拼音预编辑由系统输入框承载（setComposingText），候选行只渲染候选词，
         // 不再把拼音当作候选显示；仅在“有输入但无匹配”时给出一行轻提示。
-        if (candidates.isEmpty() && preedit.isNotEmpty()) {
+        if (all.isEmpty() && preedit.isNotEmpty()) {
             candidateBar.addView(
                 TextView(this).apply {
                     text = "未匹配到候选"
@@ -3592,8 +3616,8 @@ class ShurufaImeService : InputMethodService() {
             )
             return
         }
-        candidates.forEachIndexed { i, text ->
-            val item = candidateItem(text, i, highlighted, compact = true)
+        all.forEachIndexed { i, text ->
+            val item = candidateItem(text, i, hl, compact = true)
             candidateBar.addView(
                 item,
                 LinearLayout.LayoutParams(
@@ -3602,8 +3626,8 @@ class ShurufaImeService : InputMethodService() {
                 )
             )
         }
-        if (candidates.isNotEmpty()) {
-            addExpandedCandidates(candidates, highlighted)
+        if (all.isNotEmpty()) {
+            addExpandedCandidates(all, hl)
             // v1.2 读屏：候选行内容变更事件，TalkBack 聚焦候选行时可朗读新候选
             candidateBar.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
         }
@@ -3645,46 +3669,96 @@ class ShurufaImeService : InputMethodService() {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
             contentDescription = "第 ${index + 1} 候选词：$text"
             setOnClickListener { onCandidateSelect(index) }
-            // B8 长按菜单：复制 / 删除该词（用户词典词条）
+            // B8/P4-7 长按菜单：取首字 / 取末字 / 复制 / 删除该词 / 朗读
             setOnLongClickListener {
-                showCandidateActions(text, index)
+                showCandidateActions(this, text, index)
                 true
             }
         }
 
-    /** B8 候选长按菜单：复制 / 删除该词。 */
-    private fun showCandidateActions(text: String, index: Int) {
-        val options = arrayOf(
+    /** B8/P4-7 候选长按菜单（PopupWindow 版，IME 无窗口 token 不可用 AlertDialog）：
+     * 取首字 / 取末字（以词定字）/ 复制 / 删除该词 / 朗读。 */
+    private fun showCandidateActions(anchor: View, text: String, index: Int) {
+        fun handle(which: Int) {
+            when (which) {
+                0, 1 -> {
+                    // P4-7 以词定字（搜狗 [ ] 键的触摸版）：取选中候选首/末字直接上屏
+                    val first = which == 0
+                    val chars = text.toCharArray()
+                    val pick = if (chars.isEmpty()) {
+                        text
+                    } else if (first) {
+                        chars[0].toString()
+                    } else {
+                        chars[chars.size - 1].toString()
+                    }
+                    currentInputConnection?.commitText(pick, 1)
+                    try {
+                        RimeBridge.nativeReset()
+                    } catch (_: Throwable) {
+                    }
+                    sync()
+                }
+                4 -> speakText(text)
+                2 -> {
+                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("候选词", text))
+                    Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show()
+                }
+                3 -> {
+                    val ok = try {
+                        engineReady && RimeBridge.nativeForgetOnCurrentPage(index)
+                    } catch (e: Throwable) {
+                        false
+                    }
+                    if (ok) {
+                        sync()
+                    } else {
+                        Toast.makeText(this, "该词不可删除", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+        val options = listOf(
+            getString(R.string.candidate_menu_first_char),
+            getString(R.string.candidate_menu_last_char),
             getString(R.string.candidate_menu_copy),
             getString(R.string.candidate_menu_forget),
             getString(R.string.candidate_menu_speak),
         )
-        android.app.AlertDialog.Builder(this)
-            .setTitle(text)
-            .setItems(options) { dialog, which ->
-                when (which) {
-                    2 -> speakText(text)
-                    0 -> {
-                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("候选词", text))
-                        Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show()
-                    }
-                    1 -> {
-                        val ok = try {
-                            engineReady && RimeBridge.nativeForgetOnCurrentPage(index)
-                        } catch (e: Throwable) {
-                            false
-                        }
-                        if (ok) {
-                            sync()
-                        } else {
-                            Toast.makeText(this, "该词不可删除", Toast.LENGTH_SHORT).show()
-                        }
-                    }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(if (isDark()) 0xFF2A2F36.toInt() else 0xFFFFFFFF.toInt())
+            setPadding(dp(4f), dp(6f), dp(4f), dp(6f))
+            addView(TextView(this@ShurufaImeService).apply {
+                this.text = text
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(palette.panelText)
+                setPadding(dp(14f), dp(4f), dp(14f), dp(4f))
+            })
+        }
+        var popup: PopupWindow? = null
+        options.forEachIndexed { i, label ->
+            content.addView(TextView(this).apply {
+                this.text = label
+                textSize = 14f
+                setTextColor(if (i in 0..1) palette.accent else palette.panelText)
+                setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
+                setOnClickListener {
+                    popup?.dismiss()
+                    handle(i)
                 }
-                dialog.dismiss()
-            }
-            .show()
+            })
+        }
+        popup = PopupWindow(
+            content,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true,
+        )
+        popup.isOutsideTouchable = true
+        popup.showAsDropDown(anchor, 0, -anchor.height - dp(8f))
     }
 
     /**
