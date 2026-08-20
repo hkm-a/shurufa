@@ -116,6 +116,8 @@
     <string name="kb_settings_style_hint">Candidates shown in main row; expanded list always shows all</string>
     <string name="kb_style_classic">Classic (5 candidates)</string>
     <string name="kb_style_efficient">Efficient (9 candidates)</string>
+    <string name="kb_settings_punct_row">Punctuation row on symbol page</string>
+    <string name="kb_settings_punct_row_hint">Show common full-width punctuation at the bottom of the number/symbol page</string>
     <string name="kb_settings_candidate_size">Candidate font size</string>
     <string name="kb_settings_candidate_size_hint">Adjust candidate text size with live preview</string>
     <string name="cancel">Cancel</string>

@@ -109,14 +109,17 @@ class KeyboardLayoutSpecTest {
         assertEquals(listOf("1", "2", "3"), rows[0].keys.map { it.label })
         assertEquals(listOf("4", "5", "6"), rows[1].keys.map { it.label })
         assertEquals(listOf("7", "8", "9"), rows[2].keys.map { it.label })
-        // P4-3：符号页第 4 行插入撇号键（拆字部件码分隔符），数字 0 顺移到 index 2
-        assertEquals("'", rows.last().keys[1].label)
-        assertEquals("0", rows.last().keys[2].label)
+        // P4-3：符号页第 4 行插入撇号键（拆字部件码分隔符），数字 0 顺移到 index 2；
+        // P4-6：第 5 行为中文标点行，功能行固定在第 4 行（index 3）
+        assertEquals("'", rows[3].keys[1].label)
+        assertEquals("0", rows[3].keys[2].label)
+        assertTrue(rows[4].keys.any { it.label == "，" })
+        assertTrue(rows[4].keys.any { it.label == "……" })
     }
 
     @Test
     fun 九宫格页只保留数字输入必需功能() {
-        val bottom = KeyboardLayoutSpec.symbolRows().last()
+        val bottom = KeyboardLayoutSpec.symbolRows()[3]
         assertEquals(KeyboardLayoutSpec.Kind.BACK, bottom.keys[0].kind)
         assertTrue(bottom.keys.any { it.kind == KeyboardLayoutSpec.Kind.SPACE })
         assertTrue(bottom.keys.any { it.kind == KeyboardLayoutSpec.Kind.BACKSPACE })

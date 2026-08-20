@@ -117,6 +117,8 @@
     <string name="kb_settings_style_hint">主候选行显示条数，展开列表始终显示全部候选</string>
     <string name="kb_style_classic">经典（5 候选）</string>
     <string name="kb_style_efficient">高效（9 候选）</string>
+    <string name="kb_settings_punct_row">符号页中文标点行</string>
+    <string name="kb_settings_punct_row_hint">数字符号页底部显示常用全角标点（，。、；：？！……——《》）</string>
     <string name="kb_settings_candidate_size">候选字大小</string>
     <string name="kb_settings_candidate_size_hint">调节候选词文字大小，实时预览</string>
     <string name="cancel">取消</string>

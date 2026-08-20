@@ -40,6 +40,8 @@ internal class WetypeKeyboardView(
     private val heightPercent: Int = 100,
     private val keySoundEnabled: Boolean = true,
     private val hapticEnabled: Boolean = true,
+    /** P4-6 符号页中文标点行（，。、；：？！……——《》）。 */
+    private val showPunctRow: Boolean = true,
 ) : FrameLayout(context) {
 
     /** 键区行容器（LinearLayout 纵向），气泡预览作为 FrameLayout 覆盖层叠在其上。 */
@@ -89,7 +91,7 @@ internal class WetypeKeyboardView(
             uppercaseLetters,
             KeyboardLayoutSpec.languageLabel(asciiMode),
         )
-        KeyboardLayoutSpec.Page.SYMBOLS -> KeyboardLayoutSpec.symbolRows()
+        KeyboardLayoutSpec.Page.SYMBOLS -> KeyboardLayoutSpec.symbolRows(showPunctRow)
         KeyboardLayoutSpec.Page.T9 -> KeyboardLayoutSpec.t9Rows(
             KeyboardLayoutSpec.languageLabel(asciiMode)
         )
@@ -754,30 +756,44 @@ internal object KeyboardLayoutSpec {
         description = if (letters.isEmpty()) "数字 $label" else "键 $label，字母 $letters",
     )
 
-    fun symbolRows(): List<Row> = listOf(
-        numberRow("123", "！@#"),
-        numberRow("456", "￥%^"),
-        numberRow("789", "&*？"),
-        Row(
-            listOf(
-                Key("ABC", kind = Kind.BACK, weight = 1.12f, functional = true, textSize = 14f, bold = true, description = "返回字母键盘"),
-                // P4-3 拆字方案部件码分隔符（bai'shao → 的），符号页常驻撇号键
-                Key("'", kind = Kind.CHAR, weight = 0.55f, textSize = 20f, description = "撇号（拆字部件码分隔符）"),
-                Key("0", secondary = "。", kind = Kind.CHAR, weight = 0.9f, textSize = 21f, description = "数字 0"),
-                Key("", kind = Kind.SPACE, weight = 3.7f, description = "空格"),
-                Key(
-                    icon = Icon.BACKSPACE,
-                    kind = Kind.BACKSPACE,
-                    weight = 1.12f,
-                    functional = true,
-                    description = "删除；长按连续删除，上滑清空拼音",
-                    longKind = Kind.BACKSPACE,
-                    swipeUpClears = true,
+    fun symbolRows(includePunctRow: Boolean = true): List<Row> {
+        val rows = mutableListOf(
+            numberRow("123", "！@#"),
+            numberRow("456", "￥%^"),
+            numberRow("789", "&*？"),
+            Row(
+                listOf(
+                    Key("ABC", kind = Kind.BACK, weight = 1.12f, functional = true, textSize = 14f, bold = true, description = "返回字母键盘"),
+                    // P4-3 拆字方案部件码分隔符（bai'shao → 的），符号页常驻撇号键
+                    Key("'", kind = Kind.CHAR, weight = 0.55f, textSize = 20f, description = "撇号（拆字部件码分隔符）"),
+                    Key("0", secondary = "。", kind = Kind.CHAR, weight = 0.9f, textSize = 21f, description = "数字 0"),
+                    Key("", kind = Kind.SPACE, weight = 3.7f, description = "空格"),
+                    Key(
+                        icon = Icon.BACKSPACE,
+                        kind = Kind.BACKSPACE,
+                        weight = 1.12f,
+                        functional = true,
+                        description = "删除；长按连续删除，上滑清空拼音",
+                        longKind = Kind.BACKSPACE,
+                        swipeUpClears = true,
+                    ),
+                    Key("换行", kind = Kind.ENTER, weight = 1.4f, functional = true, textSize = 15f, description = "换行"),
                 ),
-                Key("换行", kind = Kind.ENTER, weight = 1.4f, functional = true, textSize = 15f, description = "换行"),
             ),
-        ),
-    )
+        )
+        // P4-6 中文标点行：常用全角标点一键输入（引擎 punctuation 已有映射，这里补键盘入口）
+        if (includePunctRow) {
+            rows.add(
+                Row(
+                    // 显式列表：省略号是双字符（……），不能字符串 map 拆开
+                    listOf("，", "。", "、", "；", "：", "？", "！", "……", "《", "》").map { c ->
+                        Key(c, kind = Kind.CHAR, textSize = 20f, description = "标点 $c")
+                    },
+                ),
+            )
+        }
+        return rows
+    }
 
     fun displayLabel(label: String, uppercaseLetters: Boolean): String =
         if (label.length == 1 && label[0].isLetter()) {

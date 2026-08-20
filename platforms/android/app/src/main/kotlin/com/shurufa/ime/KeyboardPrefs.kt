@@ -18,6 +18,8 @@ data class KeyboardPrefs(
     val candidateSizePercent: Int = DEFAULT_CANDIDATE_SIZE_PERCENT,
     /** P4-5 输入风格预设：主候选行显示条数（5=经典 / 9=高效，搜狗风格差异核心）。 */
     val candidateCount: Int = DEFAULT_CANDIDATE_COUNT,
+    /** P4-6 自定义标点：符号页中文标点行（，。、；：？！……——《》）显隐。 */
+    val showPunctRow: Boolean = true,
 ) {
     companion object {
         const val MIN_HEIGHT_PERCENT = 40
@@ -59,6 +61,7 @@ data class KeyboardPrefs(
                 singleHand = parseSingleHand(sp.getString("kb_single_hand", null)),
                 candidateSizePercent = clampCandidateSize(sp.getInt("kb_candidate_size", DEFAULT_CANDIDATE_SIZE_PERCENT)),
                 candidateCount = clampCandidateCount(sp.getInt("kb_candidate_count", DEFAULT_CANDIDATE_COUNT)),
+                showPunctRow = sp.getBoolean("kb_show_punct_row", true),
             )
         }
 
@@ -70,6 +73,7 @@ data class KeyboardPrefs(
                 .putString("kb_single_hand", prefs.singleHand.name)
                 .putInt("kb_candidate_size", clampCandidateSize(prefs.candidateSizePercent))
                 .putInt("kb_candidate_count", clampCandidateCount(prefs.candidateCount))
+                .putBoolean("kb_show_punct_row", prefs.showPunctRow)
                 .apply()
         }
     }

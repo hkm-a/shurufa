@@ -1023,6 +1023,15 @@ class ShurufaImeService : InputMethodService() {
             sync()
         }
         panel.addView(styleRow)
+        // P4-6 自定义标点：符号页中文标点行开关
+        panel.addView(
+            controls.switchRow(getString(R.string.kb_settings_punct_row), kbPrefs.showPunctRow) { on ->
+                kbPrefs = kbPrefs.copy(showPunctRow = on)
+                KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
+                rebuildKeys()
+            }
+        )
+        panel.addView(controls.subtext(getString(R.string.kb_settings_punct_row_hint)))
         // UI-2 借鉴搜狗：候选字大小 → 滑块+实时预览+保存 模态弹窗（右侧显示当前值）
         panel.addView(controls.linkRow(
             getString(R.string.kb_settings_candidate_size),
@@ -1909,6 +1918,10 @@ class ShurufaImeService : InputMethodService() {
                     } else if (c.isLetterOrDigit()) {
                         onLetter(c.lowercaseChar())
                     }
+                }
+                "symbol" -> {
+                    symbolMode = true
+                    rebuildKeys()
                 }
                 "reset" -> {
                     try {
@@ -3355,6 +3368,7 @@ class ShurufaImeService : InputMethodService() {
                 heightPercent = kbPrefs.heightPercent,
                 keySoundEnabled = kbPrefs.keySound,
                 hapticEnabled = kbPrefs.haptic,
+                showPunctRow = kbPrefs.showPunctRow,
             ),
             keyboardLayoutParams(),
         )
