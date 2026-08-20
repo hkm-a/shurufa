@@ -70,6 +70,10 @@ val syncSchemas = tasks.register<Copy>("syncSchemas") {
             "stroke.dict.yaml",
             "luna_pinyin.schema.yaml",
             "luna_pinyin.dict.yaml",
+            // P4-3 uU 部件拆字反查（rime_ice radical_lookup 依赖词典；
+            // schema 已修复 Android 兼容的 key_binder include，供 nativeDeploySchema 编译词典）
+            "radical_pinyin.schema.yaml",
+            "radical_pinyin.dict.yaml",
             "cn_dicts/8105.dict.yaml",
             "cn_dicts/base.dict.yaml",
             "cn_dicts/ext.dict.yaml",

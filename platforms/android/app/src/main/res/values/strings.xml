@@ -165,6 +165,7 @@
     <string name="scheme_cangjie">仓颉五代</string>
     <string name="scheme_t9">9 键拼音</string>
     <string name="scheme_stroke">笔画</string>
+    <string name="scheme_radical">拆字（部件反查）</string>
     <string name="scheme_selected_banner">已切换到 %1$s</string>
     <string name="main_card_scheme_title">当前输入方案</string>
 </resources>

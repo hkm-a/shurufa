@@ -96,6 +96,27 @@ fn session_context_string(s: &Session) -> String {
 }
 
 
+/// 主动部署指定方案（编译附加词典，如 radical_pinyin 反查词典）。
+/// 增量部署不编译附加 translator 的词典，需初始化后显式调用一次。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeDeploySchema(
+    mut env: JNIEnv,
+    _class: JClass,
+    schema: JString,
+) -> jboolean {
+    jni_catch(
+        || {
+            let schema = jstring_to_string(&mut env, &schema);
+            let ok = match ENGINE.get() {
+                Some(Ok(engine)) => engine.deploy_schema(&schema),
+                _ => false,
+            };
+            ok as jboolean
+        },
+        false as jboolean,
+    )
+}
+
 /// 初始化引擎并建立会话；重复调用幂等。阻塞直至部署完成，
 /// Kotlin 侧必须在后台线程调用。
 #[no_mangle]
@@ -118,6 +139,10 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeInit(
             let Ok(engine) = engine.as_ref() else {
                 return 0;
             };
+            // P4-3：增量部署不编译附加词典（radical_pinyin），必须在创建会话前
+            // 主动部署一次，否则 session 加载 rime_ice 时 radical_lookup translator
+            // 因词典缺失而创建失败，uU 反查永远无候选。
+            let _ = engine.deploy_schema("radical_pinyin.schema.yaml");
             // 锁被 panic 污染时经 into_inner 直接恢复其内部值继续使用
             let mut session = SESSION
                 .lock()

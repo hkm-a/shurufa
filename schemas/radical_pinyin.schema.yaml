@@ -27,11 +27,11 @@ engine:
   filters:
     - uniquifier
 
-key_binder:
-  __include: default:/key_binder?
+# Android 精简 default.yaml 无 key_binder 节点（import_preset: key_bindings 为空），
+# 反查方案不需要按键绑定，删除 include 避免构建失败（P4-3）。
 
 speller:
-  alphabet: "abcdefghijklmnopqrstuvwxyz;"
+  alphabet: "abcdefghijklmnopqrstuvwxyz;'"
   delimiter: " '"
   algebra:
     # 根据当前所用拼音方案选择 __include 的值
@@ -49,7 +49,7 @@ translator:
   enable_user_dict: false
 
 algebra_rime_ice:
-  - xform/'//
+  # 保留 ' 作为部件码分隔符（alphabet 已含 '，不删除）
   - derive/^([nl])ue$/$1ve/
   - derive/'([nl])ue$/'$1ve/
   - derive/^([jqxy])u/$1v/

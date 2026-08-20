@@ -181,6 +181,18 @@ impl Engine {
         }
         Ok(Session { engine: self, id })
     }
+
+    /// 主动部署指定方案（编译其词典与反转表）。
+    /// 增量部署（start_maintenance(0)）不编译附加 translator 的词典
+    /// （如 rime_ice 的 radical_pinyin 反查词典），需在初始化后显式部署一次。
+    pub fn deploy_schema(&self, schema_id: &str) -> bool {
+        let _guard = self.lock();
+        let id = to_cstring(schema_id);
+        let ok = unsafe { (self.api().deploy_schema)(id.as_ptr()) != 0 };
+        // deploy_schema 可能启动后台维护线程，等待其结束避免与后续部署竞争
+        unsafe { (self.api().join_maintenance_thread)() };
+        ok
+    }
 }
 
 impl Drop for Engine {

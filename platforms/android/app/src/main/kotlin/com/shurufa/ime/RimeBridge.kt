@@ -31,6 +31,9 @@ object RimeBridge {
 
     external fun nativeReset()
 
+    /** P4-3：主动部署指定方案（编译附加词典，如 radical_pinyin 反查词典）。 */
+    external fun nativeDeploySchema(schema: String): Boolean
+
     /** 切换中英文（ascii_mode），返回切换后是否为英文直输。 */
     external fun nativeToggleAscii(): Boolean
 

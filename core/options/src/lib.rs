@@ -226,7 +226,7 @@ fn default_input_scheme() -> String {
 pub fn validate_input_scheme(s: &str) -> bool {
     matches!(
         s,
-        "pinyin" | "double_pinyin" | "wubi" | "cangjie" | "t9" | "stroke"
+        "pinyin" | "double_pinyin" | "wubi" | "cangjie" | "t9" | "stroke" | "radical"
     )
 }
 
@@ -239,6 +239,7 @@ pub fn schema_id_of(scheme: &str) -> &'static str {
         "cangjie" => "shurufa_cangjie",
         "t9" => "shurufa_t9",
         "stroke" => "stroke",
+        "radical" => "radical_pinyin",
         _ => "rime_ice",
     }
 }

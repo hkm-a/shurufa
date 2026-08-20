@@ -100,7 +100,8 @@ class ShurufaImeService : InputMethodService() {
         private const val XK_BACKSPACE = 0xff08
         private const val XK_RETURN = 0xff0d
         // 方案资源变化时递增，确保同一应用版本也会重新解包词典。
-        private const val SCHEMA_BUNDLE_VERSION = "rime-ice-20260807"
+        // 2026-08-20 P4-3：pinyin_simp 接入 uU 部件拆字反查（radical_lookup）。
+        private const val SCHEMA_BUNDLE_VERSION = "rime-ice-20260820-p4h"
         /// 缩略图采样目标边长（px），仅为展示用，不必保留原图尺寸
         private const val THUMBNAIL_TARGET = 260
         /// 预览图采样目标边长（px），兼顾清晰度与内存
@@ -347,6 +348,15 @@ class ShurufaImeService : InputMethodService() {
                 val schemas = unpackSchemas()
                 val userDir = File(filesDir, "rime").apply { mkdirs() }
                 initialized = RimeBridge.nativeInit(schemas.absolutePath, userDir.absolutePath)
+                // P4-3：附加反查词典（radical_pinyin）不被增量部署编译，主动部署一次
+                if (initialized) {
+                    try {
+                        val deployed = RimeBridge.nativeDeploySchema("radical_pinyin.schema.yaml")
+                        android.util.Log.i("shurufa", "deploy radical_pinyin = $deployed")
+                    } catch (e: Throwable) {
+                        android.util.Log.e("shurufa", "deploy radical_pinyin failed", e)
+                    }
+                }
                 engineReady = initialized
             } catch (e: Exception) {
                 android.util.Log.e("shurufa", "引擎初始化失败", e)
@@ -409,6 +419,9 @@ class ShurufaImeService : InputMethodService() {
         dest.mkdirs()
         copySchemaAssets("schemas", dest)
         marker.writeText(version)
+        // P4-3：方案资源变化 → 清 librime build 缓存，触发全量重建。
+        // 增量部署（start_maintenance(0)）不会编译新增词典（radical_pinyin 实测缺失）。
+        File(filesDir, "rime/build").deleteRecursively()
         CloudDictionaryUpdater.applyOverlay(applicationContext, dest)
         return dest
     }
@@ -830,6 +843,7 @@ class ShurufaImeService : InputMethodService() {
             "cangjie" to getString(R.string.scheme_cangjie),
             "t9" to getString(R.string.scheme_t9),
             "stroke" to getString(R.string.scheme_stroke),
+            "radical" to getString(R.string.scheme_radical),
         )
         for ((id, _) in schemes) {
             panel.findViewWithTag<TextView>("scheme_row_$id")?.let { row ->
@@ -1867,9 +1881,23 @@ class ShurufaImeService : InputMethodService() {
                         rebuildKeys()
                     }
                 }
-                "type" -> value?.forEach { c ->
-                    if (c.isLetterOrDigit()) onLetter(c.lowercaseChar())
+                "type" -> (value ?: "").replace('_', '\'').forEach { c ->
+                    if (c == '\'' || c == ' ') {
+                        // P4-3 部件码分隔符（bai'shao → 的）：' 或空格直接送引擎
+                        RimeBridge.nativeProcessKey(if (c == ' ') 0x20 else 0x27, 0)
+                        sync()
+                    } else if (c.isLetterOrDigit()) {
+                        onLetter(c.lowercaseChar())
+                    }
                 }
+                "context" -> android.util.Log.i(
+                    "shurufa-ctx",
+                    "ctx=" + try {
+                        RimeBridge.nativeContext()
+                    } catch (_: Throwable) {
+                        "ERR"
+                    },
+                )
             }
         } catch (_: Throwable) {
         }
@@ -1921,6 +1949,7 @@ class ShurufaImeService : InputMethodService() {
             "cangjie" to getString(R.string.scheme_cangjie),
             "t9" to getString(R.string.scheme_t9),
             "stroke" to getString(R.string.scheme_stroke),
+            "radical" to getString(R.string.scheme_radical),
         )
         for ((id, label) in schemes) {
             val row = TextView(this).apply {
@@ -3405,8 +3434,13 @@ class ShurufaImeService : InputMethodService() {
             enqueueDuringWarmup(PendingInput.Letter(c))
             return
         }
-        val eaten = RimeBridge.nativeProcessKey(c.code, 0)
-        if (!eaten) currentInputConnection?.commitText(c.toString(), 1)
+        // P4-3 uU 部件拆字反查（借鉴搜狗 U 模式）：引擎组合串恰为单个 u 时，
+        // 再输 u 转大写 U 送引擎，触发 recognizer 的 uU 前缀反查（uUbai → 的）。
+        val barePreedit = currentPreedit.filter { !it.isWhitespace() && it != '\'' }
+        val code = if (c == 'u' && barePreedit == "u") 0x55 else c.code // XK_U
+        android.util.Log.i("shurufa-uU", "letter=$c code=$code preedit=[$currentPreedit] bare=[$barePreedit]")
+        val eaten = RimeBridge.nativeProcessKey(code, 0)
+        if (!eaten) currentInputConnection?.commitText(if (code == 0x55) "U" else c.toString(), 1)
         sync()
     }
 

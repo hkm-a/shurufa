@@ -9,6 +9,7 @@ schema_list:
   - schema: rime_ice
   - schema: shurufa_t9
   - schema: stroke
+  - schema: radical_pinyin
 
 switcher:
   caption: 〔方案选单〕

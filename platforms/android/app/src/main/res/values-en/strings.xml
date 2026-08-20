@@ -164,6 +164,7 @@
     <string name="scheme_cangjie">Cangjie 5</string>
     <string name="scheme_t9">9-key T9 Pinyin</string>
     <string name="scheme_stroke">Stroke</string>
+    <string name="scheme_radical">Radical (component lookup)</string>
     <string name="scheme_selected_banner">Switched to %1$s</string>
     <string name="main_card_scheme_title">Current input scheme</string>
 </resources>
