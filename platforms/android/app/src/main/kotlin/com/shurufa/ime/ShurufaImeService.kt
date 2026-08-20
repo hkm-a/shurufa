@@ -3585,9 +3585,11 @@ class ShurufaImeService : InputMethodService() {
 
     private fun candidateItem(text: String, index: Int, highlighted: Int, compact: Boolean): TextView =
         TextView(this).apply {
+            // P1-3 借鉴搜狗候选表情混排：词后追加表情装饰（不影响引擎索引）
+            val emoji = EmojiSuggestion.emojiFor(text)
             // UI-2 借鉴搜狗：展开候选带小号灰色编号（1-9 直选提示）
             this.text = if (compact) {
-                text
+                if (emoji != null) "$text $emoji" else text
             } else {
                 SpannableStringBuilder().apply {
                     val num = "${index + 1}"
@@ -3605,6 +3607,7 @@ class ShurufaImeService : InputMethodService() {
                         android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
                     )
                     append("  ").append(text)
+                    if (emoji != null) append(" ").append(emoji)
                 }
             }
             textSize = (if (compact) 20f else 18f) * kbPrefs.candidateSizePercent / 100f
