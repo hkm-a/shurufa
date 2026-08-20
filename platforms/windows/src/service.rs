@@ -86,6 +86,12 @@ pub struct Inner {
     app_ascii: AppAsciiState,
     /// 「？？？」表情计数（M10 困难项替代实现，见 emoji_question.rs）。
     question_state: crate::emoji_question::QuestionState,
+    /// AI 候选提交的 pending 槽：候选窗点击 AI 候选 → 写此槽 + 发 VK_F13；
+    /// handle_key 入口识别该虚拟键，走编辑会话把文本落盘（不经过引擎，
+    /// AI 候选不是 librime 候选，索引对不上数字选词）。
+    pending_ai: Arc<Mutex<Option<String>>>,
+    /// AI 候选 worker（懒启动：AI 开关 + 有 key + 有组合时才创建）。
+    ai_worker: Option<Arc<crate::ai_candidates::AiWorker>>,
 }
 
 /// Shift 按住时长阈值：超过即视长按（→ 大写视觉提示），否则按既有的
@@ -314,6 +320,15 @@ impl TextService {
                     .simulate(keys)
             }));
         }
+        // AI 候选提交钩子（2026-08-20）：候选窗点击 AI 候选时写入 pending
+        // 槽并回发 VK_F13，handle_key 入口识别后走编辑会话提交文本。
+        let pending_ai = Arc::new(Mutex::new(None::<String>));
+        {
+            let slot = Arc::clone(&pending_ai);
+            crate::candidate_window::set_ai_commit(Box::new(move |text| {
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.to_owned());
+            }));
+        }
         TextService {
             inner: RefCell::new(Inner {
                 thread_mgr: None,
@@ -332,12 +347,39 @@ impl TextService {
                 last_anchor: None,
                 app_ascii: AppAsciiState::new(),
                 question_state: crate::emoji_question::QuestionState::default(),
+                pending_ai,
+                ai_worker: None,
             }),
         }
     }
 }
 
 impl Inner {
+    /// AI 候选预测请求（2026-08-20，见 docs/AI候选预测方案.md）：开关开 +
+    /// 有 AGNES_API_KEY + 中文态 + 有组合时，把当前 preedit 投递给 worker
+    ///（缓冲 1，快打丢旧保新；worker 800ms 停顿后调 agnès，结果经
+    /// PostMessage 回候选窗刷新）。失败/超时/无 key 一律静默，绝不影响输入。
+    fn maybe_request_ai(&mut self, ctx: &ime_ipc::Context) {
+        if !self.opts.ai_candidates || crate::ai_candidates::api_key().is_none() {
+            return;
+        }
+        let preedit = ctx.preedit.trim().to_owned();
+        if preedit.is_empty() || ctx.is_ascii {
+            return;
+        }
+        if self.ai_worker.is_none() {
+            crate::debug_log("AI 候选 worker 首次启用");
+            self.ai_worker = Some(crate::ai_candidates::AiWorker::spawn());
+        }
+        let hwnd = crate::candidate_window::current_hwnd()
+            .map(|h| h.0 as usize)
+            .unwrap_or(0);
+        self.ai_worker
+            .as_ref()
+            .expect("worker 已创建")
+            .request(preedit, hwnd);
+    }
+
     /// 至多每 2 秒检查一次 options.json 的修改时间，变了就重载。
     /// 不主动向引擎推状态（全角/标点默认由 schema 决定），只影响快捷键行为。
     fn refresh_options(&mut self) {
@@ -457,6 +499,43 @@ impl Inner {
         let shift = modifiers & keys::MASK_SHIFT != 0;
         let ctrl = modifiers & keys::MASK_CONTROL != 0;
         let alt = modifiers & keys::MASK_ALT != 0;
+
+        // AI 候选提交（VK_F13 触发，2026-08-20）：候选窗点击 AI 候选时
+        // 回发此虚拟键，本入口识别后直接把文本落盘（结束组合 + 插入文档；
+        // 不经过引擎数字选词——AI 候选不是 librime 候选，索引对不上）。
+        // F13 是标准键盘不存在的键，正常打字不可能产生，可安全占用。
+        if vk == 0x7C {
+            if let Some(text) = self
+                .pending_ai
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
+                let text = text.trim_start_matches('🤖').to_owned();
+                let client_id = self.client_id;
+                let composition_slot = &mut self.composition;
+                let edit_result = edit_session(client_id, context, |ec| {
+                    unsafe {
+                        if let Some(comp) = composition_slot.take() {
+                            set_composition_text(&comp, ec, &text, text.encode_utf16().count())?;
+                            comp.EndComposition(ec)?;
+                        } else {
+                            insert_text(context, ec, &text)?;
+                        }
+                    }
+                    Ok(())
+                });
+                if let Err(e) = &edit_result {
+                    crate::debug_log(&format!("AI 候选提交失败：{e:?}"));
+                } else {
+                    crate::debug_log(&format!("AI 候选提交：{text:?}"));
+                }
+                self.ui.hide();
+                self.last_comp_ptr = None;
+                self.last_anchor = None;
+            }
+            return true;
+        }
 
         // 「？？？」表情（M10）：非斜杠键重置连续问号计数。
         self.question_state.reset();
@@ -756,6 +835,10 @@ impl Inner {
             "键 vk=0x{:X} keysym=0x{:X} eaten={} commit={:?} preedit={:?}",
             wparam.0, keysym, eaten, commit, ctx.preedit
         ));
+
+        // AI 候选预测（2026-08-20）：候选刷新时把 preedit 投递给 worker
+        //（800ms 停顿后调 agnès；开关关/无 key/无组合/英文直输一律跳过）。
+        self.maybe_request_ai(&ctx);
 
         let has_preedit = !ctx.preedit.is_empty();
         let client_id = self.client_id;

@@ -8,6 +8,14 @@
 - **AI 候选预测**：输入暂停约 800ms 后基于拼音与上文调 agnès 预测候选
   （🤖 标记，排在候选行尾部，点击直接上屏）；设置 → AI 智能 → 开关（默认关，
   需 API Key，开启后输入内容送云端）；无 Key/失败静默。方案见 docs/AI候选预测方案.md。
+  - Android：AiCandidateManager + Service debounce 注入（2026-08-20 首版）。
+  - **Windows TSF 对照落地**：ai_candidates.rs（prompt/parse/fetch + AiWorker
+    worker 线程，sync_channel(1) 800ms 停顿收最新 preedit → agnès 8s 超时 →
+    PostMessage 回候选窗）；候选窗 show 合并引擎前 6 + AI 至多 3（🤖 副标），
+    AI 结果到达按 LAST_CTX 快照重建布局（compute_show_layout 复用）；点击 AI
+    候选走 AI_COMMIT 钩子 + VK_F13 触发 TSF 编辑会话落盘（不走引擎数字选词）；
+    开关 ImeOptions.ai_candidates（设置中心「输入 → AI 候选预测」），key 读
+    环境变量 AGNES_API_KEY（与 AI 帮写面板同源，永不落盘）。
 
 ## [1.8.0] - 2026-08-20
 

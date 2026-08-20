@@ -17,6 +17,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     GlobalFree, COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, ClientToScreen, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW,
     EndPaint, FillRect, GetDC, GetTextExtentPoint32W, InvalidateRect, LineTo, MoveToEx, ReleaseDC,
@@ -37,7 +38,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, LoadCursorW, MoveWindow, RegisterClassW, SetWindowPos, ShowWindow,
     TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, MF_SEPARATOR, MF_STRING,
     SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT, WM_LBUTTONDOWN,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT, WM_LBUTTONDOWN,
     WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE, WNDCLASSW,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
@@ -63,6 +64,49 @@ pub fn set_engine_simulate(f: EngineSimulateFn) {
 /// 把一段 Rime 键序送到当前会话（如 "3" 选中第 3 候选、"Control+d" 删词）。
 fn engine_simulate(keys: &str) -> bool {
     ENGINE_SIMULATE.with(|slot| slot.borrow().as_ref().map(|f| f(keys)).unwrap_or(false))
+}
+
+// ---------------------------------------------------------------------------
+// AI 候选预测（2026-08-20；见 docs/AI候选预测方案.md 与 ai_candidates.rs）
+// ---------------------------------------------------------------------------
+
+/// worker 线程把 AI 候选结果送回候选窗 UI 线程的私有消息。
+/// LPARAM 携带 Box<Vec<(preedit, text)>> 的裸指针（同进程，wnd_proc 消费后释放）。
+pub(crate) const WM_AI_CANDIDATES_READY: u32 = WM_APP + 81;
+/// 点击 AI 候选时让 TSF 走编辑会话提交的"虚拟键"（VK_F13：标准键盘无此键，
+/// 正常打字不可能产生；service 在 handle_key 入口识别并吃掉）。
+const VK_AI_COMMIT_TRIGGER: u8 = 0x7C;
+/// AI 候选起始索引（None = 当前帧无 AI 候选）。
+type AiCommitFn = Box<dyn Fn(&str)>;
+thread_local! {
+    /// show() 时的原始 Context 快照（AI 结果到达后据此重建布局）。
+    static LAST_CTX: RefCell<Option<Context>> = const { RefCell::new(None) };
+    /// AI 候选：(preedit, text)；show 时只合并 preedit 匹配的条目。
+    static AI_CANDIDATES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    /// 当前帧 AI 候选起始索引（点击 AI 候选走提交回调，而非引擎数字键）。
+    static AI_START: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// AI 候选提交钩子（service 注册：写 pending 槽；候选窗负责发 VK_AI_COMMIT_TRIGGER）。
+    static AI_COMMIT: RefCell<Option<AiCommitFn>> = const { RefCell::new(None) };
+    /// 最近一次 show 的候选面板模式（refresh_with_ai 重建布局时复用）。
+    static LAST_PANEL_MODE: std::cell::Cell<CandidatePanelMode> =
+        const { std::cell::Cell::new(CandidatePanelMode::Single) };
+}
+
+/// 注册 AI 候选提交钩子（service.rs 会话初始化；wnd_proc 同线程调用）。
+pub fn set_ai_commit(f: AiCommitFn) {
+    AI_COMMIT.with(|slot| *slot.borrow_mut() = Some(f));
+}
+
+/// 当前候选窗句柄（worker 线程结果投递用；窗口未创建时为 None）。
+pub(crate) fn current_hwnd() -> Option<HWND> {
+    PAINT_HWND.with(|h| {
+        let v = h.get();
+        if v.0.is_null() {
+            None
+        } else {
+            Some(v)
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -666,164 +710,20 @@ pub struct CandidateUi {
     last_height: i32,
 }
 
-impl CandidateUi {
-    pub fn new() -> Self {
-        // 预热皮肤缓存：TSF DLL 部署形态下皮肤文件在 DLL 旁的 schemas 目录
-        let extra = crate::dll_path()
-            .parent()
-            .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
-        let _ = skin::load_with(|| extra);
-        // 预热 GPU 工厂（< 5ms）；失败则整段会话降级，不 panic
-        crate::candidate_window_d2d::try_init();
-        crate::candidate_window_dcomp::try_init();
-        CandidateUi {
-            hwnd: None,
-            shadow: ShadowShell::new(),
-            last_rect: None,
-            visible: false,
-            last_fp: None,
-            last_width: 0,
-            last_height: 0,
-        }
-    }
 
-    fn ensure_window(&mut self) -> Option<HWND> {
-        if let Some(hwnd) = self.hwnd {
-            return Some(hwnd);
-        }
-        unsafe {
-            let hinstance = GetModuleHandleW(PCWSTR::null()).ok()?;
-            CLASS_REGISTERED.with_borrow_mut(|registered| {
-                if !*registered {
-                    let class = WNDCLASSW {
-                        style: CS_HREDRAW | CS_VREDRAW,
-                        lpfnWndProc: Some(wnd_proc),
-                        hInstance: hinstance.into(),
-                        lpszClassName: CLASS_NAME,
-                        hbrBackground: HBRUSH::default(),
-                        // 不设光标会导致悬停时一直显示忙碌转圈
-                        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-                        ..Default::default()
-                    };
-                    // 同进程重复注册返回 0，忽略即可
-                    RegisterClassW(&class);
-                    *registered = true;
-                }
-            });
-            let hwnd = CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-                CLASS_NAME,
-                w!(""),
-                WS_POPUP,
-                0,
-                0,
-                BASE_MIN_WIDTH,
-                BASE_ROW_HEIGHT,
-                None,
-                None,
-                Some(hinstance.into()),
-                None,
-            )
-            .ok()?;
-            // 现代外观：Win11 圆角 + 沉浸式深色边框 + 按皮肤透明度分层
-            skin::apply_appearance(hwnd, &Skin::current());
-            PAINT_HWND.with(|h| h.set(hwnd));
-            self.hwnd = Some(hwnd);
-            Some(hwnd)
-        }
-    }
-
-    /// 内容指纹（P0 #5）：候选窗显示内容 + 皮肤 + DPI 的 FNV-1a 散列。
-    /// 指纹相同 ⇒ 布局（宽高）与绘制结果必然相同，可安全跳过字体实测
-    /// 与重绘。覆盖：preedit、候选文本/副标、高亮序号、页码、中英/全角
-    /// 模式、DPI、皮肤字号倍率与全部间距参数。
-    fn content_fingerprint(ctx: &Context, skin: &Skin, dpi: u32) -> u64 {
-        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-        let mut hash = FNV_OFFSET;
-        fn mix(hash: &mut u64, byte: u8) {
-            *hash ^= byte as u64;
-            *hash = hash.wrapping_mul(FNV_PRIME);
-        }
-        for byte in ctx.preedit.bytes() {
-            mix(&mut hash, byte);
-        }
-        mix(&mut hash, ctx.highlighted as u8);
-        mix(&mut hash, ctx.page_no as u8);
-        mix(&mut hash, ctx.is_last_page as u8);
-        mix(&mut hash, ctx.is_ascii as u8);
-        mix(&mut hash, ctx.is_full_shape as u8);
-        mix(&mut hash, dpi as u8);
-        mix(&mut hash, (dpi >> 8) as u8);
-        for c in ctx.candidates.iter().take(9) {
-            for byte in c.text.bytes() {
-                mix(&mut hash, byte);
-            }
-            mix(&mut hash, 0xff);
-            for byte in c.comment.bytes() {
-                mix(&mut hash, byte);
-            }
-            mix(&mut hash, 0xfe);
-        }
-        // 皮肤：字号倍率（f32 位模式）+ 间距/圆角参数 + 透明度
-        let m = skin.metrics;
-        for byte in m.font_scale.to_bits().to_le_bytes() {
-            mix(&mut hash, byte);
-        }
-        for byte in m.opacity.to_bits().to_le_bytes() {
-            mix(&mut hash, byte);
-        }
-        for v in [
-            m.radius,
-            m.padding,
-            m.item_gap,
-            m.label_gap,
-            m.hl_pad,
-            m.row_h,
-            m.preedit_h,
-        ] {
-            for byte in (v as u32).to_le_bytes() {
-                mix(&mut hash, byte);
-            }
-        }
-        mix(&mut hash, m.scrollbar as u8);
-        hash
-    }
-
-    /// 用引擎上下文刷新窗口内容并显示在锚点下方。
-    pub fn show(
-        &mut self,
-        ctx: &Context,
-        anchor: Option<POINT>,
-        position: PositionMode,
-        panel_mode: CandidatePanelMode,
-    ) {
-        let Some(hwnd) = self.ensure_window() else {
-            return;
-        };
-        // 每次弹出重读皮肤：文件改动/主题改动即时生效（候选文件 <128KiB，代价可忽略）
-        let extra = crate::dll_path()
-            .parent()
-            .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
-        let skin = skin::load_with(|| extra);
-        skin::apply_appearance(hwnd, &skin);
-        log_icon_once(&skin);
-        let font_scale = skin.metrics.font_scale;
-        // 部分宿主（DPI 虚拟化）对弹窗返回 96 兜底值，取系统 DPI 兜底
-        let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
-        // 屏幕逻辑尺寸（物理 SM_CXSCREEN 换算；布局/钳制全程用逻辑像素）
-        let screen_w = logical_screen_dim(unsafe { GetSystemMetrics(SM_CXSCREEN) }, dpi);
-        let screen_h = logical_screen_dim(unsafe { GetSystemMetrics(SM_CYSCREEN) }, dpi);
-
-        // 内容指纹短路（P0 #5）：候选内容未变则跳过字体实测与重绘。
-        // 布局只依赖（内容 + 皮肤 + DPI），指纹相同 ⇒ 宽高相同，可直接复用。
-        let fp = Self::content_fingerprint(ctx, &skin, dpi);
-        // 面板模式参与指纹：单行/多行切换时布局缓存必须失效（内容相同但
-        // 布局不同）。multi 布局随 M7 落地，选项层先行、模式已生效。
-        let fp = fp ^ ((panel_mode as u64) << 56);
-        let content_changed = self.last_fp != Some(fp);
-
-        let (width, height) = if content_changed {
+/// 候选窗布局计算（show 与 AI 结果刷新共用）：字体实测 → items/宽高 →
+/// 写入 PAINT_DATA。返回 (width, height)。内容指纹短路由调用方负责（AI
+/// 刷新每次强制重算，触发频率低，成本可忽略）。
+fn compute_show_layout(
+    hwnd: HWND,
+    ctx: &Context,
+    skin: &Skin,
+    dpi: u32,
+    panel_mode: CandidatePanelMode,
+    screen_w: i32,
+    _screen_h: i32,
+) -> (i32, i32) {
+            let font_scale = skin.metrics.font_scale;
             let padding = scale(skin.metrics.padding_or(BASE_PADDING), dpi);
             let item_gap = scale(skin.metrics.item_gap_or(BASE_ITEM_GAP), dpi);
             let label_gap = scale(skin.metrics.label_gap_or(BASE_LABEL_GAP), dpi);
@@ -991,16 +891,293 @@ impl CandidateUi {
                 data.preedit = ctx.preedit.clone();
                 data.items = items;
                 data.dpi = dpi;
-                data.skin = skin;
+                data.skin = *skin;
                 data.is_ascii = ctx.is_ascii;
                 data.is_full_shape = ctx.is_full_shape;
                 data.page = page;
             });
 
+    (width, height)
+}
+
+/// 合并 AI 候选（2026-08-20）：引擎候选保留前 [crate::ai_candidates::RIME_KEEP]
+/// 个，AI 候选（preedit 匹配、至多 MAX_CANDIDATES 个）追加其后，副标 "🤖"
+/// 标注。返回 (合并后的候选列表, AI 起始索引；None = 本帧无 AI 候选)。
+fn merge_ai_candidates(ctx: &Context) -> (Vec<ime_ipc::Candidate>, Option<usize>) {
+    let ai = AI_CANDIDATES.with(|c| {
+        c.borrow()
+            .iter()
+            .filter(|(p, _)| *p == ctx.preedit)
+            .map(|(_, t)| t.clone())
+            .collect::<Vec<_>>()
+    });
+    if ai.is_empty() {
+        return (ctx.candidates.clone(), None);
+    }
+    let mut out: Vec<ime_ipc::Candidate> = ctx
+        .candidates
+        .iter()
+        .take(crate::ai_candidates::RIME_KEEP)
+        .cloned()
+        .collect();
+    let start = out.len();
+    for t in ai.into_iter().take(crate::ai_candidates::MAX_CANDIDATES) {
+        out.push(ime_ipc::Candidate {
+            text: t,
+            comment: "🤖".to_owned(),
+        });
+    }
+    let ai_start = if start < out.len() {
+        Some(start)
+    } else {
+        None
+    };
+    (out, ai_start)
+}
+
+/// AI 候选结果到达（WM_AI_CANDIDATES_READY，wnd_proc 同线程）：写入候选表、
+/// 按上次 show 的快照重建布局并重绘。位置保持当前，仅按新尺寸重排。
+pub(crate) fn refresh_with_ai(payload_ptr: isize) {
+    let payload = unsafe { Box::from_raw(payload_ptr as *mut Vec<(String, String)>) };
+    let hwnd = PAINT_HWND.with(|h| h.get());
+    if hwnd.0.is_null() {
+        return;
+    }
+    // 窗口已销毁（或从未 show 过）：释放 payload 防泄漏
+    if LAST_CTX.with(|c| c.borrow().is_none()) {
+        return;
+    }
+    AI_CANDIDATES.with(|c| {
+        c.borrow_mut().extend(payload.iter().cloned());
+        // 上限保护：保留最近 30 条（每 preedit 至多 3 条，10s TTL 自然淘汰）
+        let len = c.borrow().len();
+        if len > 30 {
+            c.borrow_mut().drain(0..len - 30);
+        }
+    });
+    let ctx = LAST_CTX.with(|c| c.borrow().clone()).unwrap();
+    let panel_mode = LAST_PANEL_MODE.with(|m| m.get());
+    let (merged, ai_start) = merge_ai_candidates(&ctx);
+    AI_START.with(|s| s.set(ai_start));
+    let mut view_ctx = ctx;
+    view_ctx.candidates = merged;
+    let extra = crate::dll_path()
+        .parent()
+        .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
+    let skin = skin::load_with(|| extra);
+    let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
+    let screen_w = logical_screen_dim(unsafe { GetSystemMetrics(SM_CXSCREEN) }, dpi);
+    let screen_h = logical_screen_dim(unsafe { GetSystemMetrics(SM_CYSCREEN) }, dpi);
+    let (width, height) = compute_show_layout(
+        hwnd,
+        &view_ctx,
+        &skin,
+        dpi,
+        panel_mode,
+        screen_w,
+        screen_h,
+    );
+    // 位置保持当前窗口位置，仅按新宽高重排
+    let mut rect = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut rect);
+        let _ = MoveWindow(hwnd, rect.left, rect.top, width, height, false);
+        let _ = InvalidateRect(Some(hwnd), None, true);
+    }
+    let uia_text = view_ctx
+        .candidates
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("{}.{}", i + 1, c.text))
+        .collect::<Vec<_>>()
+        .join("，");
+    crate::uia_provider::update_candidate_text(&uia_text);
+    crate::debug_log(&format!(
+        "cand AI 刷新: preedit={:?} ai_start={:?} w={} h={}",
+        view_ctx.preedit, ai_start, width, height
+    ));
+}
+
+
+impl CandidateUi {
+    pub fn new() -> Self {
+        // 预热皮肤缓存：TSF DLL 部署形态下皮肤文件在 DLL 旁的 schemas 目录
+        let extra = crate::dll_path()
+            .parent()
+            .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
+        let _ = skin::load_with(|| extra);
+        // 预热 GPU 工厂（< 5ms）；失败则整段会话降级，不 panic
+        crate::candidate_window_d2d::try_init();
+        crate::candidate_window_dcomp::try_init();
+        CandidateUi {
+            hwnd: None,
+            shadow: ShadowShell::new(),
+            last_rect: None,
+            visible: false,
+            last_fp: None,
+            last_width: 0,
+            last_height: 0,
+        }
+    }
+
+    fn ensure_window(&mut self) -> Option<HWND> {
+        if let Some(hwnd) = self.hwnd {
+            return Some(hwnd);
+        }
+        unsafe {
+            let hinstance = GetModuleHandleW(PCWSTR::null()).ok()?;
+            CLASS_REGISTERED.with_borrow_mut(|registered| {
+                if !*registered {
+                    let class = WNDCLASSW {
+                        style: CS_HREDRAW | CS_VREDRAW,
+                        lpfnWndProc: Some(wnd_proc),
+                        hInstance: hinstance.into(),
+                        lpszClassName: CLASS_NAME,
+                        hbrBackground: HBRUSH::default(),
+                        // 不设光标会导致悬停时一直显示忙碌转圈
+                        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+                        ..Default::default()
+                    };
+                    // 同进程重复注册返回 0，忽略即可
+                    RegisterClassW(&class);
+                    *registered = true;
+                }
+            });
+            let hwnd = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                CLASS_NAME,
+                w!(""),
+                WS_POPUP,
+                0,
+                0,
+                BASE_MIN_WIDTH,
+                BASE_ROW_HEIGHT,
+                None,
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+            .ok()?;
+            // 现代外观：Win11 圆角 + 沉浸式深色边框 + 按皮肤透明度分层
+            skin::apply_appearance(hwnd, &Skin::current());
+            PAINT_HWND.with(|h| h.set(hwnd));
+            self.hwnd = Some(hwnd);
+            Some(hwnd)
+        }
+    }
+
+    /// 内容指纹（P0 #5）：候选窗显示内容 + 皮肤 + DPI 的 FNV-1a 散列。
+    /// 指纹相同 ⇒ 布局（宽高）与绘制结果必然相同，可安全跳过字体实测
+    /// 与重绘。覆盖：preedit、候选文本/副标、高亮序号、页码、中英/全角
+    /// 模式、DPI、皮肤字号倍率与全部间距参数。
+    fn content_fingerprint(ctx: &Context, skin: &Skin, dpi: u32) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut hash = FNV_OFFSET;
+        fn mix(hash: &mut u64, byte: u8) {
+            *hash ^= byte as u64;
+            *hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        for byte in ctx.preedit.bytes() {
+            mix(&mut hash, byte);
+        }
+        mix(&mut hash, ctx.highlighted as u8);
+        mix(&mut hash, ctx.page_no as u8);
+        mix(&mut hash, ctx.is_last_page as u8);
+        mix(&mut hash, ctx.is_ascii as u8);
+        mix(&mut hash, ctx.is_full_shape as u8);
+        mix(&mut hash, dpi as u8);
+        mix(&mut hash, (dpi >> 8) as u8);
+        for c in ctx.candidates.iter().take(9) {
+            for byte in c.text.bytes() {
+                mix(&mut hash, byte);
+            }
+            mix(&mut hash, 0xff);
+            for byte in c.comment.bytes() {
+                mix(&mut hash, byte);
+            }
+            mix(&mut hash, 0xfe);
+        }
+        // 皮肤：字号倍率（f32 位模式）+ 间距/圆角参数 + 透明度
+        let m = skin.metrics;
+        for byte in m.font_scale.to_bits().to_le_bytes() {
+            mix(&mut hash, byte);
+        }
+        for byte in m.opacity.to_bits().to_le_bytes() {
+            mix(&mut hash, byte);
+        }
+        for v in [
+            m.radius,
+            m.padding,
+            m.item_gap,
+            m.label_gap,
+            m.hl_pad,
+            m.row_h,
+            m.preedit_h,
+        ] {
+            for byte in (v as u32).to_le_bytes() {
+                mix(&mut hash, byte);
+            }
+        }
+        mix(&mut hash, m.scrollbar as u8);
+        hash
+    }
+
+    /// 用引擎上下文刷新窗口内容并显示在锚点下方。
+    pub fn show(
+        &mut self,
+        ctx: &Context,
+        anchor: Option<POINT>,
+        position: PositionMode,
+        panel_mode: CandidatePanelMode,
+    ) {
+        let Some(hwnd) = self.ensure_window() else {
+            return;
+        };
+        // 每次弹出重读皮肤：文件改动/主题改动即时生效（候选文件 <128KiB，代价可忽略）
+        let extra = crate::dll_path()
+            .parent()
+            .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
+        let skin = skin::load_with(|| extra);
+        skin::apply_appearance(hwnd, &skin);
+        log_icon_once(&skin);
+        // 部分宿主（DPI 虚拟化）对弹窗返回 96 兜底值，取系统 DPI 兜底
+        let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
+        // 屏幕逻辑尺寸（物理 SM_CXSCREEN 换算；布局/钳制全程用逻辑像素）
+        let screen_w = logical_screen_dim(unsafe { GetSystemMetrics(SM_CXSCREEN) }, dpi);
+        let screen_h = logical_screen_dim(unsafe { GetSystemMetrics(SM_CYSCREEN) }, dpi);
+
+        // AI 候选（2026-08-20）：保存原 ctx 快照供结果刷新重建；合并当前
+        // preedit 匹配的 AI 候选到候选列表尾部（引擎候选保留前 RIME_KEEP 个）。
+        LAST_CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
+        LAST_PANEL_MODE.with(|m| m.set(panel_mode));
+        let (merged_candidates, ai_start) = merge_ai_candidates(ctx);
+        AI_START.with(|s| s.set(ai_start));
+        let mut view_ctx = ctx.clone();
+        view_ctx.candidates = merged_candidates;
+
+        // 内容指纹短路（P0 #5）：候选内容未变则跳过字体实测与重绘。
+        // 布局只依赖（内容 + 皮肤 + DPI），指纹相同 ⇒ 宽高相同，可直接复用。
+        let fp = Self::content_fingerprint(&view_ctx, &skin, dpi);
+        // 面板模式参与指纹：单行/多行切换时布局缓存必须失效（内容相同但
+        // 布局不同）。multi 布局随 M7 落地，选项层先行、模式已生效。
+        let fp = fp ^ ((panel_mode as u64) << 56);
+        let content_changed = self.last_fp != Some(fp);
+
+        let (width, height) = if content_changed {
+            let out = compute_show_layout(
+                hwnd,
+                &view_ctx,
+                &skin,
+                dpi,
+                panel_mode,
+                screen_w,
+                screen_h,
+            );
             self.last_fp = Some(fp);
-            self.last_width = width;
-            self.last_height = height;
-            (width, height)
+            self.last_width = out.0;
+            self.last_height = out.1;
+            out
         } else {
             crate::debug_log("cand show: SKIP（内容指纹未变）");
             (self.last_width, self.last_height)
@@ -1183,6 +1360,11 @@ unsafe extern "system" fn wnd_proc(
             select_candidate_at(lparam);
             LRESULT(0)
         }
+        value if value == WM_AI_CANDIDATES_READY => {
+            // AI 候选结果到达（worker 线程 PostMessage；同进程指针传递）。
+            refresh_with_ai(lparam.0);
+            LRESULT(0)
+        }
         value if value == WM_RBUTTONDOWN => {
             // 右键候选：复制/删词/降频/隐藏/打开设置（搜狗 16.3b 菜单入口同类）。
             show_candidate_menu(hwnd, lparam);
@@ -1263,6 +1445,35 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
     let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
     let dpi = PAINT_DATA.with_borrow(|data| data.dpi);
     if let Some(index) = hit_test_item(x, y) {
+        // AI 候选（2026-08-20）：索引落在 AI 起始之后 → 取完整原文（显示
+        // 文本可能被缩写截断），交提交钩子（service 写 pending 槽），再回发
+        // VK_F13 让 TSF 走编辑会话把文本落盘。AI 候选不是 librime 候选，
+        // 不能走数字选词（引擎索引对不上）。
+        let ai_start = AI_START.with(|s| s.get());
+        if let Some(start) = ai_start {
+            if index >= start {
+                let preedit = LAST_CTX.with(|c| c.borrow().as_ref().map(|c| c.preedit.clone()));
+                let k = index - start;
+                let text = preedit.and_then(|p| {
+                    AI_CANDIDATES.with(|c| {
+                        c.borrow()
+                            .iter()
+                            .filter(|(pp, _)| *pp == p)
+                            .nth(k)
+                            .map(|(_, t)| t.clone())
+                    })
+                });
+                if let Some(text) = text {
+                    AI_COMMIT.with(|slot| {
+                        if let Some(f) = slot.borrow().as_ref() {
+                            f(&text);
+                        }
+                    });
+                    send_virtual_key(VK_AI_COMMIT_TRIGGER);
+                }
+                return;
+            }
+        }
         // 序号键 1..9 → 0x31..0x39；第 10 项按下标 0 → 0x30。
         let key = if index >= 9 { 0x30 } else { 0x31 + index as u8 };
         send_virtual_key(key);

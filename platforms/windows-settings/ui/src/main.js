@@ -1402,6 +1402,7 @@ function inputPage() {
           ["single", "单行候选条"],
           ["multi", "多行候选面板"]
         ].map(([v, label]) => `<option value="${v}"${(generalSettings?.candidate_panel_mode || "single") === v ? " selected" : ""}>${label}</option>`).join("")}</select></div></div>
+        <div class="setting-row"><div class="row-icon dim"><i data-lucide="bot"></i></div><div><h3>AI 候选预测</h3><p>拼音暂停约 0.8 秒后，基于当前拼音调 agnès 预测候选，注入候选行尾部（🤖 标注，搜狗 AI 化主线）；需设置环境变量 AGNES_API_KEY（与 AI 帮写面板同源）。默认关闭：云端消耗 + 隐私</p></div><div class="row-side"><label class="switch"><input type="checkbox" data-general-field="ai_candidates" ${generalSettings?.ai_candidates ? "checked" : ""} /><span></span></label></div></div>
         <div class="divider"></div>
         <div class="setting-row"><div class="row-icon dim"><i data-lucide="sparkles"></i></div><div><h3>候选与历史</h3><p>使用 Ctrl+Shift+V 呼出剪贴板历史</p></div><button class="outline-action" data-page="history"><i data-lucide="clipboard-list"></i>管理历史</button></div>
       </article>

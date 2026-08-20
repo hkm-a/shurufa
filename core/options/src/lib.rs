@@ -65,10 +65,21 @@ pub struct ImeOptions {
     /// 并重建词典；改动需重新部署生效。
     #[serde(default = "default_scenario_dict")]
     pub scenario_dict: String,
+    /// AI 候选预测（搜狗 AI 化主线，2026-08-20）：拼音暂停约 800ms 后基于
+    /// 当前拼音调 agnès 预测候选，注入候选行尾部（🤖 标注）。默认关
+    /// （云端消耗 + 隐私）；需设置环境变量 AGNES_API_KEY（与 AI 帮写面板
+    /// 同源，永不落盘）。TSF 每键热读，改动约 2 秒内生效。
+    #[serde(default = "default_ai_candidates")]
+    pub ai_candidates: bool,
 }
 
 /// 符号配对默认值：关闭（微信输入法默认同样关闭，避免与应用冲突）。
 pub fn default_symbol_pairing() -> bool {
+    false
+}
+
+/// AI 候选预测默认值：关闭（云端消耗 + 隐私，与 Android 端一致）。
+pub fn default_ai_candidates() -> bool {
     false
 }
 
@@ -331,6 +342,7 @@ impl Default for ImeOptions {
             app_options: std::collections::BTreeMap::new(),
             symbol_pairing: default_symbol_pairing(),
             scenario_dict: default_scenario_dict(),
+            ai_candidates: default_ai_candidates(),
         }
     }
 }
