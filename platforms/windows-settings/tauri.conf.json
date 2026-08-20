@@ -1,37 +1,37 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "FOX输入法",
-  "version": "1.7.0",
-  "identifier": "com.shurufa.desktop",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "ui-dist"
-  },
-  "app": {
-    "windows": [
-      {
-        "title": "FOX输入法",
-        "label": "main",
-        "width": 380,
-        "height": 64,
-        "minWidth": 40,
-        "minHeight": 40,
-        "resizable": false,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "shadow": false,
-        "skipTaskbar": true,
-        "theme": "Light"
-      }
-    ],
-    "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
-    }
-  },
-  "bundle": {
-    "active": false
-  }
+    "$schema":  "https://schema.tauri.app/config/2",
+    "productName":  "FOX输入法",
+    "version":  "1.8.0",
+    "identifier":  "com.shurufa.desktop",
+    "build":  {
+                  "beforeDevCommand":  "npm run dev",
+                  "devUrl":  "http://localhost:1420",
+                  "beforeBuildCommand":  "npm run build",
+                  "frontendDist":  "ui-dist"
+              },
+    "app":  {
+                "windows":  [
+                                {
+                                    "title":  "FOX输入法",
+                                    "label":  "main",
+                                    "width":  380,
+                                    "height":  64,
+                                    "minWidth":  40,
+                                    "minHeight":  40,
+                                    "resizable":  false,
+                                    "decorations":  false,
+                                    "transparent":  true,
+                                    "alwaysOnTop":  true,
+                                    "shadow":  false,
+                                    "skipTaskbar":  true,
+                                    "theme":  "Light"
+                                }
+                            ],
+                "security":  {
+                                 "csp":  "default-src \u0027self\u0027 ipc: http://ipc.localhost; connect-src ipc: http://ipc.localhost; style-src \u0027self\u0027 \u0027unsafe-inline\u0027; img-src \u0027self\u0027 data:"
+                             }
+            },
+    "bundle":  {
+                   "active":  false
+               }
 }
