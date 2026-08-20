@@ -17,7 +17,10 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
+import android.text.SpannableStringBuilder
 import android.text.TextWatcher
+import android.text.style.AbsoluteSizeSpan
+import android.text.style.ForegroundColorSpan
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -3493,7 +3496,28 @@ class ShurufaImeService : InputMethodService() {
 
     private fun candidateItem(text: String, index: Int, highlighted: Int, compact: Boolean): TextView =
         TextView(this).apply {
-            this.text = text
+            // UI-2 借鉴搜狗：展开候选带小号灰色编号（1-9 直选提示）
+            this.text = if (compact) {
+                text
+            } else {
+                SpannableStringBuilder().apply {
+                    val num = "${index + 1}"
+                    append(num)
+                    setSpan(
+                        AbsoluteSizeSpan(dp(12f)),
+                        0,
+                        num.length,
+                        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                    setSpan(
+                        ForegroundColorSpan(if (isDark()) 0xFF8E949D.toInt() else 0xFF9AA0AA.toInt()),
+                        0,
+                        num.length,
+                        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                    append("  ").append(text)
+                }
+            }
             textSize = if (compact) 20f else 18f
             gravity = Gravity.CENTER
             setTextColor(if (index == highlighted) palette.candidateHl else palette.candidate)
