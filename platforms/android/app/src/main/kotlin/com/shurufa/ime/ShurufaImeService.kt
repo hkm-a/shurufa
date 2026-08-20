@@ -31,6 +31,7 @@ import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.PopupWindow
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -115,6 +116,8 @@ class ShurufaImeService : InputMethodService() {
     private lateinit var candidateBar: LinearLayout
     private lateinit var expandedCandidateBar: LinearLayout
     private lateinit var candidateExpandButton: TextView
+    /** P2-1 借鉴搜狗：候选区右侧模式切换竖栏（拼音/九键/笔画/双拼一键切）。 */
+    private var modeSwitchBar: LinearLayout? = null
     private lateinit var keyArea: LinearLayout
     private var voice: VoiceInputController? = null
     /// 键盘内置的语音状态条（不受系统 Toast 抑制，必现）。
@@ -350,6 +353,7 @@ class ShurufaImeService : InputMethodService() {
                 mainHandler.post {
                     flushWarmupInput(initialized)
                     if (::keyArea.isInitialized && !symbolMode) rebuildKeys()
+                    refreshModeSwitchBar()
                 }
             }
         }
@@ -522,13 +526,21 @@ class ShurufaImeService : InputMethodService() {
         root.addView(voiceStatusBar)
 
         // 候选词区支持横滑浏览、展开九宫格与翻页，候选数量由 Rime 保持唯一来源。
-        val candidatePanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        // P2-1 借鉴搜狗：右侧模式切换竖栏常驻（拼/九/笔/双），候选内容列给其让位。
+        val modeBarWidth = dp(40f)
+        val candidatePanel = FrameLayout(this).apply {
             setBackgroundColor(palette.key)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
             )
+        }
+        val candidateContentCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { rightMargin = modeBarWidth }
         }
         candidateBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         // P1 借鉴搜狗 HkbHorizontalCandidatesPageView：滑到左右边缘继续滑 → 翻页。
@@ -597,7 +609,7 @@ class ShurufaImeService : InputMethodService() {
                 setStroke(dp(1f), palette.accent)
             }
         }
-        candidatePanel.addView(LinearLayout(this).apply {
+        candidateContentCol.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(
@@ -617,7 +629,13 @@ class ShurufaImeService : InputMethodService() {
             visibility = View.GONE
             setPadding(dp(6f), dp(4f), dp(6f), dp(6f))
         }
-        candidatePanel.addView(expandedCandidateBar)
+        candidateContentCol.addView(expandedCandidateBar)
+        candidatePanel.addView(candidateContentCol)
+        modeSwitchBar = buildModeSwitchBar(modeBarWidth)
+        candidatePanel.addView(
+            modeSwitchBar,
+            FrameLayout.LayoutParams(modeBarWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.END),
+        )
         root.addView(candidatePanel)
 
         // 功能行：候选不再占用本行，改为承载剪贴板历史 / 图片历史 / 表情入口等功能键。
@@ -836,9 +854,71 @@ class ShurufaImeService : InputMethodService() {
             keyArea.visibility = View.VISIBLE
             // M-A1-3：方案即时生效（rimejni select_schema），重建键盘以切换 T9/全键盘布局
             rebuildKeys()
+            refreshModeSwitchBar()
         } else {
             // 持久化失败不隐藏面板，让用户立刻看见
             Toast.makeText(this, "保存失败：$label", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ---------- P2-1 借鉴搜狗：候选区右侧模式切换竖栏 ----------
+
+    /**
+     * 竖栏四键：拼音（全键盘）/ T9 九键 / 笔画 / 双拼，一键切换；
+     * 当前方案高亮，其余方案走工具栏 ⌨️ 完整方案面板。
+     */
+    private fun buildModeSwitchBar(barWidth: Int): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(0, dp(4f), 0, dp(4f))
+        val entries = listOf(
+            "pinyin" to "拼",
+            "t9" to "九",
+            "stroke" to "笔",
+            "double_pinyin" to "双",
+        )
+        entries.forEach { (id, glyph) ->
+            val btn = TextView(this@ShurufaImeService).apply {
+                text = glyph
+                textSize = 10f
+                gravity = Gravity.CENTER
+                tag = "mode_bar_$id"
+                contentDescription = when (id) {
+                    "pinyin" -> getString(R.string.scheme_pinyin)
+                    "t9" -> getString(R.string.scheme_t9)
+                    "stroke" -> getString(R.string.scheme_stroke)
+                    else -> getString(R.string.scheme_double_pinyin)
+                }
+                setOnClickListener { onSchemeChosen(id, contentDescription?.toString() ?: glyph) }
+            }
+            addView(
+                btn,
+                LinearLayout.LayoutParams(barWidth - dp(10f), dp(15f)).apply {
+                    setMargins(0, 0, 0, dp(2f))
+                },
+            )
+        }
+        // 竖栏与候选区之间细分隔线（同功能行风格）
+        setBackgroundColor(if (isDark()) 0xFF3A3F47.toInt() else 0xFFD8DCE3.toInt())
+    }
+
+    private fun refreshModeSwitchBar() {
+        val bar = modeSwitchBar ?: return
+        val current = currentSchemeId()
+        for (id in listOf("pinyin", "t9", "stroke", "double_pinyin")) {
+            bar.findViewWithTag<TextView>("mode_bar_$id")?.let { btn ->
+                val active = id == current
+                btn.setTextColor(if (active) 0xFFFFFFFF.toInt() else palette.accent)
+                btn.background = GradientDrawable().apply {
+                    cornerRadius = dp(6f).toFloat()
+                    if (active) {
+                        setColor(palette.accent)
+                    } else {
+                        setColor(palette.key)
+                        setStroke(dp(1f), palette.accent)
+                    }
+                }
+            }
         }
     }
 

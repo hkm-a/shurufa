@@ -16,6 +16,9 @@
   自动翻转到键下方（方向自适应，参照搜狗 KeyboardPopupView /
   DirectionalKeyboardPopupView 设计）。KeyPopupView 自绘 Canvas，可随
   深色皮肤切换；模拟器实测普通行/顶部行两种方向均正常。
+- **模式切换竖栏（P2）**：候选区右侧常驻 拼/九/笔/双 竖栏，一键切换
+  拼音全键盘 / T9 九键 / 笔画 / 双拼，当前方案实心高亮（参照搜狗候选栏
+  右侧功能竖栏）；模拟器实测三态切换（QWERTY ⇄ 九键 ⇄ 笔画）即时生效。
 
 ### 修复（真机验收，2026-08-19）
 - **候选上屏失效（真机发现，P0）**：RimeBridge.nativeSelectCandidate / nativeChangePage
