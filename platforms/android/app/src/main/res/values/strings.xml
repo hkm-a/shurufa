@@ -133,6 +133,9 @@
     <string name="kb_settings_group_feedback">按键反馈</string>
     <string name="kb_settings_group_single_hand">单手模式</string>
     <string name="kb_settings_group_toolbar">工具栏</string>
+    <string name="kb_settings_group_ai">AI 智能</string>
+    <string name="kb_settings_ai_candidates">AI 候选预测</string>
+    <string name="kb_settings_ai_candidates_hint">输入暂停后基于上文预测候选（🤖 标记），需在设置中配置 AI API Key；开启后输入内容会发送至云端</string>
     <string name="kb_settings_pro">专业场景词库（医生/律师/代码/生僻字）已随包启用</string>
 
     <!-- M-A2-1 常用语面板 -->

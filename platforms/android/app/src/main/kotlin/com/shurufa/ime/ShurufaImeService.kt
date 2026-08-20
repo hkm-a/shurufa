@@ -121,6 +121,11 @@ class ShurufaImeService : InputMethodService() {
     private var modeSwitchBar: LinearLayout? = null
     /** P3 借鉴搜狗 Preference 控件库：设置面板可复用控件。 */
     private val controls by lazy { SettingControls(this, palette, isDark()) }
+    /** AI 候选预测（docs/AI候选预测方案.md）：输入暂停后注入 🤖 候选。 */
+    private val aiCandidateManager by lazy { AiCandidateManager(this) }
+    private val aiCandidateHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var aiCandidateDebounce: Runnable? = null
+    private var aiCandidates: List<String> = emptyList()
     private lateinit var keyArea: LinearLayout
     private var voice: VoiceInputController? = null
     /// 键盘内置的语音状态条（不受系统 Toast 抑制，必现）。
@@ -1079,6 +1084,16 @@ class ShurufaImeService : InputMethodService() {
             rebuildKeys()
         }
         panel.addView(handRow)
+        // AI 候选预测开关（docs/AI候选预测方案.md，默认关）
+        panel.addView(controls.category(getString(R.string.kb_settings_group_ai)))
+        panel.addView(
+            controls.switchRow(getString(R.string.kb_settings_ai_candidates), kbPrefs.aiCandidates) { on ->
+                kbPrefs = kbPrefs.copy(aiCandidates = on)
+                KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
+                sync()
+            }
+        )
+        panel.addView(controls.subtext(getString(R.string.kb_settings_ai_candidates_hint)))
         // M-A5-1 工具栏自定义（显隐 + 排序，搜狗 20.10/20.11）
         panel.addView(controls.category(getString(R.string.kb_settings_group_toolbar)))
         panel.addView(TextView(this).apply {
@@ -3706,6 +3721,69 @@ class ShurufaImeService : InputMethodService() {
             addExpandedCandidates(all, hl)
             // v1.2 读屏：候选行内容变更事件，TalkBack 聚焦候选行时可朗读新候选
             candidateBar.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        }
+        scheduleAiCandidates(preedit)
+        renderAiCandidates()
+    }
+
+    /**
+     * AI 候选预测：输入暂停约 800ms 后，后台调 agnès 预测候选并注入候选行尾部。
+     * 开关关闭 / 无 API key / 失败 / preedit 已变化 均静默。
+     */
+    private fun scheduleAiCandidates(preedit: String) {
+        aiCandidateDebounce?.let { aiCandidateHandler.removeCallbacks(it) }
+        aiCandidates = emptyList()
+        if (!kbPrefs.aiCandidates || preedit.isBlank()) return
+        val runnable = Runnable {
+            thread(name = "ai-candidate") {
+                val contextText = try {
+                    currentInputConnection?.getTextBeforeCursor(80, 0)?.toString().orEmpty()
+                } catch (_: Throwable) {
+                    ""
+                }
+                val result = try {
+                    aiCandidateManager.predict(preedit, contextText)
+                } catch (_: Throwable) {
+                    null
+                }
+                aiCandidateHandler.post {
+                    // 仅当 preedit 未变且 AI 候选仍空时注入，避免与下一次输入竞争
+                    if (result != null && currentPreedit == preedit && aiCandidates.isEmpty()) {
+                        aiCandidates = result
+                        renderAiCandidates()
+                    }
+                }
+            }
+        }
+        aiCandidateDebounce = runnable
+        aiCandidateHandler.postDelayed(runnable, 800)
+    }
+
+    /** 候选行尾部渲染 🤖 AI 候选（点击直接上屏，不占引擎索引）。 */
+    private fun renderAiCandidates() {
+        if (!::candidateBar.isInitialized) return
+        aiCandidates.forEach { word ->
+            val item = TextView(this).apply {
+                text = "🤖 $word"
+                textSize = 16f * kbPrefs.candidateSizePercent / 100f
+                gravity = Gravity.CENTER
+                setTextColor(palette.candidate)
+                setPadding(dp(12f), 0, dp(12f), 0)
+                contentDescription = "AI 预测候选：$word"
+                setOnClickListener {
+                    currentInputConnection?.commitText(word, 1)
+                    aiCandidates = emptyList()
+                    renderAiCandidates()
+                    sync()
+                }
+            }
+            candidateBar.addView(
+                item,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
         }
     }
 

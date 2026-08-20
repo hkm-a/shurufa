@@ -20,6 +20,8 @@ data class KeyboardPrefs(
     val candidateCount: Int = DEFAULT_CANDIDATE_COUNT,
     /** P4-6 自定义标点：符号页中文标点行（，。、；：？！……——《》）显隐。 */
     val showPunctRow: Boolean = true,
+    /** AI 候选预测开关（默认关：云端消耗需用户主动开启）。 */
+    val aiCandidates: Boolean = false,
 ) {
     companion object {
         const val MIN_HEIGHT_PERCENT = 40
@@ -62,6 +64,7 @@ data class KeyboardPrefs(
                 candidateSizePercent = clampCandidateSize(sp.getInt("kb_candidate_size", DEFAULT_CANDIDATE_SIZE_PERCENT)),
                 candidateCount = clampCandidateCount(sp.getInt("kb_candidate_count", DEFAULT_CANDIDATE_COUNT)),
                 showPunctRow = sp.getBoolean("kb_show_punct_row", true),
+                aiCandidates = sp.getBoolean("kb_ai_candidates", false),
             )
         }
 
@@ -74,6 +77,7 @@ data class KeyboardPrefs(
                 .putInt("kb_candidate_size", clampCandidateSize(prefs.candidateSizePercent))
                 .putInt("kb_candidate_count", clampCandidateCount(prefs.candidateCount))
                 .putBoolean("kb_show_punct_row", prefs.showPunctRow)
+                .putBoolean("kb_ai_candidates", prefs.aiCandidates)
                 .apply()
         }
     }

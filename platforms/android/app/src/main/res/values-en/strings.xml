@@ -131,6 +131,9 @@
     <string name="kb_settings_group_feedback">Key feedback</string>
     <string name="kb_settings_group_single_hand">One-handed mode</string>
     <string name="kb_settings_group_toolbar">Toolbar</string>
+    <string name="kb_settings_group_ai">AI</string>
+    <string name="kb_settings_ai_candidates">AI candidate prediction</string>
+    <string name="kb_settings_ai_candidates_hint">Predict candidates after a pause using context (🤗 marker). Requires AI API key; input is sent to cloud when enabled</string>
     <string name="kb_settings_pro">Professional scenario dictionaries (doctor/lawyer/code/rare) are bundled and active</string>
 
     <!-- M-A2-1 quick phrases panel -->
