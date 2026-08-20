@@ -948,6 +948,17 @@ class ShurufaImeService : InputMethodService() {
         settingsPanel?.visibility = View.VISIBLE
     }
 
+    /**
+     * P2-2 借鉴搜狗 SogouCategory：设置分组标题（小号灰色加粗，统一分组样式）。
+     */
+    private fun sogouCategory(title: String): TextView = TextView(this).apply {
+        text = title
+        textSize = 12f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(palette.panelMuted)
+        setPadding(0, dp(14f), 0, dp(3f))
+    }
+
     private fun buildKeyboardSettingsPanel(): LinearLayout {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -961,6 +972,8 @@ class ShurufaImeService : InputMethodService() {
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(palette.panelText)
         })
+        // P2-2 分组：布局与显示（键盘高度 / 候选字大小 / 单手模式）
+        panel.addView(sogouCategory(getString(R.string.kb_settings_group_layout)))
         // 键盘高度：40%–120%，松手后重建键盘生效
         panel.addView(TextView(this).apply {
             text = getString(R.string.kb_settings_height)
@@ -996,6 +1009,8 @@ class ShurufaImeService : InputMethodService() {
             setOnClickListener { showCandidateSizeDialog() }
         })
         panel.addView(subtext(getString(R.string.kb_settings_candidate_size_hint)))
+        // P2-2 分组：按键反馈
+        panel.addView(sogouCategory(getString(R.string.kb_settings_group_feedback)))
         panel.addView(
             switchRow(getString(R.string.kb_settings_key_sound), kbPrefs.keySound) { on ->
                 kbPrefs = kbPrefs.copy(keySound = on)
@@ -1012,7 +1027,8 @@ class ShurufaImeService : InputMethodService() {
             }
         )
         panel.addView(subtext(getString(R.string.kb_settings_haptic_hint)))
-        // 单手模式：关闭 / 左手 / 右手
+        // P2-2 分组：单手模式（关闭 / 左手 / 右手）
+        panel.addView(sogouCategory(getString(R.string.kb_settings_group_single_hand)))
         panel.addView(TextView(this).apply {
             text = getString(R.string.kb_settings_single_hand)
             textSize = 14f
@@ -1050,12 +1066,12 @@ class ShurufaImeService : InputMethodService() {
         refreshHandChips(handRow)
         panel.addView(handRow)
         // M-A5-1 工具栏自定义（显隐 + 排序，搜狗 20.10/20.11）
+        panel.addView(sogouCategory(getString(R.string.kb_settings_group_toolbar)))
         panel.addView(TextView(this).apply {
             text = getString(R.string.kb_settings_toolbar)
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 13f
             setTextColor(palette.panelText)
-            setPadding(0, dp(10f), 0, dp(2f))
+            setPadding(0, 0, 0, dp(2f))
         })
         settingsToolbarRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         panel.addView(settingsToolbarRows)

@@ -119,6 +119,11 @@
     <string name="kb_single_right">右手</string>
     <string name="kb_settings_close">收起设置</string>
     <string name="kb_settings_toolbar">工具栏 · 显隐与排序</string>
+    <!-- P2-2 借鉴搜狗 SogouCategory：设置分组标题 -->
+    <string name="kb_settings_group_layout">布局与显示</string>
+    <string name="kb_settings_group_feedback">按键反馈</string>
+    <string name="kb_settings_group_single_hand">单手模式</string>
+    <string name="kb_settings_group_toolbar">工具栏</string>
     <string name="kb_settings_pro">专业场景词库（医生/律师/代码/生僻字）已随包启用</string>
 
     <!-- M-A2-1 常用语面板 -->
