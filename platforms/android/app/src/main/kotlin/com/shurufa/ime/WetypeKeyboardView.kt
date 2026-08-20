@@ -417,9 +417,46 @@ internal class WetypeKeyboardView(
                 }
                 (key.longKind?.let { longKind -> actionFor(key.copy(kind = longKind), label) }
                     ?: key.secondary?.let { secondary -> WetypeAction.Char(displaySecondary(secondary)) })?.let { longAction ->
+                    var longPressed = false
                     setOnLongClickListener {
+                        longPressed = true
                         onAction(longAction)
                         true
+                    }
+                    // P1 借鉴搜狗「向上滑动输入数字或符号」：上滑输入副字符，与长按互斥
+                    if (key.secondary != null && !key.swipeUpClears) {
+                        val swipeAction = WetypeAction.Char(displaySecondary(key.secondary!!))
+                        var downY = 0f
+                        var swipeUpTriggered = false
+                        setOnTouchListener { view, event ->
+                            when (event.actionMasked) {
+                                MotionEvent.ACTION_DOWN -> {
+                                    downY = event.y
+                                    swipeUpTriggered = false
+                                    false
+                                }
+                                MotionEvent.ACTION_MOVE -> {
+                                    if (!swipeUpTriggered && !longPressed &&
+                                        event.y < downY - dp(SwipeUpGestureSpec.THRESHOLD_DP)
+                                    ) {
+                                        swipeUpTriggered = true
+                                        view.cancelLongPress()
+                                        playKeyFeedback()
+                                        onAction(swipeAction)
+                                    }
+                                    // 上滑触发后吞掉后续事件，避免再触发 click
+                                    swipeUpTriggered
+                                }
+                                MotionEvent.ACTION_UP -> {
+                                    swipeUpTriggered
+                                }
+                                MotionEvent.ACTION_CANCEL -> {
+                                    swipeUpTriggered = false
+                                    false
+                                }
+                                else -> false
+                            }
+                        }
                     }
                 }
                 if (key.swipeUpClears) {
@@ -778,6 +815,11 @@ internal object BackspaceGestureSpec {
         downY - currentY > thresholdPx
 
     fun shouldDeleteOnRelease(cleared: Boolean, repeated: Boolean): Boolean = !cleared && !repeated
+}
+
+/** P1 借鉴搜狗：字母/数字键上滑输入副字符（数字或符号）。 */
+internal object SwipeUpGestureSpec {
+    const val THRESHOLD_DP = 26f
 }
 
 /** 空格键语音手势；长按阈值与上滑取消距离。 */

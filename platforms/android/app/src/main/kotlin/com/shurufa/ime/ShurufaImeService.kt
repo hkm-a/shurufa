@@ -22,6 +22,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
@@ -526,7 +527,38 @@ class ShurufaImeService : InputMethodService() {
             )
         }
         candidateBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val scroll = HorizontalScrollView(this).apply {
+        // P1 借鉴搜狗 HkbHorizontalCandidatesPageView：滑到左右边缘继续滑 → 翻页。
+        // 用 dispatchTouchEvent 覆写而非 setOnTouchListener：候选词是可点击子 View，
+        // 会消费触摸事件，导致 setOnTouchListener 收不到落在候选上的 DOWN。
+        val scroll = object : HorizontalScrollView(this) {
+            var downX = 0f
+            var downY = 0f
+
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = ev.x
+                        downY = ev.y
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        val dx = ev.x - downX
+                        val dy = ev.y - downY
+                        val child = getChildAt(0)
+                        val maxScroll = kotlin.math.max(0, (child?.width ?: width) - width)
+                        if (Math.abs(dx) > dp(60f) && Math.abs(dx) > Math.abs(dy) * 2) {
+                            if (dx < 0 && scrollX >= maxScroll) {
+                                onCandidatePage(false)
+                                return true
+                            } else if (dx > 0 && scrollX <= 0) {
+                                onCandidatePage(true)
+                                return true
+                            }
+                        }
+                    }
+                }
+                return super.dispatchTouchEvent(ev)
+            }
+        }.apply {
             addView(candidateBar)
             isHorizontalScrollBarEnabled = false
             layoutParams = LinearLayout.LayoutParams(
