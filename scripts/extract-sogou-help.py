@@ -1,0 +1,12 @@
+import re, html
+raw = open('dist/staging/sogou-help-utf8.html', encoding='utf-8', errors='replace').read()
+raw = re.sub(r'<script.*?</script>', '', raw, flags=re.S | re.I)
+raw = re.sub(r'<style.*?</style>', '', raw, flags=re.S | re.I)
+raw = re.sub(r'<h([1-4])[^>]*>', '\n### ', raw, flags=re.I)
+raw = re.sub(r'</h[1-4]>', '', raw, flags=re.I)
+raw = re.sub(r'<[^>]+>', ' ', raw)
+text = html.unescape(raw)
+text = re.sub(r'[ \t]+', ' ', text)
+text = re.sub(r'\n\s*\n+', '\n', text)
+open('dist/staging/sogou-help.txt', 'w', encoding='utf-8').write(text)
+print('text len:', len(text))
