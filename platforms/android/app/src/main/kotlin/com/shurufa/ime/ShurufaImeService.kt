@@ -118,6 +118,8 @@ class ShurufaImeService : InputMethodService() {
     private lateinit var candidateExpandButton: TextView
     /** P2-1 借鉴搜狗：候选区右侧模式切换竖栏（拼音/九键/笔画/双拼一键切）。 */
     private var modeSwitchBar: LinearLayout? = null
+    /** P3 借鉴搜狗 Preference 控件库：设置面板可复用控件。 */
+    private val controls by lazy { SettingControls(this, palette, isDark()) }
     private lateinit var keyArea: LinearLayout
     private var voice: VoiceInputController? = null
     /// 键盘内置的语音状态条（不受系统 Toast 抑制，必现）。
@@ -951,14 +953,6 @@ class ShurufaImeService : InputMethodService() {
     /**
      * P2-2 借鉴搜狗 SogouCategory：设置分组标题（小号灰色加粗，统一分组样式）。
      */
-    private fun sogouCategory(title: String): TextView = TextView(this).apply {
-        text = title
-        textSize = 12f
-        typeface = Typeface.DEFAULT_BOLD
-        setTextColor(palette.panelMuted)
-        setPadding(0, dp(14f), 0, dp(3f))
-    }
-
     private fun buildKeyboardSettingsPanel(): LinearLayout {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -966,14 +960,9 @@ class ShurufaImeService : InputMethodService() {
             visibility = View.GONE
             setPadding(dp(14f), dp(10f), dp(14f), dp(12f))
         }
-        panel.addView(TextView(this).apply {
-            text = getString(R.string.kb_settings_title)
-            textSize = 16f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(palette.panelText)
-        })
+        panel.addView(controls.panelTitle(getString(R.string.kb_settings_title)))
         // P2-2 分组：布局与显示（键盘高度 / 候选字大小 / 单手模式）
-        panel.addView(sogouCategory(getString(R.string.kb_settings_group_layout)))
+        panel.addView(controls.category(getString(R.string.kb_settings_group_layout)))
         // 键盘高度：40%–120%，松手后重建键盘生效
         panel.addView(TextView(this).apply {
             text = getString(R.string.kb_settings_height)
@@ -999,74 +988,56 @@ class ShurufaImeService : InputMethodService() {
                 override fun onStopTrackingTouch(bar: SeekBar?) = rebuildKeys()
             })
         })
-        panel.addView(subtext(getString(R.string.kb_settings_height_hint)))
-        // UI-2 借鉴搜狗：候选字大小 → 滑块+实时预览+保存 模态弹窗
-        panel.addView(TextView(this).apply {
-            text = getString(R.string.kb_settings_candidate_size)
-            textSize = 14f
-            setTextColor(palette.panelText)
-            setPadding(0, dp(10f), 0, dp(2f))
-            setOnClickListener { showCandidateSizeDialog() }
-        })
-        panel.addView(subtext(getString(R.string.kb_settings_candidate_size_hint)))
+        panel.addView(controls.subtext(getString(R.string.kb_settings_height_hint)))
+        // UI-2 借鉴搜狗：候选字大小 → 滑块+实时预览+保存 模态弹窗（右侧显示当前值）
+        panel.addView(controls.linkRow(
+            getString(R.string.kb_settings_candidate_size),
+            kbPrefs.candidateSizePercent.toString() + "%",
+            onClick = { showCandidateSizeDialog() },
+        ))
+        panel.addView(controls.subtext(getString(R.string.kb_settings_candidate_size_hint)))
         // P2-2 分组：按键反馈
-        panel.addView(sogouCategory(getString(R.string.kb_settings_group_feedback)))
+        panel.addView(controls.category(getString(R.string.kb_settings_group_feedback)))
         panel.addView(
-            switchRow(getString(R.string.kb_settings_key_sound), kbPrefs.keySound) { on ->
+            controls.switchRow(getString(R.string.kb_settings_key_sound), kbPrefs.keySound) { on ->
                 kbPrefs = kbPrefs.copy(keySound = on)
                 KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
                 rebuildKeys()
             }
         )
-        panel.addView(subtext(getString(R.string.kb_settings_sound_hint)))
+        panel.addView(controls.subtext(getString(R.string.kb_settings_sound_hint)))
         panel.addView(
-            switchRow(getString(R.string.kb_settings_haptic), kbPrefs.haptic) { on ->
+            controls.switchRow(getString(R.string.kb_settings_haptic), kbPrefs.haptic) { on ->
                 kbPrefs = kbPrefs.copy(haptic = on)
                 KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
                 rebuildKeys()
             }
         )
-        panel.addView(subtext(getString(R.string.kb_settings_haptic_hint)))
+        panel.addView(controls.subtext(getString(R.string.kb_settings_haptic_hint)))
         // P2-2 分组：单手模式（关闭 / 左手 / 右手）
-        panel.addView(sogouCategory(getString(R.string.kb_settings_group_single_hand)))
+        panel.addView(controls.category(getString(R.string.kb_settings_group_single_hand)))
         panel.addView(TextView(this).apply {
             text = getString(R.string.kb_settings_single_hand)
             textSize = 14f
             setTextColor(palette.panelText)
             setPadding(0, dp(10f), 0, dp(4f))
         })
-        panel.addView(subtext(getString(R.string.kb_settings_single_hand_hint)))
-        val handRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        for ((mode, label) in listOf(
-            SingleHandMode.OFF to getString(R.string.kb_single_off),
-            SingleHandMode.LEFT to getString(R.string.kb_single_left),
-            SingleHandMode.RIGHT to getString(R.string.kb_single_right),
-        )) {
-            val chip = TextView(this).apply {
-                text = label
-                textSize = 13f
-                gravity = Gravity.CENTER
-                tag = mode
-                setPadding(dp(18f), dp(8f), dp(18f), dp(8f))
-                setOnClickListener {
-                    kbPrefs = kbPrefs.copy(singleHand = mode)
-                    KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
-                    refreshHandChips(handRow)
-                    rebuildKeys()
-                }
-            }
-            handRow.addView(
-                chip,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                ).apply { setMargins(0, 0, dp(10f), 0) },
-            )
+        panel.addView(controls.subtext(getString(R.string.kb_settings_single_hand_hint)))
+        val (handRow, renderHand) = controls.radioGroup(
+            listOf(
+                SingleHandMode.OFF to getString(R.string.kb_single_off),
+                SingleHandMode.LEFT to getString(R.string.kb_single_left),
+                SingleHandMode.RIGHT to getString(R.string.kb_single_right),
+            ),
+            kbPrefs.singleHand,
+        ) { mode ->
+            kbPrefs = kbPrefs.copy(singleHand = mode)
+            KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
+            rebuildKeys()
         }
-        refreshHandChips(handRow)
         panel.addView(handRow)
         // M-A5-1 工具栏自定义（显隐 + 排序，搜狗 20.10/20.11）
-        panel.addView(sogouCategory(getString(R.string.kb_settings_group_toolbar)))
+        panel.addView(controls.category(getString(R.string.kb_settings_group_toolbar)))
         panel.addView(TextView(this).apply {
             text = getString(R.string.kb_settings_toolbar)
             textSize = 13f
@@ -1092,18 +1063,6 @@ class ShurufaImeService : InputMethodService() {
             setOnClickListener { toggleKeyboardSettings() }
         })
         return panel
-    }
-
-    private fun refreshHandChips(handRow: LinearLayout) {
-        for (i in 0 until handRow.childCount) {
-            val chip = handRow.getChildAt(i) as? TextView ?: continue
-            val mode = chip.tag as? SingleHandMode ?: continue
-            val selected = mode == kbPrefs.singleHand
-            chip.setTextColor(if (selected) 0xFFFFFFFF.toInt() else palette.panelText)
-            (chip.background as? GradientDrawable)?.setColor(
-                if (selected) palette.accent else palette.keyPressed
-            )
-        }
     }
 
     /** UI-2 借鉴搜狗候选字大小：滑块 + 实时预览「你好」 + 取消/保存 模态弹窗。
@@ -1172,35 +1131,6 @@ class ShurufaImeService : InputMethodService() {
         if (anchor != null) popup.showAtLocation(anchor, Gravity.CENTER, 0, 0)
         refreshPreview()
     }
-    /** UI-2 借鉴搜狗：设置项下加小号灰色说明副文本（用途/状态说明）。 */
-    private fun subtext(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            textSize = 11f
-            setTextColor(if (isDark()) 0xFF8E949D.toInt() else 0xFF9AA0AA.toInt())
-            setPadding(0, dp(1f), 0, dp(2f))
-        }
-
-    private fun switchRow(title: String, initial: Boolean, onChange: (Boolean) -> Unit): LinearLayout =
-        LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(8f), 0, 0)
-            addView(
-                TextView(this@ShurufaImeService).apply {
-                    text = title
-                    textSize = 14f
-                    setTextColor(palette.panelText)
-                },
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-            )
-            addView(
-                Switch(this@ShurufaImeService).apply {
-                    isChecked = initial
-                    setOnCheckedChangeListener { _, checked -> onChange(checked) }
-                },
-            )
-        }
 
     // ---------- M-A5-1 工具栏自定义（搜狗 20.10/20.11） ----------
 
