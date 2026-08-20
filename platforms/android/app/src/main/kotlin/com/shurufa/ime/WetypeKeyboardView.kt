@@ -40,7 +40,17 @@ internal class WetypeKeyboardView(
     private val heightPercent: Int = 100,
     private val keySoundEnabled: Boolean = true,
     private val hapticEnabled: Boolean = true,
-) : LinearLayout(context) {
+) : FrameLayout(context) {
+
+    /** 键区行容器（LinearLayout 纵向），气泡预览作为 FrameLayout 覆盖层叠在其上。 */
+    private val keyboardContainer = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+    }
+
+    /** P0 借鉴搜狗：按键气泡预览（按下字母/数字/笔画键时自绘气泡）。 */
+    private val keyPopup = KeyPopupView(context).apply {
+        visibility = View.GONE
+    }
 
     sealed class WetypeAction {
         data class Char(val value: String) : WetypeAction()
@@ -103,7 +113,11 @@ internal class WetypeKeyboardView(
     private var renderedKeyboardHeight = preferredKeyboardHeight
 
     init {
-        orientation = VERTICAL
+        addView(
+            keyboardContainer,
+            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT),
+        )
+        addView(keyPopup, LayoutParams(0, 0))
 
         renderRows(renderedKeyboardHeight)
     }
@@ -123,7 +137,7 @@ internal class WetypeKeyboardView(
     }
 
     private fun renderRows(keyboardHeight: Int) {
-        removeAllViews()
+        keyboardContainer.removeAllViews()
         val rowUnits = rows.sumOf { it.height.toDouble() }.toFloat()
         var allocatedHeight = 0
         rows.forEachIndexed { index, row ->
@@ -132,7 +146,10 @@ internal class WetypeKeyboardView(
             } else {
                 (keyboardHeight * row.height / rowUnits).toInt().also { allocatedHeight += it }
             }
-            addView(buildRow(row, rowHeight), LayoutParams(LayoutParams.MATCH_PARENT, rowHeight))
+            keyboardContainer.addView(
+                buildRow(row, rowHeight),
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, rowHeight),
+            )
         }
     }
 
@@ -150,26 +167,30 @@ internal class WetypeKeyboardView(
     private fun buildRow(row: KeyboardLayoutSpec.Row, rowHeight: Int): LinearLayout =
         LinearLayout(context).apply {
             gravity = Gravity.CENTER_VERTICAL
-            orientation = HORIZONTAL
+            orientation = LinearLayout.HORIZONTAL
             if (row.inset > 0f) {
-                addView(View(context), LayoutParams(0, 1, row.inset))
+                addView(View(context), LinearLayout.LayoutParams(0, 1, row.inset))
             }
             val contentWeight = 1f - row.inset * 2f
             val content = LinearLayout(context).apply {
                 gravity = Gravity.CENTER_VERTICAL
-                orientation = HORIZONTAL
+                orientation = LinearLayout.HORIZONTAL
             }
             row.keys.forEach { key ->
                 content.addView(
                     buildKey(key),
-                    LayoutParams(0, (rowHeight * 0.9f).toInt().coerceAtLeast(1), key.weight).apply {
+                    LinearLayout.LayoutParams(
+                        0,
+                        (rowHeight * 0.9f).toInt().coerceAtLeast(1),
+                        key.weight,
+                    ).apply {
                         setMargins(dp(2.5f), 0, dp(2.5f), 0)
                     },
                 )
             }
-            addView(content, LayoutParams(0, LayoutParams.MATCH_PARENT, contentWeight))
+            addView(content, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, contentWeight))
             if (row.inset > 0f) {
-                addView(View(context), LayoutParams(0, 1, row.inset))
+                addView(View(context), LinearLayout.LayoutParams(0, 1, row.inset))
             }
         }
 
@@ -194,6 +215,7 @@ internal class WetypeKeyboardView(
 
         return if (key.icon != null) {
             ImageView(context).apply {
+                tag = key
                 setImageResource(iconResource(key.icon))
                 imageTintList = ColorStateList.valueOf(if (isBack) 0xFFFFFFFF.toInt() else funcTextColor)
                 this.background = background
@@ -276,6 +298,7 @@ internal class WetypeKeyboardView(
             // 空格键：单击输出空格；长按启动语音输入（提示走 Service 顶部状态条）。
             // 上滑取消；松手上屏识别结果。键面常驻一个小麦克风图标。
             FrameLayout(context).apply {
+                tag = key
                 this.background = background
                 contentDescription = key.description
                 // 键面中央：常驻麦克风图标；语音聆听中切换为状态文（最可靠的视觉反馈）。
@@ -361,6 +384,7 @@ internal class WetypeKeyboardView(
             }
         } else {
             FrameLayout(context).apply {
+                tag = key
                 this.background = background
                 contentDescription = key.description
                 addView(TextView(context).apply {
@@ -464,6 +488,88 @@ internal class WetypeKeyboardView(
 
     // 用视图所在 Context 的密度而非 Resources.getSystem()，多窗口/外接屏下更一致
     private fun dp(value: Float): Int = (value * resources.displayMetrics.density).toInt()
+
+    // ---------- P0 借鉴搜狗：按键气泡预览 ----------
+
+    /** 按下可预览的键（字母/数字/笔画等有字符含义的键）。 */
+    private fun isPreviewable(key: KeyboardLayoutSpec.Key): Boolean =
+        key.label.isNotBlank() && when (key.kind) {
+            KeyboardLayoutSpec.Kind.CHAR,
+            KeyboardLayoutSpec.Kind.DIGIT,
+            KeyboardLayoutSpec.Kind.STROKE -> true
+            else -> false
+        }
+
+    /** 命中测试：返回触点下的键视图（含 tag=Key 的根视图）。 */
+    private fun findKeyViewAt(x: Float, y: Float): View? {
+        for (i in 0 until keyboardContainer.childCount) {
+            val row = keyboardContainer.getChildAt(i) as? android.view.ViewGroup ?: continue
+            for (j in 0 until row.childCount) {
+                val content = row.getChildAt(j)
+                val candidates = if (content is android.view.ViewGroup) {
+                    (0 until content.childCount).map { content.getChildAt(it) }
+                } else {
+                    listOf(content)
+                }
+                for (kv in candidates) {
+                    if (kv.tag !is KeyboardLayoutSpec.Key) continue
+                    val loc = IntArray(2)
+                    kv.getLocationInWindow(loc)
+                    val self = IntArray(2)
+                    getLocationInWindow(self)
+                    val left = loc[0] - self[0]
+                    val top = loc[1] - self[1]
+                    if (x >= left && x <= left + kv.width && y >= top && y <= top + kv.height) {
+                        return kv
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun showKeyPopup(keyView: View) {
+        val key = keyView.tag as? KeyboardLayoutSpec.Key ?: return
+        if (!isPreviewable(key)) {
+            keyPopup.visibility = View.GONE
+            return
+        }
+        keyPopup.primaryText = displayLabel(key)
+        keyPopup.secondaryText = key.secondary?.let { displaySecondary(it) }.orEmpty()
+        keyPopup.dark = dark
+        val loc = IntArray(2)
+        keyView.getLocationInWindow(loc)
+        val self = IntArray(2)
+        getLocationInWindow(self)
+        val kx = loc[0] - self[0]
+        val ky = loc[1] - self[1]
+        val pw = dp(58f).toInt()
+        val ph = dp(64f).toInt()
+        val cx = kx + keyView.width / 2 - pw / 2
+        // 顶部行无空间时气泡放键下方（方向自适应，参照 DirectionalKeyboardPopupView）
+        val above = ky >= ph - dp(14f)
+        val cy = if (above) ky - ph + dp(16f) else ky + keyView.height - dp(16f)
+        keyPopup.popupAbove = above
+        keyPopup.layoutParams = FrameLayout.LayoutParams(pw, ph).apply {
+            // 注意：apply 接收者是 LayoutParams，width 字段=气泡宽；取外层键盘视图宽做越界钳制
+            leftMargin = cx.coerceIn(0, this@WetypeKeyboardView.width - pw)
+            topMargin = cy.toInt()
+        }
+        keyPopup.visibility = View.VISIBLE
+        keyPopup.invalidate()
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                findKeyViewAt(ev.x, ev.y)?.let { showKeyPopup(it) }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                keyPopup.visibility = View.GONE
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
 }
 
 /** 小窗布局的纯高度规则，便于在 JVM 测试中验证输入视图不会被键区撑破。 */
@@ -657,6 +763,7 @@ internal object KeyboardLayoutSpec {
                 description = "数字 $number",
             )
         })
+
 }
 
 /** 删除键触摸规则独立于视图，确保长按删除和上滑清空始终作用于退格键。 */

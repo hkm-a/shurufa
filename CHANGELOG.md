@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 新增（借鉴搜狗输入法，2026-08-20）
+- **按键气泡预览（P0）**：按下字母/数字/笔画键时，键上方自绘圆角气泡显示
+  放大主字符与右上角副字符（如 q 键的 1），松手隐藏；顶部行无空间时气泡
+  自动翻转到键下方（方向自适应，参照搜狗 KeyboardPopupView /
+  DirectionalKeyboardPopupView 设计）。KeyPopupView 自绘 Canvas，可随
+  深色皮肤切换；模拟器实测普通行/顶部行两种方向均正常。
+
 ### 修复（真机验收，2026-08-19）
 - **候选上屏失效（真机发现，P0）**：RimeBridge.nativeSelectCandidate / nativeChangePage
   在 Kotlin 声明为 external，但 rimejni 从未实现（git 历史亦无记录）；点击候选触发
