@@ -599,7 +599,11 @@ internal class WetypeKeyboardView(
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                findKeyViewAt(ev.x, ev.y)?.let { showKeyPopup(it) }
+                // 气泡预览绝不影响输入：异常一律吞掉，避免按键无响应
+                try {
+                    findKeyViewAt(ev.x, ev.y)?.let { showKeyPopup(it) }
+                } catch (_: Throwable) {
+                }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 keyPopup.visibility = View.GONE
