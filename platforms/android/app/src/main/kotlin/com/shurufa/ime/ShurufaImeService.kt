@@ -31,6 +31,7 @@ import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import android.widget.PopupWindow
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -906,6 +907,15 @@ class ShurufaImeService : InputMethodService() {
             })
         })
         panel.addView(subtext(getString(R.string.kb_settings_height_hint)))
+        // UI-2 借鉴搜狗：候选字大小 → 滑块+实时预览+保存 模态弹窗
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.kb_settings_candidate_size)
+            textSize = 14f
+            setTextColor(palette.panelText)
+            setPadding(0, dp(10f), 0, dp(2f))
+            setOnClickListener { showCandidateSizeDialog() }
+        })
+        panel.addView(subtext(getString(R.string.kb_settings_candidate_size_hint)))
         panel.addView(
             switchRow(getString(R.string.kb_settings_key_sound), kbPrefs.keySound) { on ->
                 kbPrefs = kbPrefs.copy(keySound = on)
@@ -1000,6 +1010,72 @@ class ShurufaImeService : InputMethodService() {
         }
     }
 
+    /** UI-2 借鉴搜狗候选字大小：滑块 + 实时预览「你好」 + 取消/保存 模态弹窗。
+     * IME Service 无窗口 token，AlertDialog 会 BadTokenException，故用 PopupWindow。 */
+    private fun showCandidateSizeDialog() {
+        val preview = TextView(this).apply {
+            text = "你好"
+            gravity = Gravity.CENTER
+            setTextColor(palette.panelText)
+            setPadding(0, dp(8f), 0, dp(4f))
+        }
+        val bar = SeekBar(this).apply {
+            max = KeyboardPrefs.MAX_CANDIDATE_SIZE_PERCENT - KeyboardPrefs.MIN_CANDIDATE_SIZE_PERCENT
+            progress = kbPrefs.candidateSizePercent - KeyboardPrefs.MIN_CANDIDATE_SIZE_PERCENT
+        }
+        val sizeLabel = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 12f
+            setTextColor(palette.preedit)
+        }
+        fun refreshPreview() {
+            val percent = bar.progress + KeyboardPrefs.MIN_CANDIDATE_SIZE_PERCENT
+            preview.textSize = 20f * percent / 100f
+            sizeLabel.text = percent.toString() + "%"
+        }
+        bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) { if (fromUser) refreshPreview() }
+            override fun onStartTrackingTouch(s: SeekBar?) = Unit
+            override fun onStopTrackingTouch(s: SeekBar?) = Unit
+        })
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(if (isDark()) 0xFF1F242B.toInt() else 0xFFFFFFFF.toInt())
+            setPadding(dp(24f), dp(16f), dp(24f), dp(10f))
+            addView(TextView(this@ShurufaImeService).apply {
+                text = getString(R.string.kb_settings_candidate_size)
+                textSize = 16f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(palette.panelText)
+            })
+            addView(preview)
+            addView(bar)
+            addView(sizeLabel)
+        }
+        val popup = PopupWindow(content, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true)
+        popup.isOutsideTouchable = true
+        content.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            fun btn(text: String, onClick: () -> Unit) = TextView(this@ShurufaImeService).apply {
+                this.text = text
+                textSize = 15f
+                setTextColor(palette.accent)
+                setPadding(dp(18f), dp(6f), dp(6f), dp(4f))
+                setOnClickListener { onClick() }
+            }
+            addView(btn(getString(R.string.cancel)) { popup.dismiss() })
+            addView(btn(getString(R.string.save)) {
+                kbPrefs = kbPrefs.copy(candidateSizePercent = bar.progress + KeyboardPrefs.MIN_CANDIDATE_SIZE_PERCENT)
+                KeyboardPrefs.save(this@ShurufaImeService, kbPrefs)
+                sync()
+                popup.dismiss()
+            })
+        })
+        val anchor: View? = inputRoot ?: keyArea
+        if (anchor != null) popup.showAtLocation(anchor, Gravity.CENTER, 0, 0)
+        refreshPreview()
+    }
     /** UI-2 借鉴搜狗：设置项下加小号灰色说明副文本（用途/状态说明）。 */
     private fun subtext(text: String): TextView =
         TextView(this).apply {
@@ -3531,7 +3607,7 @@ class ShurufaImeService : InputMethodService() {
                     append("  ").append(text)
                 }
             }
-            textSize = if (compact) 20f else 18f
+            textSize = (if (compact) 20f else 18f) * kbPrefs.candidateSizePercent / 100f
             gravity = Gravity.CENTER
             setTextColor(if (index == highlighted) palette.candidateHl else palette.candidate)
             if (index == highlighted) typeface = Typeface.DEFAULT_BOLD

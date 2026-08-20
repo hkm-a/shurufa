@@ -110,6 +110,10 @@
     <string name="kb_settings_sound_hint">开启后按键播放音效，音量随系统</string>
     <string name="kb_settings_haptic_hint">开启后按键有振动反馈，跟随系统触觉设置</string>
     <string name="kb_settings_single_hand_hint">键盘靠左/靠右排列，方便单手操作</string>
+    <string name="kb_settings_candidate_size">候选字大小</string>
+    <string name="kb_settings_candidate_size_hint">调节候选词文字大小，实时预览</string>
+    <string name="cancel">取消</string>
+    <string name="save">保存</string>
     <string name="kb_single_off">关闭</string>
     <string name="kb_single_left">左手</string>
     <string name="kb_single_right">右手</string>
