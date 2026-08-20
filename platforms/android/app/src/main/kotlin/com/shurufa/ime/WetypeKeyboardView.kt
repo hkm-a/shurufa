@@ -761,6 +761,8 @@ internal object KeyboardLayoutSpec {
         Row(
             listOf(
                 Key("ABC", kind = Kind.BACK, weight = 1.12f, functional = true, textSize = 14f, bold = true, description = "返回字母键盘"),
+                // P4-3 拆字方案部件码分隔符（bai'shao → 的），符号页常驻撇号键
+                Key("'", kind = Kind.CHAR, weight = 0.55f, textSize = 20f, description = "撇号（拆字部件码分隔符）"),
                 Key("0", secondary = "。", kind = Kind.CHAR, weight = 0.9f, textSize = 21f, description = "数字 0"),
                 Key("", kind = Kind.SPACE, weight = 3.7f, description = "空格"),
                 Key(

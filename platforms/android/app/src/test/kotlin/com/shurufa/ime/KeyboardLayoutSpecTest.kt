@@ -109,7 +109,9 @@ class KeyboardLayoutSpecTest {
         assertEquals(listOf("1", "2", "3"), rows[0].keys.map { it.label })
         assertEquals(listOf("4", "5", "6"), rows[1].keys.map { it.label })
         assertEquals(listOf("7", "8", "9"), rows[2].keys.map { it.label })
-        assertEquals("0", rows.last().keys[1].label)
+        // P4-3：符号页第 4 行插入撇号键（拆字部件码分隔符），数字 0 顺移到 index 2
+        assertEquals("'", rows.last().keys[1].label)
+        assertEquals("0", rows.last().keys[2].label)
     }
 
     @Test
