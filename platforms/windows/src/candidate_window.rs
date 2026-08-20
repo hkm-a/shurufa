@@ -31,7 +31,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    keybd_event, TrackMouseEvent, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, TME_LEAVE, TRACKMOUSEEVENT,
+    MapVirtualKeyW, SendInput, TrackMouseEvent, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, TME_LEAVE,
+    TRACKMOUSEEVENT, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
@@ -73,11 +74,15 @@ fn engine_simulate(keys: &str) -> bool {
 /// worker 线程把 AI 候选结果送回候选窗 UI 线程的私有消息。
 /// LPARAM 携带 Box<Vec<(preedit, text)>> 的裸指针（同进程，wnd_proc 消费后释放）。
 pub(crate) const WM_AI_CANDIDATES_READY: u32 = WM_APP + 81;
-/// 点击 AI 候选时让 TSF 走编辑会话提交的"虚拟键"（VK_F13：标准键盘无此键，
-/// 正常打字不可能产生；service 在 handle_key 入口识别并吃掉）。
-const VK_AI_COMMIT_TRIGGER: u8 = 0x7C;
+/// 点击 AI 候选时让 TSF 走编辑会话提交的触发键。用 **Enter（VK_RETURN）**：
+/// 实测 chrome 只把文本相关键（字母/修饰/Enter 等）路由给 TSF——F9、
+/// VK_APPS 等非文本键收不到 OnKeyDown。Enter 是文本键必达；handle_key 仅在
+/// pending_ai 非空时消费（正常回车不受影响）。
+const VK_AI_COMMIT_TRIGGER: u8 = 0x0D; // VK_RETURN
 /// AI 候选起始索引（None = 当前帧无 AI 候选）。
-type AiCommitFn = Box<dyn Fn(&str)>;
+/// 提交钩子返回 true = 已完成提交（组合同步替换 + 结束）；false = 需要
+/// 候选窗回发触发键走 handle_key 兜底（仅直接提交失败时）。
+type AiCommitFn = Box<dyn Fn(&str) -> bool>;
 thread_local! {
     /// show() 时的原始 Context 快照（AI 结果到达后据此重建布局）。
     static LAST_CTX: RefCell<Option<Context>> = const { RefCell::new(None) };
@@ -144,7 +149,13 @@ pub(crate) fn backend_kind() -> BackendKind {
         if let Some(k) = c.get() {
             return k;
         }
-        let k = if crate::candidate_window_dcomp::probe_dcomp_available() {
+        // SHURUFA_FORCE_GDI=1 / SHURUFA_FORCE_D2D=1：排障用，强制指定
+        // 渲染后端（跳过探测）。
+        let k = if std::env::var_os("SHURUFA_FORCE_GDI").is_some() {
+            BackendKind::Gdi
+        } else if std::env::var_os("SHURUFA_FORCE_D2D").is_some() {
+            BackendKind::D2D
+        } else if crate::candidate_window_dcomp::probe_dcomp_available() {
             BackendKind::DComp
         } else if crate::candidate_window_d2d::is_enabled() {
             BackendKind::D2D
@@ -722,6 +733,7 @@ fn compute_show_layout(
     panel_mode: CandidatePanelMode,
     screen_w: i32,
     _screen_h: i32,
+    ai_start: Option<usize>,
 ) -> (i32, i32) {
             let font_scale = skin.metrics.font_scale;
             let padding = scale(skin.metrics.padding_or(BASE_PADDING), dpi);
@@ -765,6 +777,10 @@ fn compute_show_layout(
                 let mut in_row = 0usize;
                 let mut row_used = 0i32;
                 for (i, c) in ctx.candidates.iter().enumerate().take(9) {
+                    // AI 候选（2026-08-20）：合并列表里 ai_start 起为 AI 候选，
+                    // 单行模式下强制从第二行起排——Rime 候选放不下 break 时
+                    // 不波及 AI（AI 不参与引擎分页，必须可见可点）。
+                    let is_ai = ai_start.is_some_and(|s| i >= s);
                     // TSF 端候选域固定 9 列；label 为 1..=9（超过 9 的索引不进此分支）
                     let label = format!("{}.", i + 1);
                     let label_w = text_width(hdc, &label);
@@ -814,9 +830,26 @@ fn compute_show_layout(
                             row_used = 0;
                             in_row = 0;
                         }
+                    } else if is_ai {
+                        // 单行 + AI 候选：不与 Rime 混排，恒从第二行起排；
+                        // 第二行放不下继续换行（AI 至多 3 个，不参与分页）。
+                        if row == 0 {
+                            x = padding;
+                            row = 1;
+                            row_used = 0;
+                            in_row = 0;
+                        } else if x + slot_w > row_budget && in_row > 0 {
+                            x = padding;
+                            row += 1;
+                            row_used = 0;
+                            in_row = 0;
+                        }
                     } else if x + slot_w > row_budget {
-                        // 单行：放不下当前候选（含其后一项间距）则停，剩余靠翻页。
-                        break;
+                        // 单行：Rime 候选放不下 → 跳过（剩余靠翻页访问）。
+                        // 不能 break：AI 候选在第二行仍需处理——break 会让
+                        // 排在合并列表尾部的 AI 永远无法到达（"ni hao ni hao"
+                        // 实测复现：第一行 5 个 Rime 就 break，AI 不显示）。
+                        continue;
                     }
                     items.push(Item {
                         label,
@@ -846,8 +879,12 @@ fn compute_show_layout(
                 (items, preedit_w)
             };
 
-            // 多行模式：行尾 = 最宽行内容宽度 + 左 padding；单行模式沿用末项右缘。
+            // 行尾 = 最宽行内容宽度 + 左 padding。单行模式默认 1 行沿用末项
+            // 右缘；AI 候选（2026-08-20）换行到第二行后，末项可能是较短的
+            // AI 候选，必须取 max_row_used（循环内每行 row_used 的全局最大）。
             let items_end = if panel_mode == CandidatePanelMode::Multi {
+                padding + max_row_used
+            } else if items.iter().any(|it| it.row > 0) {
                 padding + max_row_used
             } else {
                 items
@@ -863,12 +900,9 @@ fn compute_show_layout(
                 .max(scale(BASE_MIN_WIDTH, dpi)))
             .min(max_width);
             let row_h = scale(skin.metrics.row_h_or(BASE_ROW_HEIGHT), dpi);
-            // 多行模式：行数 = 最大行号 + 1（无候选保底 1 行，与单行视觉一致）。
-            let rows = if panel_mode == CandidatePanelMode::Multi {
-                items.iter().map(|it| it.row).max().unwrap_or(0) + 1
-            } else {
-                1
-            };
+            // 行数 = 最大行号 + 1（无候选保底 1 行）。单行模式默认 1 行；
+            // AI 候选（2026-08-20）换行到第二行时 rows 自然为 2。
+            let rows = items.iter().map(|it| it.row).max().unwrap_or(0) + 1;
             let height = scale(skin.metrics.preedit_h_or(BASE_PREEDIT_HEIGHT), dpi)
                 + row_h * rows
                 + padding * 2;
@@ -976,6 +1010,7 @@ pub(crate) fn refresh_with_ai(payload_ptr: isize) {
         panel_mode,
         screen_w,
         screen_h,
+        ai_start,
     );
     // 位置保持当前窗口位置，仅按新宽高重排
     let mut rect = RECT::default();
@@ -1173,6 +1208,7 @@ impl CandidateUi {
                 panel_mode,
                 screen_w,
                 screen_h,
+                ai_start,
             );
             self.last_fp = Some(fp);
             self.last_width = out.0;
@@ -1362,6 +1398,7 @@ unsafe extern "system" fn wnd_proc(
         }
         value if value == WM_AI_CANDIDATES_READY => {
             // AI 候选结果到达（worker 线程 PostMessage；同进程指针传递）。
+            crate::debug_log("WM_AI_CANDIDATES_READY 到达候选窗");
             refresh_with_ai(lparam.0);
             LRESULT(0)
         }
@@ -1447,8 +1484,8 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
     if let Some(index) = hit_test_item(x, y) {
         // AI 候选（2026-08-20）：索引落在 AI 起始之后 → 取完整原文（显示
         // 文本可能被缩写截断），交提交钩子（service 写 pending 槽），再回发
-        // VK_F13 让 TSF 走编辑会话把文本落盘。AI 候选不是 librime 候选，
-        // 不能走数字选词（引擎索引对不上）。
+        // 回发 Enter 让 TSF 走编辑会话把文本落盘（pending 非空时消费）。
+        // AI 候选不是 librime 候选，不能走数字选词（引擎索引对不上）。
         let ai_start = AI_START.with(|s| s.get());
         if let Some(start) = ai_start {
             if index >= start {
@@ -1464,12 +1501,14 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
                     })
                 });
                 if let Some(text) = text {
-                    AI_COMMIT.with(|slot| {
-                        if let Some(f) = slot.borrow().as_ref() {
-                            f(&text);
-                        }
+                    let done = AI_COMMIT.with(|slot| {
+                        slot.borrow().as_ref().map(|f| f(&text)).unwrap_or(false)
                     });
-                    send_virtual_key(VK_AI_COMMIT_TRIGGER);
+                    if !done {
+                        // 直接提交失败（非 TSF 认可时机等）：回发触发键，
+                        // 由 handle_key 的 pending_ai 兜底提交。
+                        send_virtual_key(VK_AI_COMMIT_TRIGGER);
+                    }
                 }
                 return;
             }
@@ -1741,10 +1780,28 @@ thread_local! {
 }
 
 /// 无焦点候选窗将操作发送给前台编辑器，继续走 TSF 的正常按键路径。
+/// 把虚拟键注入前台窗口（候选点击选词 / AI 提交触发键用）。
+/// 2026-08-20 修复：keybd_event(scan=0) 对部分键（如 VK_APPS）不触发
+/// TSF OnKeyDown（实测 AI 候选点击后提交键无声无息）；改 SendInput +
+/// MapVirtualKey 补全 scan code，与 host ai_panel 同款注入。
 unsafe fn send_virtual_key(vk: u8) {
-    keybd_event(vk, 0, KEYBD_EVENT_FLAGS(0), 0);
-    keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+    let scan = MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16;
+    let key = |up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk as u16),
+                wScan: scan,
+                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                ..Default::default()
+            },
+        },
+    };
+    let inputs = [key(false), key(true)];
+    SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
 }
+
+
 
 unsafe fn paint(hdc: HDC, rc: &RECT) {
     PAINT_DATA.with_borrow(|data| {

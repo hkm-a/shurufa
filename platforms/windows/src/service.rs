@@ -86,9 +86,11 @@ pub struct Inner {
     app_ascii: AppAsciiState,
     /// 「？？？」表情计数（M10 困难项替代实现，见 emoji_question.rs）。
     question_state: crate::emoji_question::QuestionState,
-    /// AI 候选提交的 pending 槽：候选窗点击 AI 候选 → 写此槽 + 发 VK_F13；
-    /// handle_key 入口识别该虚拟键，走编辑会话把文本落盘（不经过引擎，
-    /// AI 候选不是 librime 候选，索引对不上数字选词）。
+    /// AI 候选提交的 pending 槽：候选窗点击 AI 候选 → 写此槽 + 回发 Enter；
+    /// handle_key 入口识别该键（pending 非空时消费），走编辑会话把文本落盘
+    /// （不经过引擎——AI 候选不是 librime 候选，索引对不上数字选词）。
+    /// 实测 chrome 只把文本相关键路由给 TSF（F9/应用键收不到 OnKeyDown），
+    /// Enter 必达且正常回车不受影响（仅 pending 非空时消费）。
     pending_ai: Arc<Mutex<Option<String>>>,
     /// AI 候选 worker（懒启动：AI 开关 + 有 key + 有组合时才创建）。
     ai_worker: Option<Arc<crate::ai_candidates::AiWorker>>,
@@ -321,12 +323,15 @@ impl TextService {
             }));
         }
         // AI 候选提交钩子（2026-08-20）：候选窗点击 AI 候选时写入 pending
-        // 槽并回发 VK_F13，handle_key 入口识别后走编辑会话提交文本。
+        // 槽并回发 Enter，由 handle_key 入口在编辑会话内提交（OnKeyDown
+        // 的 context 可靠指向焦点文档；直接提交经 GetTop 在组合被 chrome
+        // 终止后插入位置错误，实测 textarea 为空）。
         let pending_ai = Arc::new(Mutex::new(None::<String>));
         {
             let slot = Arc::clone(&pending_ai);
             crate::candidate_window::set_ai_commit(Box::new(move |text| {
                 *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.to_owned());
+                false
             }));
         }
         TextService {
@@ -500,11 +505,12 @@ impl Inner {
         let ctrl = modifiers & keys::MASK_CONTROL != 0;
         let alt = modifiers & keys::MASK_ALT != 0;
 
-        // AI 候选提交（VK_F13 触发，2026-08-20）：候选窗点击 AI 候选时
-        // 回发此虚拟键，本入口识别后直接把文本落盘（结束组合 + 插入文档；
-        // 不经过引擎数字选词——AI 候选不是 librime 候选，索引对不上）。
-        // F13 是标准键盘不存在的键，正常打字不可能产生，可安全占用。
-        if vk == 0x7C {
+        // AI 候选提交（Enter 触发，2026-08-20）：候选窗点击 AI 候选时回发
+        // Enter，本入口识别后直接把文本落盘（结束组合 + 插入文档；不经过
+        // 引擎数字选词——AI 候选不是 librime 候选，索引对不上）。chrome 只
+        // 把文本相关键路由给 TSF，Enter 必达；仅 pending_ai 非空时消费，
+        // 正常回车不受影响。
+        if vk == 0x0D {
             if let Some(text) = self
                 .pending_ai
                 .lock()
@@ -525,6 +531,7 @@ impl Inner {
                     }
                     Ok(())
                 });
+
                 if let Err(e) = &edit_result {
                     crate::debug_log(&format!("AI 候选提交失败：{e:?}"));
                 } else {
@@ -952,7 +959,6 @@ impl Inner {
         if let Err(e) = &edit_result {
             crate::debug_log(&format!("编辑会话失败：{e:?}"));
         }
-
         eaten
     }
 

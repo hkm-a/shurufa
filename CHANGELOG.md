@@ -11,11 +11,14 @@
   - Android：AiCandidateManager + Service debounce 注入（2026-08-20 首版）。
   - **Windows TSF 对照落地**：ai_candidates.rs（prompt/parse/fetch + AiWorker
     worker 线程，sync_channel(1) 800ms 停顿收最新 preedit → agnès 8s 超时 →
-    PostMessage 回候选窗）；候选窗 show 合并引擎前 6 + AI 至多 3（🤖 副标），
-    AI 结果到达按 LAST_CTX 快照重建布局（compute_show_layout 复用）；点击 AI
-    候选走 AI_COMMIT 钩子 + VK_F13 触发 TSF 编辑会话落盘（不走引擎数字选词）；
-    开关 ImeOptions.ai_candidates（设置中心「输入 → AI 候选预测」），key 读
-    环境变量 AGNES_API_KEY（与 AI 帮写面板同源，永不落盘）。
+    PostMessage 回候选窗）；候选窗 show 合并引擎前 6 + AI 至多 3（🤖 副标，
+    单行模式 AI 恒在第二行、Rime 放不下不波及），AI 结果到达按 LAST_CTX
+    快照重建布局（compute_show_layout 复用）；点击 AI 候选走 AI_COMMIT 钩子
+    写 pending + 回发 Enter（chrome 只路由文本键；仅 pending 非空时消费）经
+    TSF 编辑会话落盘（不走引擎数字选词）；修复 D2D/DComp SetDpi 放大布局
+    导致第二行被裁（改 96 1:1，本机端到端实测 2 行候选 + 提交上屏）；开关
+    ImeOptions.ai_candidates（设置中心「输入 → AI 候选预测」），key 读环境
+    变量 AGNES_API_KEY（与 AI 帮写面板同源，永不落盘）。
 
 ## [1.8.0] - 2026-08-20
 

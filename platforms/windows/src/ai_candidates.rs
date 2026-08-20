@@ -188,6 +188,7 @@ fn run_loop(rx: mpsc::Receiver<(String, usize)>) {
         }
         let (preedit, hwnd) = last;
         if hwnd == 0 {
+            crate::debug_log("AI 候选：hwnd=0（候选窗未创建），跳过");
             continue;
         }
         let cands = if let Some(hit) = cache.get(&preedit) {
@@ -195,10 +196,14 @@ fn run_loop(rx: mpsc::Receiver<(String, usize)>) {
         } else {
             match api_key().and_then(|key| fetch_candidates(&key, &preedit).ok()) {
                 Some(cands) => {
+                    crate::debug_log(&format!("AI 候选 fetch 成功：preedit={preedit:?} -> {cands:?}"));
                     cache.put(&preedit, cands.clone());
                     cands
                 }
-                None => continue,
+                None => {
+                    crate::debug_log(&format!("AI 候选 fetch 失败/空：preedit={preedit:?}"));
+                    continue;
+                }
             }
         };
         // 结果带回候选窗 UI 线程（同一宿主进程，指针传递安全）
@@ -277,5 +282,16 @@ mod tests {
     fn parse_rejects_overlong() {
         let long = "长".repeat(21);
         assert!(parse_candidates(&long).is_empty());
+    }
+
+    /// 真实 agnès 端到端（需 AGNES_API_KEY 环境变量；默认跳过，CI 不跑）。
+    /// 手动验证：AGNES_API_KEY=... cargo test -p shurufa-tsf -- --ignored fetch_candidates_live
+    #[test]
+    #[ignore = "需要真实 API key"]
+    fn fetch_candidates_live() {
+        let key = std::env::var("AGNES_API_KEY").expect("需要 AGNES_API_KEY 环境变量");
+        let cands = fetch_candidates(&key, "nihao").expect("API 调用应成功");
+        assert!(!cands.is_empty(), "应返回至少 1 个候选");
+        println!("live 候选: {cands:?}");
     }
 }

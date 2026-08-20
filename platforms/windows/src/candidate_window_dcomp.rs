@@ -403,7 +403,8 @@ impl GpuCore {
         let dc: ID2D1DeviceContext = d2d_dev
             .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
             .ok()?;
-        dc.SetDpi(dpi as f32, dpi as f32);
+        // 布局值（scale 后）即物理像素：D2D 1:1 解释（96 DPI = DIP 与物理相同）
+        dc.SetDpi(96.0, 96.0);
 
         let backbuffer: IDXGISurface = swap.GetBuffer(0).ok()?;
         let props = D2D1_BITMAP_PROPERTIES1 {
@@ -411,8 +412,8 @@ impl GpuCore {
                 format: DXGI_FORMAT(0), // 让 D2D 沿用 surface 自身格式
                 alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
             },
-            dpiX: dpi as f32,
-            dpiY: dpi as f32,
+            dpiX: 96.0,
+            dpiY: 96.0,
             bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
             colorContext: std::mem::ManuallyDrop::new(None),
         };
@@ -535,8 +536,9 @@ fn render_and_present(core: &GpuCore, frame: &mut FrameState, rc: &RECT, v: &Pai
                 format: DXGI_FORMAT(0),
                 alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
             },
-            dpiX: frame.dpi as f32,
-            dpiY: frame.dpi as f32,
+            // 1:1（布局坐标即物理像素）
+            dpiX: 96.0,
+            dpiY: 96.0,
             bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
             colorContext: std::mem::ManuallyDrop::new(None),
         };
@@ -560,7 +562,9 @@ fn render_and_present(core: &GpuCore, frame: &mut FrameState, rc: &RECT, v: &Pai
     let dc = &frame.viz_target;
     let end_ok = unsafe {
         dc.SetTarget(&frame.viz_bitmap);
-        dc.SetDpi(frame.dpi as f32, frame.dpi as f32);
+        // 布局值（scale 后）即物理像素：1:1 绘制，不再按窗口 DPI 放大
+        //（此前 SetDpi(dpi) 会把内容整体放大 dpi/96 倍，超出窗口被裁剪）。
+        dc.SetDpi(96.0, 96.0);
         dc.BeginDraw();
         // premultiplied 语义：透明底色起笔，圆角/抗锯齿边缘天然预乘。
         dc.Clear(Some(&D2D1_COLOR_F {

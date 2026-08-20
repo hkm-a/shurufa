@@ -58,18 +58,40 @@ TSF 层候选刷新后异步调 agnès → 注入候选窗尾部（🤖 副标�
   - `LAST_CTX` 快照 + `refresh_with_ai`：AI 结果到达后按快照重建布局
     （复用 `compute_show_layout`，位置保持、仅重排宽高 + 重绘 + UIA 同步）
   - 点击 AI 候选：不发送引擎数字选词键（索引对不上），改走
-    `AI_COMMIT` 钩子写 pending 槽 + 回发 VK_F13（标准键盘不存在该键），
-    service 在 handle_key 入口识别后结束组合 + 插入文本落盘
+    `AI_COMMIT` 钩子写 pending 槽 + 回发 Enter（chrome 只把文本相关键
+    路由给 TSF，Enter 必达），service 在 handle_key 入口（pending 非空时）
+    结束组合 + 插入文本落盘；正常回车不受影响
 - **开关与 key**：`ImeOptions.ai_candidates`（默认 false；设置中心「输入 →
   AI 候选预测」开关，data-general-field 通用保存）；key 从环境变量
   `AGNES_API_KEY` 读取（与 AI 帮写面板同源，永不落盘）
 - **TSF 接线**（service.rs）：process_key 后 `maybe_request_ai`——开关开 +
   有 key + 中文态 + 有组合才投递；失败/无 key/超时静默降级
 
+### 4.4 Windows 端到端实测（2026-08-21 本机）
+
+- **环境**：真实 TSF 注册 + Chrome（aitest.html textarea）+ User 级
+  `AGNES_API_KEY`；日志验证 `%TEMP%\shurufa-tsf.log`。
+- **链路验证**：输入 `nihao` → 每键 cand show（9 候选）→ 800ms 停顿后
+  `AI 候选 fetch 成功` → `PostMessage ok` → `WM_AI_CANDIDATES_READY` →
+  `cand AI 刷新: ai_start=Some(6) rows=2` → 点击第二行第 7 项 → 写 pending
+  → 回发 Enter → `AI 候选提交："你好"`（组合路径或 insert_text 落盘）。
+- **截图证据**：dist/win-ai-dcomp.png（2 行候选：第 1 行 Rime 1-6，第 2 行
+  🤖 7-9）；GDI 后端 win-ai-gdi.png 同。
+- **连带修复（GPU 后端 DPI）**：D2D/DComp 此前 `SetDpi(dpi)` 把布局
+  （已是物理像素）再放大 dpi/96 倍 → 窗口内容超界被裁（1 行时"看起来
+  正常"掩盖）。改为 `SetDpi(96)` 1:1 后 DComp 完整渲染 2 行。
+- **已知边界**：chrome 点击候选窗会触发 `OnCompositionTerminated`
+  （宿主终止组合）——Rime 数字键点击选词在 chrome 同样受影响（点击后
+  preedit 清空、键透传）；AI 提交经 pending+Enter 在 handle_key 内落盘
+  （OnKeyDown context 可靠）已绕过。其他宿主（记事本/Word/WPS）不受影响
+  的理论依据：组合终止是 chrome 对"点击非编辑区"的行为。
+
 ## 5. 验收
 
-- 模拟器：输入暂停 → 候选行出现 🤖 AI 候选 → 点击上屏；无 key 静默
-- 单测：提示词构造、节流逻辑、缓存（纯函数）
+- Windows：输入暂停 → 候选窗第二行出现 🤖 AI 候选 → 点击直接上屏；
+  无 key/失败静默（日志可查 fetch/提交记录）
+- Android：模拟器输入暂停 → 候选行出现 🤖 AI 候选 → 点击上屏；无 key 静默
+- 单测：提示词构造、解析、节流/缓存纯函数（7 项）
 
 ## 6. 风险
 

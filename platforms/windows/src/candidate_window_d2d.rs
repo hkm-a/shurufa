@@ -470,7 +470,9 @@ impl D2dCore {
             if self.target.is_some() && self.target_size == size {
                 if self.target_dpi != dpi {
                     if let Some(t) = &self.target {
-                        t.SetDpi(dpi as f32, dpi as f32);
+                        // 布局值（scale 后）即物理像素，D2D 按 1:1 解释
+                        //（96 DPI = DIP 与物理 1:1）；字号 fmt 仍随 dpi 重建。
+                        t.SetDpi(96.0, 96.0);
                         self.target_dpi = dpi;
                         self.fmt_cand = None;
                         self.fmt_sub = None;
@@ -485,8 +487,9 @@ impl D2dCore {
                     format: DXGI_FORMAT_B8G8R8A8_UNORM,
                     alphaMode: D2D1_ALPHA_MODE_IGNORE,
                 },
-                dpiX: dpi as f32,
-                dpiY: dpi as f32,
+                // 布局坐标/字号已是物理像素（scale(dpi) 后），1:1 绘制
+                dpiX: 96.0,
+                dpiY: 96.0,
                 usage: D2D1_RENDER_TARGET_USAGE_NONE,
                 minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
             };
