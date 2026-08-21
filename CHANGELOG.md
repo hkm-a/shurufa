@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 修复（2026-08-21）
+- **中英文混合输入（严查 shift 后修复）**：
+  - **Enter 被无条件吞掉**：AI 候选提交的 return true 在 pending 判断之外，
+    导致所有回车键（无组合换行 / 有组合引擎选词）都被输入法吃掉——改为
+    仅 pending_ai 非空（AI 候选点击回发）时消费 Enter，正常回车放行。
+  - **Shift 切英文丢拼音**：end_pending_composition 此前 set_composition_text("")
+    清空组合再 EndComposition——中文组合（如 "nihao"）按 Shift 切英文时拼音被
+    丢弃；改直接 EndComposition（TSF 语义：组合文本保留在文档），Shift 提交
+    拼音原文落盘（主流输入法一致）。
+  - **AI 提交清 Shift 挂起**：AI 候选提交直接 return（跳过 Shift 挂起结算），
+    若此前 Shift 按下未结算会残留导致后续按键误切换——提交时主动清除挂起。
+
 ### 新增（2026-08-20）
 - **AI 候选预测**：输入暂停约 800ms 后基于拼音与上文调 agnès 预测候选
   （🤖 标记，排在候选行尾部，点击直接上屏）；设置 → AI 智能 → 开关（默认关，

@@ -474,11 +474,16 @@ impl Inner {
 
     /// 结束文档侧残留的 TSF 组合（切换中英文/标点/全角前的收尾，
     /// 否则残留组合会把后续按键吃进去）。
+    ///
+    /// 2026-08-21 修复：此前 set_composition_text("") 把组合清空后再
+    /// EndComposition——中文组合（如 "nihao"）按 Shift 切英文时拼音被丢弃，
+    /// 用户输入丢失（中英文混合输入 bug）。TSF 语义：EndComposition 后组合
+    /// 文本保留在文档中，直接 EndComposition 即把拼音原文落盘（主流输入法
+    /// Shift 提交拼音一致）。
     fn end_pending_composition(&mut self, context: &ITfContext) {
         if let Some(comp) = self.composition.take() {
             let client_id = self.client_id;
             if let Err(e) = edit_session(client_id, context, |ec| unsafe {
-                set_composition_text(&comp, ec, "", 0)?;
                 comp.EndComposition(ec)
             }) {
                 crate::debug_log(&format!("结束残留组合失败：{e:?}"));
@@ -511,6 +516,10 @@ impl Inner {
         // 把文本相关键路由给 TSF，Enter 必达；仅 pending_ai 非空时消费，
         // 正常回车不受影响。
         if vk == 0x0D {
+            // 仅当 pending_ai 有值（AI 候选点击后回发的 Enter）才消费并吃掉
+            // 该键；pending 为空时是用户的正常回车（无组合落盘换行 / 有组合
+            // 引擎选词），必须继续走正常路径——此前 return true 在 if 外，
+            // 所有 Enter 被无条件吞掉（2026-08-21 修复）。
             if let Some(text) = self
                 .pending_ai
                 .lock()
@@ -540,8 +549,13 @@ impl Inner {
                 self.ui.hide();
                 self.last_comp_ptr = None;
                 self.last_anchor = None;
+                // AI 提交直接 return（跳过下方 Shift 挂起结算）：若此前有 Shift
+                // 按下未结算（用户按 Shift 后点 AI 候选），挂起会残留到后续
+                // 按键导致误切换中英文。这里主动清掉挂起状态。
+                self.shift_toggle_pending = false;
+                self.shift_down_at_ms = None;
+                return true;
             }
-            return true;
         }
 
         // 「？？？」表情（M10）：非斜杠键重置连续问号计数。
