@@ -372,6 +372,11 @@ impl Inner {
         if preedit.is_empty() || ctx.is_ascii {
             return;
         }
+        // 纯辅音串（拼音简拼缩写如 "lwyg"）跳过 AI：用户要的是词库简拼，
+        // 不劳 AI 预测（2026-08-21 用户反馈）。
+        if crate::ai_candidates::should_skip_ai(&preedit) {
+            return;
+        }
         if self.ai_worker.is_none() {
             crate::debug_log("AI 候选 worker 首次启用");
             self.ai_worker = Some(crate::ai_candidates::AiWorker::spawn());

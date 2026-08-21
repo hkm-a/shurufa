@@ -29,6 +29,18 @@ pub const DEBOUNCE_MS: u64 = 800;
 /// 候选行保留给引擎候选的数量；AI 候选排在其后（合计不超过 9）。
 pub const RIME_KEEP: usize = 6;
 
+/// AI 候选是否应跳过：纯辅音串（拼音简拼缩写如 "lwyg"）或过短（<2）时
+/// 跳过——用户输入简拼想要的是词库候选，不劳 AI 预测；无元音也排除了
+/// 单字母/按键噪音。完整拼音（含 aeiouv 任一）正常触发 AI。
+pub(crate) fn should_skip_ai(preedit: &str) -> bool {
+    let p = preedit.trim();
+    if p.chars().count() < 2 {
+        return true;
+    }
+    !p.chars()
+        .any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'v'))
+}
+
 /// 读取 API key（环境变量，与 AI 帮写面板同源；空白视为未配置）。
 pub fn api_key() -> Option<String> {
     std::env::var("AGNES_API_KEY")
@@ -282,6 +294,20 @@ mod tests {
     fn parse_rejects_overlong() {
         let long = "长".repeat(21);
         assert!(parse_candidates(&long).is_empty());
+    }
+
+    #[test]
+    fn skip_pure_consonant_shorthand() {
+        // 拼音简拼缩写（无元音）→ 跳过 AI
+        assert!(should_skip_ai("lwyg"));
+        assert!(should_skip_ai("wyg"));
+        assert!(should_skip_ai("n"));
+        assert!(should_skip_ai(""));
+        // 完整拼音（含元音）→ 正常触发
+        assert!(!should_skip_ai("nihao"));
+        assert!(!should_skip_ai("wo"));
+        assert!(!should_skip_ai("lv"));
+        assert!(!should_skip_ai("he"));
     }
 
     /// 真实 agnès 端到端（需 AGNES_API_KEY 环境变量；默认跳过，CI 不跑）。
