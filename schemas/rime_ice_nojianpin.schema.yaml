@@ -164,7 +164,7 @@ translator:
   # Corrector）在官方构建里被 #if 0 禁用，仅剩 NearSearchCorrector 生效——
   # 可纠正键盘相邻键错误（如 nohao→你好：i/o 相邻），转位类错误
   # （zhogn→zhong）无法纠正（属 librime 上游限制，不做装饰层 hack）。
-  enable_correction: true
+  enable_correction: false
   initial_quality: 1.2
   preedit_format:
     - xform/([nl])v/$1ü/
@@ -241,6 +241,16 @@ speller:
     - derive/^([jqxy])u/$1v/
     - derive/^([nl])ue$/$1ve/
     - derive/^([jqxy])v/$1u/
+    - derive/^([nl])ve$/$1ue/correction  # nve = nue, lve = lue
+    - derive/^([jqxy])u/$1v/correction   # ju = jv
+    - derive/un$/uen/correction          # gun = guen
+    - derive/ui$/uei/correction          # gui = guei
+    - derive/iu$/iou/correction          # jiu = jiou
+    - derive/([aeiou])ng$/$1gn/correction           # dagn => dang
+    - derive/([dtngkhrzcs])o(u|ng)$/$1o/correction  # zho => zhong|zhou
+    - derive/ong$/on/correction                     # zhonguo => zhong guo
+    - derive/ao$/oa/correction                      # hoa => hao
+    - derive/([iu])a(o|ng?)$/a$1$2/correction       # tain => tian
 
 punctuator:
   import_preset: symbols

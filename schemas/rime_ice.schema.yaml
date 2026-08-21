@@ -163,11 +163,15 @@ translator:
   comment_format:
     - xform/^/［/
     - xform/$/］/
-  # 拼音纠错（2026-08-15 实装）：librime 1.17 的编辑距离纠错（EditDistance
-  # Corrector）在官方构建里被 #if 0 禁用，仅剩 NearSearchCorrector 生效——
-  # 可纠正键盘相邻键错误（如 nohao→你好：i/o 相邻），转位类错误
-  # （zhogn→zhong）无法纠正（属 librime 上游限制，不做装饰层 hack）。
-  enable_correction: true
+  # 拼音纠错（2026-08-21 修订）：librime 1.17 的编辑距离纠错（EditDistance
+  # Corrector）在官方构建里被 #if 0 禁用；enable_correction=true 仅剩
+  # NearSearchCorrector（键盘相邻键）兜底——它对“无匹配的简拼串”也生效
+  # （lw→le/ke、w→饿/呀/恶），把拼音简拼候选冲成键盘相邻垃圾（实测 lwyg
+  # 出“了/可/刻/克/乐”）。现关闭 enable_correction，纠错全部由 speller
+  # algebra 的显式 spelling_correction/key_correction 规则（带 /correction
+  # 标记，见下）承担：规则纠错（zho→中、dagn→大）保留，键盘相邻乱纠消失，
+  # w 声母简拼恢复（w→我/哇/无/外/为/问/王）。
+  enable_correction: false
   initial_quality: 1.2
   preedit_format:
     - xform/([nl])v/$1ü/
@@ -175,12 +179,13 @@ translator:
     - xform/([jqxy])v/$1u/
 
 # 自定义短语（P1 #6）：读 %APPDATA%\shurufa\rime\custom_phrase.txt，
-# 格式 `编码<TAB>词条<TAB>权重`（如 `gs\t公司\t100`）。权重 99 压过拼音
-# 候选置顶；stabledb 只读，改动后经设置页「保存并部署」重建生效。
+# 格式 `词条<TAB>编码<TAB>权重`（如 `来玩鱼羹\tlwyg\t99`），并在文件头写 tabledb 表头（# Rime table / #@/db_type tabledb）。
+# 权重 99 压过拼音候选置顶；tabledb 直接读文本，改动后经设置页「保存并部署」重建生效。
+# 简拼词可通过此机制补全（如 lwyg→来玩鱼羹）。
 custom_phrase:
   dictionary: ""
   user_dict: custom_phrase
-  db_class: stabledb
+  db_class: tabledb
   enable_completion: false
   enable_sentence: false
   initial_quality: 99
@@ -246,6 +251,16 @@ speller:
     - derive/^([jqxy])u/$1v/
     - derive/^([nl])ue$/$1ve/
     - derive/^([jqxy])v/$1u/
+    - derive/^([nl])ve$/$1ue/correction  # nve = nue, lve = lue
+    - derive/^([jqxy])u/$1v/correction   # ju = jv
+    - derive/un$/uen/correction          # gun = guen
+    - derive/ui$/uei/correction          # gui = guei
+    - derive/iu$/iou/correction          # jiu = jiou
+    - derive/([aeiou])ng$/$1gn/correction           # dagn => dang
+    - derive/([dtngkhrzcs])o(u|ng)$/$1o/correction  # zho => zhong|zhou
+    - derive/ong$/on/correction                     # zhonguo => zhong guo
+    - derive/ao$/oa/correction                      # hoa => hao
+    - derive/([iu])a(o|ng?)$/a$1$2/correction       # tain => tian
 
 punctuator:
   import_preset: symbols

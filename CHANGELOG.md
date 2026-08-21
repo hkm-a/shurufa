@@ -12,6 +12,9 @@
   方案见 docs/M7-5-候选Tab多服务切换-方案评估.md。
 
 ### 修复（2026-08-21）
+- **拼音简拼垃圾候选（lwyg 出“了/可/刻/克/乐”）：librime 1.17 在 `enable_correction: true` 且 speller 未显式配置 correction 规则时，启用 NearSearchCorrector（键盘相邻键纠错）兜底，把无匹配的简拼串（lw/wg/yw/wm）按编辑距离映射到邻近拼音（lw→le/ke、wg→e+g），产出与输入无关的候选；同时 w 声母简拼（我/万/无）被 e 声母（饿/呃/恶）挤掉。修复：speller 显式追加 rime-ice 上游的 spelling_correction/key_correction 规则（带 `/correction` 标记），并关闭 `enable_correction`——规则纠错（zho→中、dagn→大）保留，键盘相邻乱纠消失；w 简拼恢复（w→我/哇/无/外/为/问/王）。
+  已部署 FOX 部署根（schemas 同步 + rime_deployer 全量重建 + algo 重启），引擎与真机 chrome 验证：lw/lwyg/wg/yw/wm 候选干净为空，完整拼音（laiwanyugeng→来玩鱼羹）、单字简拼（l→了/来、w→我/哇）正常。
+  - 说明：librime 简拼音节不参与多音节词条匹配，纯简拼词（如 lwyg）需完整拼音/混合输入（laiwanyugeng），词库自定义短语另行支持。
 - **AI 候选跳过拼音简拼**：纯辅音串（如 lwyg，无 aeiouv）视为简拼缩写，
   跳过 AI 预测——用户输入简拼要的是词库候选，不劳 AI（should_skip_ai，
   单测覆盖 lwyg/wyg 跳过、nihao/wo/lv/he 正常）。
