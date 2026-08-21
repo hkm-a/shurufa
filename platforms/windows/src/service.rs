@@ -390,6 +390,49 @@ impl Inner {
             .request(preedit, hwnd);
     }
 
+    /// 简拼词提交（2026-08-21）：注入的简拼候选（comment=“简拼”）不是
+    /// librime 候选，选中（数字键/空格/点击）时不能走引擎数字选词（引擎无该
+    /// 候选，数字键会被当普通键上屏），直接经编辑会话落盘，
+    /// 并清空引擎组合。非简拼候选时返回 false。
+    fn submit_jianpin_candidate(&mut self, context: &ITfContext, index: usize) -> bool {
+        let Some(ctx) = crate::candidate_window::last_ctx_clone() else {
+            return false;
+        };
+        let Some(cand) = ctx.candidates.get(index) else {
+            return false;
+        };
+        if cand.comment != "简拼" {
+            return false;
+        }
+        let text = cand.text.clone();
+        let client_id = self.client_id;
+        let composition_slot = &mut self.composition;
+        let edit_result = edit_session(client_id, context, |ec| unsafe {
+            if let Some(comp) = composition_slot.take() {
+                set_composition_text(&comp, ec, &text, text.encode_utf16().count())?;
+                comp.EndComposition(ec)?;
+            } else {
+                insert_text(context, ec, &text)?;
+            }
+            Ok(())
+        });
+        if let Err(e) = &edit_result {
+            crate::debug_log(&format!("简拼词提交失败：{e:?}"));
+            return false;
+        }
+        crate::debug_log(&format!("简拼词提交：{text:?}"));
+        self.ui.hide();
+        self.last_comp_ptr = None;
+        self.last_anchor = None;
+        // 候选已前端提交，引擎组合同步清空（Escape 取消组合）
+        let _ = self
+            .client
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .simulate("{Escape}");
+        true
+    }
+
     /// 至多每 2 秒检查一次 options.json 的修改时间，变了就重载。
     /// 不主动向引擎推状态（全角/标点默认由 schema 决定），只影响快捷键行为。
     fn refresh_options(&mut self) {
@@ -828,6 +871,17 @@ impl Inner {
             let _ = self.fallback_commit(context, vk, shift);
             return false;
         };
+        // 简拼词选中（2026-08-21）：algo 注入的简拼候选
+        // （comment=“简拼”）不是 librime 候选，数字键/空格选中时
+        // 不能走引擎数字选词（引擎无该候选，数字键会被当普通
+        // 键上屏）——直接经编辑会话落盘。非简拼候选时
+        // submit_jianpin_candidate 返回 false，正常走引擎选词不受影响。
+        if matches!(vk, 0x31..=0x39) || vk == 0x20 {
+            let index = if vk == 0x20 { 0 } else { (vk - 0x31) as usize };
+            if self.submit_jianpin_candidate(context, index) {
+                return true;
+            }
+        }
         // R2.1 打点起点：必须在 process_key 之前（含引擎 IPC + 算法 + commit 全程），
         // 否则量到的只是"写文本"一段，对于 commit 路径（快路径）误差大。
         // 2026-08-16 起默认开启（debug_log 已改内存缓冲，零 I/O）；卡顿排查时

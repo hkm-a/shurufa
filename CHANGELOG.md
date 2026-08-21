@@ -10,6 +10,15 @@
   字母触发，最长 5 条）；Rime 无候选时自动切英文组；点击 Tab 即时切换
   （三渲染后端 GDI/D2D/DComp 均实现）；英文候选点击经提交钩子落盘。
   方案见 docs/M7-5-候选Tab多服务切换-方案评估.md。
+- **前端简拼索引（搜狗同款，2026-08-21）**：librime 原生不支持多音节简拼词
+  （简拼音节不参与词条匹配，单字简拼/完整拼音正常）——由 scripts/
+  gen-jianpin-index.py 从词库（cn_dicts base/ext/others）自动生成简拼映射
+  （27 万编码/60 万词条，模拟 rime-ice abbrev：zh/ch/sh 双字母、其余首字母），
+  algo 启动加载 jianpin_index.txt；引擎候选为空且输入为纯辅音串（2-8 位）时
+  注入简拼词候选（lw→另外/论文/礼物、wsh→晚上/完善、wm→我们、bm→部门）。
+  **选中提交**：简拼词不是 librime 候选，数字键/空格/点击选中时经编辑会话
+  直接落盘（不走引擎数字选词，修"选中上屏拼音"双字问题）；候选窗点击走
+  AI 同款提交钩子。真机 chrome 验证：lw+1 → 上屏「另外」。
 
 ### 修复（2026-08-21）
 - **拼音简拼垃圾候选（lwyg 出“了/可/刻/克/乐”）：librime 1.17 在 `enable_correction: true` 且 speller 未显式配置 correction 规则时，启用 NearSearchCorrector（键盘相邻键纠错）兜底，把无匹配的简拼串（lw/wg/yw/wm）按编辑距离映射到邻近拼音（lw→le/ke、wg→e+g），产出与输入无关的候选；同时 w 声母简拼（我/万/无）被 e 声母（饿/呃/恶）挤掉。修复：speller 显式追加 rime-ice 上游的 spelling_correction/key_correction 规则（带 `/correction` 标记），并关闭 `enable_correction`——规则纠错（zho→中、dagn→大）保留，键盘相邻乱纠消失；w 简拼恢复（w→我/哇/无/外/为/问/王）。

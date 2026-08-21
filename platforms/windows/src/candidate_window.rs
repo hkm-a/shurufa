@@ -105,6 +105,11 @@ pub fn set_ai_commit(f: AiCommitFn) {
     AI_COMMIT.with(|slot| *slot.borrow_mut() = Some(f));
 }
 
+/// 读最近一次 show 的 Context 快照（service.rs 数字键/空格拦截时用）。
+pub fn last_ctx_clone() -> Option<Context> {
+    LAST_CTX.with(|c| c.borrow().clone())
+}
+
 /// 候选服务 Tab 切换（M7-5）：设置激活组并按 LAST_CTX 快照重建布局 +
 /// 重绘（同 refresh_with_ai 模式，无需按键即可看到新候选组）。
 pub(crate) fn tab_switch(tab: TabKind) {
@@ -1667,6 +1672,35 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
                 }
                 return;
             }
+        }
+        // 简拼词（2026-08-21）：引擎候选为空时由 algo 前端注入的
+        // 简拼候选（comment=“简拼”）不是 librime 候选，点击不能走
+        // 数字选词（引擎无这个候选，数字键会直接上屏数字）——
+        // 走 AI 同款提交钩子（service 写 pending 槽 + 回发 Enter 落盘）。
+        let is_jianpin = LAST_CTX.with(|c| {
+            c.borrow()
+                .as_ref()
+                .and_then(|c| c.candidates.get(index))
+                .map(|c| c.comment == "简拼")
+                .unwrap_or(false)
+        });
+        if is_jianpin {
+            let text = LAST_CTX.with(|c| {
+                c.borrow()
+                    .as_ref()
+                    .and_then(|c| c.candidates.get(index))
+                    .map(|c| c.text.clone())
+            });
+            if let Some(text) = text {
+                let done = AI_COMMIT.with(|slot| {
+                    slot.borrow().as_ref().map(|f| f(&text)).unwrap_or(false)
+                });
+                if !done {
+                    send_virtual_key(VK_AI_COMMIT_TRIGGER);
+                }
+                crate::debug_log(&format!("简拼词点击提交：{text:?}"));
+            }
+            return;
         }
         // 序号键 1..9 → 0x31..0x39；第 10 项按下标 0 → 0x30。
         let key = if index >= 9 { 0x30 } else { 0x31 + index as u8 };

@@ -30,6 +30,7 @@ fn log(msg: &str) {
 // 纯判定函数 input_scheme_differs 的测试见 platforms/windows/src/service.rs。
 // ---------------------------------------------------------------------------
 
+mod jianpin;
 mod mru;
 
 /// 供 service 调用：按会话的 raw composition 作 key 做 MRU boost。
@@ -47,6 +48,21 @@ fn mru_boost_candidates(pinyin: &str, candidates: Vec<String>) -> Vec<String> {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .boost(pinyin, candidates)
+}
+
+/// 简拼索引单例：启动后从 shared_data_dir/jianpin_index.txt 加载一次。
+fn jianpin_store() -> &'static jianpin::JianpinIndex {
+    static INSTANCE: std::sync::OnceLock<jianpin::JianpinIndex> = std::sync::OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let p = shared_data_dir().join("jianpin_index.txt");
+        match jianpin::JianpinIndex::load(&p) {
+            Ok(idx) => idx,
+            Err(e) => {
+                log(&e);
+                jianpin::JianpinIndex::new()
+            }
+        }
+    })
 }
 
 /// 处理一次提交：把选中的词记入 MRU（只改内存，由后台节流线程落盘）。
@@ -108,6 +124,29 @@ fn decorate_process_key(
         .candidates
         .get(context.highlighted)
         .map(|c| c.text.clone());
+    // 简拼词注入：引擎候选为空且输入为纯辅音串（简拼）时，
+    // 查词库预生成的简拼索引（jianpin_index.txt）把词条注入候选。
+    // librime 原生不支持多音节简拼词（简拼音节不参与词条匹配），
+    // 单字简拼/完整拼音正常；搜狗/微信式简拼词靠这层前端索引补上。
+    if context.candidates.is_empty()
+        && jianpin::JianpinIndex::is_pure_consonant(raw_after)
+    {
+        let words = jianpin_store().lookup(raw_after, 9);
+        if !words.is_empty() {
+            context.candidates = words
+                .into_iter()
+                .map(|text| ime_ipc::Candidate {
+                    text,
+                    // 简拼标记：TSF 辨识这些是前端注入候选（非 librime 候选），
+                    // 数字键/空格/点击选中时直接提交，不走引擎数字选词。
+                    comment: "简拼".to_string(),
+                })
+                .collect();
+            context.highlighted = 0;
+            context.page_no = 0;
+            context.is_last_page = true;
+        }
+    }
     // 提频：候选按 MRU 重排，高亮跟随原高亮词的新位置
     if !context.candidates.is_empty() && !raw_after.is_empty() {
         let original = context.candidates.clone();
