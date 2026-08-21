@@ -117,3 +117,33 @@ struct GroupedCandidates {
   真正价值点——建议直接以 P1+P2 合并为一个里程碑实施。
 - 当前先落地**方案评估**，具体实施待用户确认优先级（英文词典规模、是否
   收编 AI Tab）。
+
+---
+
+## 8. 实施进展（2026-08-21）
+
+### 已落地：Windows P1+P2（候选分组模型 + Tab 行 UI + 英文候选）
+
+- **english_candidates.rs**：内置 ~500 高频英文词表 + 前缀联想纯函数
+  （≥2 位 ASCII 字母 → 长度升序取前 5；6 项单测）。
+- **Tab 行 UI**（candidate_window.rs）：
+  - TabKind { Rime, English } + ACTIVE_TAB thread_local；
+  - 窗口顶部 Tab 行（BASE_TAB_HEIGHT 22 逻辑 px），仅当英文候选非空时
+    显示（拼音 | 英文，激活态高亮）；
+  - 三渲染后端（GDI/D2D/DComp）均实现 Tab 行绘制 + preedit/候选行偏移；
+  - 内容指纹隐含 tab（候选内容不同 → 自动重算）。
+- **切换与提交**：
+  - 点击 Tab 行 → tab_switch 按 LAST_CTX 快照重建布局（无需按键）；
+  - Rime 无候选且英文候选有值 → 自动激活英文组；
+  - 英文候选点击 → AI_COMMIT 钩子（pending + Enter，与 AI 候选同路径）。
+- **本机端到端验证**：
+  - 输入 wor → Tab 行出现（窗口高 +33px）；
+  - 点击英文 Tab → 候选 Tab 切换：English → 候选变英文（word/work/world/worry）；
+  - Rime 无候选时自动切英文（wor 场景截图 win-en-wor.png：Tab 行 + 英文候选）。
+
+### 未落地（后续）
+
+- 翻译 Tab（agnès，复用 AI 候选基建）
+- 网址 Tab（复用 V 模式直达库）
+- Android Tab UI（P4）
+- 英文词表扩充（1 万 → 更多）+ 用户自增

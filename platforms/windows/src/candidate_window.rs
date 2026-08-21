@@ -90,6 +90,9 @@ thread_local! {
     static AI_CANDIDATES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
     /// 当前帧 AI 候选起始索引（点击 AI 候选走提交回调，而非引擎数字键）。
     static AI_START: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// 候选服务 Tab（M7-5）：拼音（默认）/ 英文。仅在英文候选非空时显示
+    /// Tab 行；点击切换候选展示组。切换后内容指纹变化 → 自动重算布局。
+    static ACTIVE_TAB: std::cell::Cell<TabKind> = const { std::cell::Cell::new(TabKind::Rime) };
     /// AI 候选提交钩子（service 注册：写 pending 槽；候选窗负责发 VK_AI_COMMIT_TRIGGER）。
     static AI_COMMIT: RefCell<Option<AiCommitFn>> = const { RefCell::new(None) };
     /// 最近一次 show 的候选面板模式（refresh_with_ai 重建布局时复用）。
@@ -100,6 +103,47 @@ thread_local! {
 /// 注册 AI 候选提交钩子（service.rs 会话初始化；wnd_proc 同线程调用）。
 pub fn set_ai_commit(f: AiCommitFn) {
     AI_COMMIT.with(|slot| *slot.borrow_mut() = Some(f));
+}
+
+/// 候选服务 Tab 切换（M7-5）：设置激活组并按 LAST_CTX 快照重建布局 +
+/// 重绘（同 refresh_with_ai 模式，无需按键即可看到新候选组）。
+pub(crate) fn tab_switch(tab: TabKind) {
+    ACTIVE_TAB.with(|t| t.set(tab));
+    let hwnd = PAINT_HWND.with(|h| h.get());
+    if hwnd.0.is_null() {
+        return;
+    }
+    let Some(ctx) = LAST_CTX.with(|c| c.borrow().clone()) else {
+        return;
+    };
+    let panel_mode = LAST_PANEL_MODE.with(|m| m.get());
+    let (merged, ai_start) = merge_ai_candidates(&ctx);
+    AI_START.with(|s| s.set(ai_start));
+    let mut view_ctx = ctx;
+    view_ctx.candidates = merged;
+    let extra = crate::dll_path()
+        .parent()
+        .map(|dir| dir.join("schemas").join("shurufa-skin.json"));
+    let skin = skin::load_with(|| extra);
+    let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
+    let screen_w = logical_screen_dim(unsafe { GetSystemMetrics(SM_CXSCREEN) }, dpi);
+    let screen_h = logical_screen_dim(unsafe { GetSystemMetrics(SM_CYSCREEN) }, dpi);
+    let (width, height) = compute_show_layout(
+        hwnd,
+        &view_ctx,
+        &skin,
+        dpi,
+        panel_mode,
+        screen_w,
+        screen_h,
+        ai_start,
+    );
+    let mut rect = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut rect);
+        let _ = MoveWindow(hwnd, rect.left, rect.top, width, height, false);
+        let _ = InvalidateRect(Some(hwnd), None, true);
+    }
 }
 
 /// 当前候选窗句柄（worker 线程结果投递用；窗口未创建时为 None）。
@@ -187,7 +231,18 @@ const BASE_PREEDIT_FONT_HEIGHT: i32 = 18;
 const BASE_MIN_WIDTH: i32 = 96;
 /// 多行候选面板每行候选数（搜狗 16.3b 多行候选同类；9 候选 → 5+4 两行）。
 const MULTI_COLUMNS: usize = 5;
+/// 候选服务 Tab 行高度（96 DPI 基准；M7-5）。
+const BASE_TAB_HEIGHT: i32 = 22;
 const BASE_MODE_BADGE_GAP: i32 = 10;
+
+/// 候选服务 Tab（M7-5 候选 Tab 多服务切换）：默认拼音组（引擎候选 +
+/// AI 混排）；英文组（内置词表前缀联想，english_candidates::suggest）。
+/// 仅当非 Rime 组有候选时显示 Tab 行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabKind {
+    Rime,
+    English,
+}
 
 /// 候选来源分类（启发式，搜狗/百度"来源标识"同类；librime API 不暴露候选 type，
 /// 前端按文本特征判断。仅用于 show_candidate_badge 角标，默认关闭）。
@@ -355,6 +410,10 @@ struct PaintData {
     /// 由 service.rs 经 set_caps_visual 写入；true 时 mode_badge 固定为 "⇪大写"。
     caps_visual: bool,
     page: PageInfo,
+    /// Tab 行（M7-5）：是否显示 + 当前激活组 + Tab 行高度（0 = 不显示）。
+    show_tab_bar: bool,
+    tab_active: TabKind,
+    tab_h: i32,
 }
 
 /// 传给 D2D 后端的一帧绘制视图（纯纯值，不持 Ref 避免跨 thread_local 借）。
@@ -378,6 +437,10 @@ pub struct PaintView {
     pub sub_font_h: i32,
     /// 当前页分页快照（滚动条用）
     pub page: PageInfo,
+    /// Tab 行（M7-5）：是否显示 + 激活组 + 行高（0 = 不显示）。
+    pub show_tab_bar: bool,
+    pub tab_active: TabKind,
+    pub tab_h: i32,
     /// 预编辑音节分隔符列位（UTF-16 码元索引；空 = 无断点、按原文整串绘制）。
     /// 三条渲染路径共用同一份断点数据，一次扫描全帧消费。
     pub syllable_breaks: Vec<u16>,
@@ -496,6 +559,9 @@ pub fn make_paint_view() -> Option<PaintView> {
             mode_badge: mode_badge_text(data),
             cand_font_h: font_height(BASE_FONT_HEIGHT, dpi, font_scale),
             sub_font_h: font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale),
+            show_tab_bar: data.show_tab_bar,
+            tab_active: data.tab_active,
+            tab_h: data.tab_h,
             page: data.page,
             syllable_breaks: syllable_breaks(&data.preedit),
         })
@@ -565,6 +631,9 @@ thread_local! {
         is_full_shape: false,
         caps_visual: false,
         page: PageInfo::default(),
+        show_tab_bar: false,
+        tab_active: TabKind::Rime,
+        tab_h: 0,
     });
     static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) };
     /// 当前鼠标悬停的候选序号（None = 不在任何候选上）。
@@ -735,6 +804,39 @@ fn compute_show_layout(
     _screen_h: i32,
     ai_start: Option<usize>,
 ) -> (i32, i32) {
+            // M7-5 候选服务 Tab：英文候选（前缀联想）非空时显示 Tab 行；
+            // 激活英文组时候选列表替换为英文候选（独立编号，不走引擎）。
+            let english = crate::english_candidates::suggest(&ctx.preedit);
+            // Rime 无候选但英文候选有值（如输入串是英文词前缀、引擎无拼音命中）
+            // → 自动激活英文组；否则跟随用户手动选择的 Tab。
+            let tab_active = if ctx.candidates.is_empty() && !english.is_empty() {
+                TabKind::English
+            } else {
+                ACTIVE_TAB.with(|t| t.get())
+            };
+            let show_tab_bar = !english.is_empty();
+            let tab_h = if show_tab_bar {
+                scale(BASE_TAB_HEIGHT, dpi)
+            } else {
+                0
+            };
+            let view_items: Vec<ime_ipc::Candidate> =
+                if tab_active == TabKind::English && show_tab_bar {
+                    english
+                        .iter()
+                        .map(|w| ime_ipc::Candidate {
+                            text: w.clone(),
+                            comment: String::new(),
+                        })
+                        .collect()
+                } else {
+                    ctx.candidates.clone()
+                };
+            let ai_start = if tab_active == TabKind::English && show_tab_bar {
+                None
+            } else {
+                ai_start
+            };
             let font_scale = skin.metrics.font_scale;
             let padding = scale(skin.metrics.padding_or(BASE_PADDING), dpi);
             let item_gap = scale(skin.metrics.item_gap_or(BASE_ITEM_GAP), dpi);
@@ -776,7 +878,7 @@ fn compute_show_layout(
                 let mut row = 0i32;
                 let mut in_row = 0usize;
                 let mut row_used = 0i32;
-                for (i, c) in ctx.candidates.iter().enumerate().take(9) {
+                for (i, c) in view_items.iter().enumerate().take(9) {
                     // AI 候选（2026-08-20）：合并列表里 ai_start 起为 AI 候选，
                     // 单行模式下强制从第二行起排——Rime 候选放不下 break 时
                     // 不波及 AI（AI 不参与引擎分页，必须可见可点）。
@@ -903,7 +1005,8 @@ fn compute_show_layout(
             // 行数 = 最大行号 + 1（无候选保底 1 行）。单行模式默认 1 行；
             // AI 候选（2026-08-20）换行到第二行时 rows 自然为 2。
             let rows = items.iter().map(|it| it.row).max().unwrap_or(0) + 1;
-            let height = scale(skin.metrics.preedit_h_or(BASE_PREEDIT_HEIGHT), dpi)
+            let height = tab_h
+                + scale(skin.metrics.preedit_h_or(BASE_PREEDIT_HEIGHT), dpi)
                 + row_h * rows
                 + padding * 2;
 
@@ -929,6 +1032,9 @@ fn compute_show_layout(
                 data.is_ascii = ctx.is_ascii;
                 data.is_full_shape = ctx.is_full_shape;
                 data.page = page;
+                data.show_tab_bar = show_tab_bar;
+                data.tab_active = tab_active;
+                data.tab_h = tab_h;
             });
 
     (width, height)
@@ -1454,6 +1560,7 @@ fn hit_test_item(x: i32, y: i32) -> Option<usize> {
         let dpi = data.dpi;
         let m = data.skin.metrics;
         let row_top = scale(m.padding_or(BASE_PADDING), dpi)
+            + data.tab_h
             + scale(m.preedit_h_or(BASE_PREEDIT_HEIGHT), dpi);
         let row_h = scale(m.row_h_or(BASE_ROW_HEIGHT), dpi);
         if y < row_top {
@@ -1481,7 +1588,55 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
     let x = (lparam.0 & 0xffff) as i16 as i32;
     let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
     let dpi = PAINT_DATA.with_borrow(|data| data.dpi);
+    // M7-5：Tab 行点击（y 落在顶部 Tab 区域）→ 切换候选服务组。
+    let tab_click = PAINT_DATA.with_borrow(|data| {
+        if !data.show_tab_bar || data.tab_h <= 0 {
+            return None;
+        }
+        let m = data.skin.metrics;
+        let padding = scale(m.padding_or(BASE_PADDING), dpi);
+        if y < padding || y >= padding + data.tab_h {
+            return None;
+        }
+        let tab_pad = scale(6, dpi);
+        let gap = scale(4, dpi);
+        let char_w = font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, m.font_scale);
+        let rime_w = char_w * 2 + tab_pad * 2;
+        let en_w = char_w * 2 + tab_pad * 2;
+        if x >= padding && x < padding + rime_w {
+            Some(TabKind::Rime)
+        } else if x >= padding + rime_w + gap && x < padding + rime_w + gap + en_w {
+            Some(TabKind::English)
+        } else {
+            None
+        }
+    });
+    if let Some(tab) = tab_click {
+        crate::debug_log(&format!("候选 Tab 切换：{tab:?}"));
+        tab_switch(tab);
+        return;
+    }
     if let Some(index) = hit_test_item(x, y) {
+        // M7-5：英文组候选（激活英文 Tab 且显示 Tab 行）→ 提交钩子落盘。
+        // 用本帧实际显示的组（自动切英文时 ACTIVE_TAB 可能未同步，但
+        // PAINT_DATA.tab_active 是 compute 写入的当帧状态）。
+        let tab = PAINT_DATA.with_borrow(|d| d.tab_active);
+        let en_bar = PAINT_DATA.with_borrow(|d| d.show_tab_bar);
+        if tab == TabKind::English && en_bar {
+            let preedit = LAST_CTX.with(|c| c.borrow().as_ref().map(|c| c.preedit.clone()));
+            let text = preedit
+                .and_then(|p| crate::english_candidates::suggest(&p).get(index).cloned());
+            if let Some(text) = text {
+                let done = AI_COMMIT.with(|slot| {
+                    slot.borrow().as_ref().map(|f| f(&text)).unwrap_or(false)
+                });
+                if !done {
+                    send_virtual_key(VK_AI_COMMIT_TRIGGER);
+                }
+                crate::debug_log(&format!("英文候选点击提交：{text:?}"));
+            }
+            return;
+        }
         // AI 候选（2026-08-20）：索引落在 AI 起始之后 → 取完整原文（显示
         // 文本可能被缩写截断），交提交钩子（service 写 pending 槽），再回发
         // 回发 Enter 让 TSF 走编辑会话把文本落盘（pending 非空时消费）。
@@ -1528,6 +1683,7 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
                 let m = data.skin.metrics;
                 let rows = data.items.iter().map(|it| it.row).max().unwrap_or(0) + 1;
                 let mid = scale(m.padding_or(BASE_PADDING), dpi)
+                    + data.tab_h
                     + scale(m.preedit_h_or(BASE_PREEDIT_HEIGHT), dpi)
                     + scale(m.row_h_or(BASE_ROW_HEIGHT), dpi) * rows / 2;
                 send_virtual_key(if y < mid { 0x21 } else { 0x22 });
@@ -1869,6 +2025,29 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
             }
         }
 
+        // M7-5 候选服务 Tab 行（有英文候选时显示；preedit 上方）
+        if data.show_tab_bar && data.tab_h > 0 {
+            let tab_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
+            let old_tab = SelectObject(hdc, HGDIOBJ(tab_font.0));
+            let tab_pad = scale(6, dpi);
+            let gap = scale(4, dpi);
+            let rime_w = text_width(hdc, "拼音") + tab_pad * 2;
+            let en_w = text_width(hdc, "英文") + tab_pad * 2;
+            let rime_active = data.tab_active == TabKind::Rime;
+            draw_tab_label(hdc, "拼音", padding, padding, rime_w, data.tab_h, rime_active, &colors);
+            draw_tab_label(
+                hdc,
+                "英文",
+                padding + rime_w + gap,
+                padding,
+                en_w,
+                data.tab_h,
+                !rime_active,
+                &colors,
+            );
+            SelectObject(hdc, old_tab);
+        }
+
         // 预编辑串（小号灰字，第一行）
         let preedit_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
         let old_font = SelectObject(hdc, HGDIOBJ(preedit_font.0));
@@ -1884,7 +2063,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let preedit_w = (rc.right - padding * 2 - mode_badge_w).max(scale(BASE_MIN_WIDTH, dpi));
         let breaks = syllable_breaks(&data.preedit);
         if breaks.is_empty() {
-            draw_line(hdc, &data.preedit, padding, padding, preedit_w, preedit_h);
+            draw_line(hdc, &data.preedit, padding, padding + data.tab_h, preedit_w, preedit_h);
         } else {
             // 含音节分隔符：跳过分隔符本体、逐段交替色 + 1px 竖线占位。
             let preedit_font_h = font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale);
@@ -1896,6 +2075,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 padding,
                 preedit_h,
                 preedit_font_h,
+                data.tab_h,
             );
         }
         // 角标本体：highlight 底色块 + 反色文字（skin.candidate.background 当反色，
@@ -1919,7 +2099,7 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         // 候选行（第二行横排）
         let cand_font = make_font(font_height(BASE_FONT_HEIGHT, dpi, font_scale));
         SelectObject(hdc, HGDIOBJ(cand_font.0));
-        let row_top = padding + preedit_h;
+        let row_top = padding + data.tab_h + preedit_h;
         for item in &data.items {
             // 多行面板：本行顶 = 首行顶 + 行号 × 行高（单行恒 0）。
             let item_top = row_top + item.row * row_h;
@@ -2037,13 +2217,14 @@ unsafe fn draw_preedit_segmented(
     padding: i32,
     preedit_h: i32,
     preedit_font_h: i32,
+    tab_h: i32,
 ) {
     let wide: Vec<u16> = preedit.encode_utf16().collect();
     let n = wide.len();
     let [even_c, odd_c, sep_c] = syllable_segment_colors(colors);
     // 竖线高度 = 字形高度的 1/2 居中；上下各留 25% 空白让分隔与文字区分离。
     let line_half = (preedit_font_h / 2).max(4);
-    let center_y = padding + preedit_h / 2;
+    let center_y = padding + tab_h + preedit_h / 2;
     let (ly0, ly1) = (center_y - line_half, center_y + line_half);
 
     let mut x = padding;
@@ -2119,6 +2300,34 @@ unsafe fn draw_line_utf16(hdc: HDC, wide: &[u16], left: i32, top: i32, right: i3
     );
 }
 
+/// M7-5 候选服务 Tab 标签：激活态高亮底 + 反色文字，非激活态普通文字。
+unsafe fn draw_tab_label(
+    hdc: HDC,
+    text: &str,
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+    active: bool,
+    colors: &crate::skin::CandidateColors,
+) {
+    if active {
+        let hl = CreateSolidBrush(COLORREF(colors.highlight_background));
+        let rect = RECT {
+            left,
+            top,
+            right: left + width,
+            bottom: top + height,
+        };
+        FillRect(hdc, &rect, hl);
+        let _ = DeleteObject(HGDIOBJ(hl.0));
+        SetTextColor(hdc, COLORREF(colors.background));
+    } else {
+        SetTextColor(hdc, COLORREF(colors.label));
+    }
+    draw_line(hdc, text, left + scale(6, GetDpiForSystem()), top, left + width - scale(6, GetDpiForSystem()), height);
+}
+
 unsafe fn draw_line(hdc: HDC, text: &str, left: i32, top: i32, right: i32, height: i32) {
     if text.is_empty() {
         return;
@@ -2143,7 +2352,7 @@ mod tests {
     use super::{
         abbreviate_text, blend_colorref, candidate_source_label, classify_candidate_source,
         mode_badge_text, syllable_breaks, syllable_segment_colors, BackendKind, CandidateSource,
-        PaintData, PositionMode,
+        PaintData, PositionMode, TabKind,
     };
 
     /// 选路器可被显式改写并被 backend_kind() 速读出来。
@@ -2164,6 +2373,9 @@ mod tests {
             is_full_shape: false,
             caps_visual: caps,
             page: super::PageInfo::default(),
+            show_tab_bar: false,
+            tab_active: TabKind::Rime,
+            tab_h: 0,
         }
     }
 

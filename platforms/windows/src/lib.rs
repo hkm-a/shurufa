@@ -7,6 +7,7 @@
 
 mod ai_candidates;
 mod candidate_window;
+mod english_candidates;
 mod candidate_window_d2d;
 mod candidate_window_dcomp;
 mod composition;

@@ -648,9 +648,36 @@ unsafe fn draw_body(
         dc.FillRectangle(&body.rect, &br.background);
     }
 
+    // ===== 候选服务 Tab 行（M7-5；有英文候选时显示）=====
+    if v.show_tab_bar && v.tab_h > 0 {
+        let tab_pad = crate::candidate_window::scale(6, v.dpi) as f32;
+        let gap = crate::candidate_window::scale(4, v.dpi) as f32;
+        let char_w = v.sub_font_h as f32;
+        let rime_w = char_w * 2.0 + tab_pad * 2.0;
+        let en_w = char_w * 2.0 + tab_pad * 2.0;
+        let tab_y = padding;
+        let tab_h = v.tab_h as f32;
+        let rime_active = v.tab_active == crate::candidate_window::TabKind::Rime;
+        let mut rx = padding;
+        if rime_active {
+            dc.FillRectangle(&D2D_RECT_F { left: rx, top: tab_y, right: rx + rime_w, bottom: tab_y + tab_h }, &br.highlight);
+            draw_text(dc, fmt_s, &br.background, "拼音", D2D_RECT_F { left: rx + tab_pad, top: tab_y, right: rx + rime_w - tab_pad, bottom: tab_y + tab_h });
+        } else {
+            draw_text(dc, fmt_s, &br.label, "拼音", D2D_RECT_F { left: rx + tab_pad, top: tab_y, right: rx + rime_w - tab_pad, bottom: tab_y + tab_h });
+        }
+        rx = padding + rime_w + gap;
+        if !rime_active {
+            dc.FillRectangle(&D2D_RECT_F { left: rx, top: tab_y, right: rx + en_w, bottom: tab_y + tab_h }, &br.highlight);
+            draw_text(dc, fmt_s, &br.background, "英文", D2D_RECT_F { left: rx + tab_pad, top: tab_y, right: rx + en_w - tab_pad, bottom: tab_y + tab_h });
+        } else {
+            draw_text(dc, fmt_s, &br.label, "英文", D2D_RECT_F { left: rx + tab_pad, top: tab_y, right: rx + en_w - tab_pad, bottom: tab_y + tab_h });
+        }
+    }
+
     // ===== 预编辑行 =====
     let badge_w = crate::candidate_window::mode_badge_width(v) as f32;
     let preedit_right = (win_w - padding - badge_w).max(padding);
+    let preedit_top = padding + v.tab_h as f32;
     if v.syllable_breaks.is_empty() {
         draw_text(
             dc,
@@ -659,22 +686,22 @@ unsafe fn draw_body(
             &v.preedit,
             D2D_RECT_F {
                 left: padding,
-                top: padding,
+                top: preedit_top,
                 right: preedit_right,
-                bottom: padding + preedit_h,
+                bottom: preedit_top + preedit_h,
             },
         );
     } else {
         // 音节分段（同 GDI/D2D 语义）：分隔符槽位画 1px 竖线，两侧段交替色。
-        draw_preedit_segmented_dcomp(dwrite, dc, fmt_s, br, v, preedit_h, padding);
+        draw_preedit_segmented_dcomp(dwrite, dc, fmt_s, br, v, preedit_h, preedit_top);
     }
     // 右上角模式角标：highlight 底色块 + 反色文字（与 D2D 后端 1:1 对齐）。
     if let Some(text) = v.mode_badge {
         let badge_rect = D2D_RECT_F {
             left: preedit_right,
-            top: padding,
+            top: preedit_top,
             right: win_w - padding,
-            bottom: padding + preedit_h,
+            bottom: preedit_top + preedit_h,
         };
         dc.FillRectangle(&badge_rect, &br.highlight);
         draw_text(dc, fmt_s, &br.background, text, badge_rect);
@@ -686,7 +713,7 @@ unsafe fn draw_body(
     let comment_gap = crate::candidate_window::scale(2, v.dpi) as f32;
     for it in &v.items {
         // 多行面板：行顶随 item.row 偏移（单行恒 0）。
-        let row_top = (v.padding + v.preedit_h) as f32 + it.row as f32 * row_h;
+        let row_top = (v.padding + v.tab_h + v.preedit_h) as f32 + it.row as f32 * row_h;
         let end =
             it.x as f32 + it.label_w as f32 + label_gap + it.text_w as f32 + it.badge_w as f32;
         if it.highlighted {
