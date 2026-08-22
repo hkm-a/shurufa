@@ -46,7 +46,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use ime_ipc::Context;
 
-use crate::skin::{self, ShadowShell, Skin};
+use crate::skin::{self, ShadowShell, Skin, SkinExt};
 
 // 候选条右键菜单的引擎动作钩子（service.rs 在会话初始化时注册；闭包
 // 持有与活动组合相同的 TSF 会话客户端，simulate 才能作用于当前候选页——

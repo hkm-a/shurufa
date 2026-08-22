@@ -28,7 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::candidate_window::{font_height, logical_screen_dim, scale};
-use crate::skin::{self, Skin};
+use crate::skin::{self, Skin, SkinExt};
 
 const TOAST_CLASS: PCWSTR = w!("ShurufaToast");
 /// WM_TIMER 事件 id（wparam 比对用；usize 与 WPARAM 对齐）。

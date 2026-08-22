@@ -24,6 +24,20 @@ internal data class SkinPalette(
     val panelStroke: Int,
     val panelPreviewBg: Int,
     val panelAccentPressed: Int,
+    // v2 全段解析：候选窗背景/高亮/标签/拼音、metrics、shadow。
+    // Android 当前 UI 主要消费 keyboard/candidate/panel 颜色；这些字段先完整
+    // 解析出来供测试与后续面板统一使用，避免“Android 读不到 v2 新增段”。
+    val candidateBackground: Int = 0xFFF2F3F5.toInt(),
+    val candidateHighlight: Int = 0xFF1B9E77.toInt(),
+    val candidateLabel: Int = 0xFF9AA2AB.toInt(),
+    val candidatePreedit: Int = 0xFF9AA2AB.toInt(),
+    val metricsRadius: Int = 8,
+    val metricsFontScale: Float = 1.0f,
+    val metricsOpacity: Float = 1.0f,
+    val metricsScrollbar: Boolean = true,
+    val shadowEnabled: Boolean = false,
+    val shadowRadius: Int = 18,
+    val shadowAlpha: Int = 64,
 ) {
     companion object {
         fun lightDefault() = SkinPalette(
@@ -106,6 +120,24 @@ internal data class SkinPalette(
                         ?: fallback.panelPreviewBg,
                     panelAccentPressed = panel?.let { color(it, "accent_pressed", fallback.panelAccentPressed) }
                         ?: fallback.panelAccentPressed,
+                    candidateBackground = color(candidate, "background", fallback.candidateBackground),
+                    candidateHighlight = color(candidate, "highlight_background", fallback.candidateHighlight),
+                    candidateLabel = color(candidate, "label", fallback.candidateLabel),
+                    candidatePreedit = color(candidate, "preedit", fallback.candidatePreedit),
+                    metricsRadius = variant.optJSONObject("metrics")?.optInt("radius", fallback.metricsRadius)
+                        ?: fallback.metricsRadius,
+                    metricsFontScale = variant.optJSONObject("metrics")?.optDouble("font_scale", fallback.metricsFontScale.toDouble())
+                        ?.toFloat() ?: fallback.metricsFontScale,
+                    metricsOpacity = variant.optJSONObject("metrics")?.optDouble("opacity", fallback.metricsOpacity.toDouble())
+                        ?.toFloat() ?: fallback.metricsOpacity,
+                    metricsScrollbar = variant.optJSONObject("metrics")?.optBoolean("scrollbar", fallback.metricsScrollbar)
+                        ?: fallback.metricsScrollbar,
+                    shadowEnabled = root.optJSONObject("shadow")?.optBoolean("enabled", fallback.shadowEnabled)
+                        ?: fallback.shadowEnabled,
+                    shadowRadius = root.optJSONObject("shadow")?.optInt("radius", fallback.shadowRadius)
+                        ?: fallback.shadowRadius,
+                    shadowAlpha = root.optJSONObject("shadow")?.optInt("alpha", fallback.shadowAlpha)
+                        ?: fallback.shadowAlpha,
                 )
             } catch (_: Exception) {
                 fallback

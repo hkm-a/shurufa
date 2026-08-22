@@ -15,6 +15,7 @@ crate-type = ["cdylib"]
 # FFI crate 与其 build.rs（复制 rime.dll）拖回每个宿主进程的依赖图。
 ime-ipc = { path = "../../core/ime-ipc" }
 windows-ipc = { path = "../windows-ipc" }
+windows-skin = { path = "../windows-skin" }
 shurufa-options = { path = "../../core/options" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

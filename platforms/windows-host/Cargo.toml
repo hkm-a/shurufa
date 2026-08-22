@@ -16,6 +16,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clipboard-store = { path = "../../core/clipboard" }
 ime-ipc = { path = "../../core/ime-ipc" }
 windows-ipc = { path = "../windows-ipc" }
+windows-skin = { path = "../windows-skin" }
 shurufa-options = { path = "../../core/options" }
 sync-core = { path = "../../core/sync" }
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }

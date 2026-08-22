@@ -53,7 +53,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
-use crate::panel::skin::{self, Skin};
+use windows_skin::{self as skin, Skin, SkinExt};
 
 pub const HOTKEY_ID: i32 = 5;
 

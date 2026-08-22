@@ -1097,6 +1097,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-skin"
+version = "0.1.0"
+dependencies = [
+ "csscolorparser",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "coreaudio-rs"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5764,6 +5773,7 @@ dependencies = [
  "windows 0.62.2",
  "windows-ipc",
  "windows-registry",
+ "windows-skin",
 ]
 
 [[package]]
@@ -5849,6 +5859,7 @@ dependencies = [
  "windows-core 0.62.2",
  "windows-ipc",
  "windows-registry",
+ "windows-skin",
 ]
 
 [[package]]
@@ -7867,6 +7878,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
 dependencies = [
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "windows-skin"
+version = "0.1.0"
+dependencies = [
+ "core-skin",
+ "windows 0.62.2",
+ "windows-registry",
 ]
 
 [[package]]

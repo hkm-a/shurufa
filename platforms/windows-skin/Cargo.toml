@@ -1,0 +1,20 @@
+[package]
+name = "windows-skin"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Windows 皮肤装载/缓存与 DWM 外观助手，依赖 core/skin 纯模型"
+
+[lib]
+name = "windows_skin"
+
+[dependencies]
+core-skin = { path = "../../core/skin" }
+windows-registry = "0.6"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }

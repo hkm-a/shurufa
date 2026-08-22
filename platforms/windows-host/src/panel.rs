@@ -5,8 +5,8 @@
 //! 面板与监听器同属一条 UI 线程，状态挂 thread_local。
 //!
 //! 本轮改动摘要（皮肤 v2 / 现代化外观 / 主题热切换）：
-//! - 删除硬编码 COLOR_* 常量；颜色统一来自共享 `skin::Skin`
-//!   （与 TSF 端同一份 skin.rs，经 `#[path]` 引入，按系统 light/dark 变体）。
+//! - 删除硬编码 COLOR_* 常量；颜色统一来自共享皮肤
+//!   （core/skin 纯模型 + windows-skin 装载/DWM，按系统 light/dark 变体）。
 //! - 字号乘 `metrics.font_scale`；`metrics.opacity` < 1 时整体透明；
 //!   `skin::apply_appearance` 应用 Win11 圆角 + 深色边框，`ShadowShell` 画阴影。
 //! - 新增隐藏顶层"心眼"窗口 `ensure_theme_watcher` 接收 WM_SETTINGCHANGE
@@ -39,10 +39,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_PAINT, WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
-// 与 TSF 端共享同一份 skin 解析/DWM 助手源码（该文件不引用任何 crate 专属符号）。
-#[path = "../../windows/src/skin.rs"]
-pub(crate) mod skin;
-use skin::{ShadowShell, Skin};
+// 阶段 4：皮肤纯模型在 core/skin，Windows 专属装载/DWM 在 windows-skin。
+// 这里直接依赖 windows-skin，不再用 #[path] 源码注入。
+use windows_skin::{self as skin, ShadowShell, Skin, SkinExt};
 
 /// 面板一次展示的最大条目数（与数字键 1-9 对应）
 const MAX_ROWS: usize = 9;

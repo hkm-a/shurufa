@@ -41,7 +41,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
-use crate::panel::skin::{self, ShadowShell, Skin};
+use windows_skin::{self as skin, ShadowShell, Skin, SkinExt};
 
 pub const HOTKEY_ID: i32 = 2;
 /// 划词润色热键：Ctrl+Shift+R 抓取前台选区进面板润色，回车覆盖选区。

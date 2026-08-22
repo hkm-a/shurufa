@@ -43,3 +43,45 @@ class SkinPaletteTest {
         assertEquals(fallback, SkinPalette.fromJson("""{"version":1,"dark":{}}""", dark = true, fallback))
     }
 }
+
+    @Test
+    fun v2_metrics_and_shadow_are_parsed() {
+        val skin = SkinPalette.fromJson(
+            """
+            {
+              "version": 2,
+              "light": {
+                "keyboard": { "background": "#112233" },
+                "candidate": {
+                  "text": "#102030",
+                  "background": "#F0F0F0",
+                  "highlight_background": "#D6EBE1",
+                  "label": "#778899",
+                  "preedit": "#AABBCC"
+                },
+                "metrics": {
+                  "radius": 10,
+                  "font_scale": 1.25,
+                  "opacity": 0.9,
+                  "scrollbar": false
+                }
+              },
+              "shadow": { "enabled": true, "radius": 18, "alpha": 64 }
+            }
+            """.trimIndent(),
+            dark = false,
+            fallback = SkinPalette.lightDefault(),
+        )
+
+        assertEquals(0xFFF0F0F0.toInt(), skin.candidateBackground)
+        assertEquals(0xFFD6EBE1.toInt(), skin.candidateHighlight)
+        assertEquals(0xFF778899.toInt(), skin.candidateLabel)
+        assertEquals(0xFFAABBCC.toInt(), skin.candidatePreedit)
+        assertEquals(10, skin.metricsRadius)
+        assertEquals(1.25f, skin.metricsFontScale)
+        assertEquals(0.9f, skin.metricsOpacity)
+        assertEquals(false, skin.metricsScrollbar)
+        assertEquals(true, skin.shadowEnabled)
+        assertEquals(18, skin.shadowRadius)
+        assertEquals(64, skin.shadowAlpha)
+    }

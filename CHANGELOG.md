@@ -41,8 +41,24 @@
   `windows`，只保留 `Request` / `Response` / DTO / 帧编解码。
 - **core/ 平台中立门禁清零**：`check-core-portable.ps1` 基线欠债从 1 降为 0。
 - **CI 新增 `core-portable-check`**：Ubuntu 上用 Linux 原生 target 对
-  `shurufa-options` / `ime-policy` / `ime-ipc` / `clipboard-store` / `sync-core`
-  执行 `cargo check --locked`，真正把“core/ 必须非 Windows 可编译”变成机器门禁。
+  `shurufa-options` / `ime-policy` / `ime-ipc` / `core-skin` /
+  `clipboard-store` / `sync-core` 执行 `cargo check --locked`，
+  真正把“core/ 必须非 Windows 可编译”变成机器门禁。
+
+### 重构（2026-08-22，阶段 4 第 3 批：core/skin 与 windows-skin）
+- **新增 `core/skin`**：纯数据模型/解析（v1/v2、颜色、间距、滚动条），
+  零平台依赖，可直接被 Windows/Android/测试复用。
+- **新增 `platforms/windows-skin`**：Windows 专属的皮肤文件装载/mtime 缓存、
+  DWM 圆角/沉浸式深色/阴影壳；通过 `SkinExt` trait 扩展 `core_skin::Skin`。
+- **删除 `panel.rs:43` 的 `#[path]` 源码注入**：`windows-host` 的
+  `panel.rs` / `ai_panel.rs` / `speech.rs` 改为直接依赖 `windows-skin`；
+  `platforms/windows/src/skin.rs` 退化为 re-export 兼容层。
+- **core-skin 纳入 CI 平台中立检查**，`check-core-portable.ps1` 保持基线 0。
+- **Android `SkinPalette` 补齐 v2 全段解析**：读取 `candidate` 的
+  `background` / `highlight_background` / `label` / `preedit` 与顶层
+  `metrics` / `shadow`，JVM 单测覆盖。
+- 新增 13 项核心解析/滚动条测试、2 项 Windows 缓存测试与 1 项 Android v2
+  解析测试。
 
 ### 工程与治理（2026-08-21）
 - **CI 恢复为可信信号**：此前 main 分支连续 14 次运行全红，README 却声称
