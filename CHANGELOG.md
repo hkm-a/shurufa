@@ -111,6 +111,11 @@
   `csscolorparser`**：`parse_colorref` 同时支持 CSS 颜色名与 hex，
   减少手写进制转换；测试改用真正非法的 `#xyz` 验证回退。
 
+### 重构（2026-08-21，换库周第 14 批：IPC 熔断退避用 backoff）
+- **`shurufa-tsf` IPC 客户端手写冷却常量改用 `backoff::ExponentialBackoff`**：
+  删除 `CIRCUIT_BREAKER_COOLDOWN_MS` 等常量，`note_failure` 推进
+  `next_backoff()`，`note_success` 调用 `reset()`；冷却仍 2s 起步、上限 4s。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除

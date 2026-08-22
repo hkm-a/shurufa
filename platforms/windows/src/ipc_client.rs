@@ -4,6 +4,7 @@
 //! 进程持有一个会话（一个连接）。连接断开（服务崩溃/未启动）时自动重连，
 //! 恢复后重建会话。
 
+use backoff::backoff::Backoff;
 use ime_ipc::pipe::PipeClient;
 use ime_ipc::{decode_response, encode_request, Request, Response};
 use std::path::PathBuf;
@@ -17,14 +18,9 @@ pub struct ImeClient {
     pipe: Option<PipeClient>,
     /// 上次连接尝试失败时刻（用于熔断冷却）
     last_failure: Option<std::time::Instant>,
-    /// 连续失败计数（达到阈值后扩大冷却窗口）
-    consecutive_failures: u32,
+    /// 熔断退避状态：2s 起步，连续失败后按 backoff 扩展（上限 4s）
+    backoff: backoff::ExponentialBackoff,
 }
-
-const CIRCUIT_BREAKER_COOLDOWN_MS: u64 = 2_000;
-/// 连续失败次数超过该阈值后，冷却窗口翻倍至 4s
-const CIRCUIT_BREAKER_BACKOFF_THRESHOLD: u32 = 3;
-const CIRCUIT_BREAKER_COOLDOWN_LONG_MS: u64 = 4_000;
 /// 单次 IPC 读响应超时（ms）：服务端卡死时客户端必须超时降级，
 /// 绝不阻塞宿主 UI 线程（曾致"应用无响应 + 其他输入法失效"）。
 /// 500ms 远低于可感知延迟，且覆盖正常引擎响应（亚毫秒级）。
@@ -63,34 +59,32 @@ impl ImeClient {
         ImeClient {
             pipe: None,
             last_failure: None,
-            consecutive_failures: 0,
+            backoff: backoff::ExponentialBackoff {
+                initial_interval: std::time::Duration::from_millis(2_000),
+                max_interval: std::time::Duration::from_millis(4_000),
+                multiplier: 1.0,
+                max_elapsed_time: None,
+                ..Default::default()
+            },
         }
     }
 
     /// 是否处于熔断冷却期（避免每次按键都重新尝试连接死亡的服务）。
     fn circuit_open(&self) -> bool {
         match self.last_failure {
-            Some(at) => {
-                let cooldown_ms = if self.consecutive_failures >= CIRCUIT_BREAKER_BACKOFF_THRESHOLD
-                {
-                    CIRCUIT_BREAKER_COOLDOWN_LONG_MS
-                } else {
-                    CIRCUIT_BREAKER_COOLDOWN_MS
-                };
-                at.elapsed() < std::time::Duration::from_millis(cooldown_ms)
-            }
+            Some(at) => at.elapsed() < self.backoff.current_interval,
             None => false,
         }
     }
 
     fn note_failure(&mut self) {
         self.last_failure = Some(std::time::Instant::now());
-        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        let _ = self.backoff.next_backoff();
     }
 
     fn note_success(&mut self) {
         self.last_failure = None;
-        self.consecutive_failures = 0;
+        self.backoff.reset();
     }
 
     /// 确保已连接；若服务未就绪则尝试拉起算法服务并**单次**连接。
