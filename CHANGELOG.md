@@ -68,6 +68,11 @@
   `tauri-plugin-single-instance`**：删除 `is_single_instance()` 与启动早退，
   由插件保证单实例；重复启动时聚焦已有主窗口。
 
+### 重构（2026-08-21，换库周第 6 批：arboard 剪贴板）
+- **`shurufa-settings` 手写 GlobalAlloc/CF_UNICODETEXT 剪贴板写入改用
+  `arboard`**：`write_clipboard_text_impl` 删除 Win32 内存句柄样板，
+  直接 `Clipboard::set_text`。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除

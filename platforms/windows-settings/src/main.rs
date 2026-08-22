@@ -754,42 +754,10 @@ fn launch_desktop_target(kind: String, target: String) -> Result<String, String>
     }
 }
 
-/// 写系统剪贴板（UTF-16 CF_UNICODETEXT；M9-3 计算器结果复制）。
+/// 写系统剪贴板文本（M9-3 计算器结果复制）。
 fn write_clipboard_text_impl(text: String) -> Result<(), String> {
-    use windows::Win32::Foundation::{GlobalFree, HANDLE};
-    use windows::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
-    };
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-    // CF_UNICODETEXT = 13（Ole 模块常量，裸值避免模块差异）
-    const CF_UNICODETEXT: u32 = 13;
-    unsafe {
-        if !OpenClipboard(None).is_ok() {
-            return Err("打开剪贴板失败".to_owned());
-        }
-        let result = (|| -> Result<(), String> {
-            if !EmptyClipboard().is_ok() {
-                return Err("清空剪贴板失败".to_owned());
-            }
-            let bytes = (text.encode_utf16().count() + 1) * 2;
-            let handle = GlobalAlloc(GMEM_MOVEABLE, bytes)
-                .map_err(|error| format!("分配剪贴板内存失败：{error}"))?;
-            let ptr = GlobalLock(handle) as *mut u16;
-            if ptr.is_null() {
-                let _ = GlobalFree(Some(handle));
-                return Err("锁定剪贴板内存失败".to_owned());
-            }
-            for (i, unit) in text.encode_utf16().chain(std::iter::once(0)).enumerate() {
-                *ptr.add(i) = unit;
-            }
-            let _ = GlobalUnlock(handle);
-            let _ = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0)))
-                .map_err(|error| format!("写入剪贴板数据失败：{error}"))?;
-            Ok(())
-        })();
-        let _ = CloseClipboard();
-        result
-    }
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
