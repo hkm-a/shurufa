@@ -45,6 +45,12 @@
   `clipboard-store` / `sync-core` 执行 `cargo check --locked`，
   真正把“core/ 必须非 Windows 可编译”变成机器门禁。
 
+### 验收（2026-08-23，Android 模拟器冒烟）
+- 1.8.0/40 debug APK（含阶段4第4批四样依赖与 DataStore 版 KeyboardPrefs）
+  在 emulator-5554 实测：安装/启动无崩溃；启用输入法后 `keyboard_prefs
+  .preferences_pb` 落盘（DataStore 迁移路径在真设备执行）；键盘渲染正常，
+  按键被 IME 截获，`ni`→你/呢/…、`nihao`→你好（含 emoji 候选）端到端通过。
+
 ### 修复与验收（2026-08-23，简拼开关实机验收）
 - **简拼开关在隔离环境完成实测**（独立 APPDATA + rime_deployer 预编译 +
   `algo --once`）：开 → `lw` 出另外/论文/礼物（前端注入）；关 →
