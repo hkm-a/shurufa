@@ -48,6 +48,12 @@
   favorites/sync_activity/app_shortcuts 的 load_from/save_to 全部改为调用
   同一实现；保留各自的 pretty/compact 与既有原子替换语义。
 
+### 重构（2026-08-21，换库周第 3 批：clap CLI）
+- **`shurufa-host` 手写 CLI 解析改用 `clap 4 derive`**：删除按 `args[0]`
+  手工 match 和 `parse_arg`，全部子命令（run/supervise/status/list/search/
+  clip-* / ai / chat / pair* / dict* / retention / 调试命令）改为声明式
+  `Parser + Subcommand`，自动生成帮助、参数校验与 `--help`。
+
 ### 修复（2026-08-21）
 - **辅码检字（uU 部件反查）多部件码完全失效**：`recognizer/patterns/radical_lookup`
   为 `^uU[a-z]+$` 不含撇号，而 `radical_pinyin.schema.yaml` 的 algebra 自 c12a576

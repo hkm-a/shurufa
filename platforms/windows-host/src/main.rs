@@ -19,6 +19,7 @@ mod sync;
 #[cfg(debug_assertions)]
 mod tsf_probe;
 
+use clap::{Parser, Subcommand};
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore, RetentionPolicy};
 use std::path::PathBuf;
 
@@ -74,11 +75,100 @@ fn open_store() -> ClipboardStore {
     }
 }
 
+#[derive(Parser)]
+#[command(name = "shurufa-host", about = "Shurufa 桌面常驻进程")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 启动剪贴板监听（常驻 worker）
+    Run,
+    /// 常驻监管：看护 worker，崩溃自动重启
+    Supervise,
+    /// 查看监管与运行状态
+    Status,
+    /// 停止 supervisor
+    Stop,
+    /// 最近 N 条历史（默认 20）
+    List { n: Option<u32> },
+    /// 搜索文本与文件名
+    Search { query: String },
+    /// search 同义别名（供脚本用）
+    #[command(name = "clip-search")]
+    ClipSearch { query: String },
+    /// 跨设备搜索（8 秒聚合）
+    #[command(name = "clip-remote-search")]
+    ClipRemoteSearch { query: String },
+    /// Agnes 一次性帮写（不弹面板）
+    Chat { prompt: String },
+    /// 唤起 AI 帮写面板（后台服务常驻时）
+    Ai { action: String },
+    /// 置顶
+    Pin { id: u32 },
+    /// 取消置顶
+    Unpin { id: u32 },
+    /// 删除单条
+    Delete { id: u32 },
+    /// 把条目写回剪贴板
+    Copy { id: u32 },
+    /// 写入开机自启（HKCU Run）
+    InstallAutostart,
+    /// 移除开机自启
+    UninstallAutostart,
+    /// 清空未置顶记录
+    Clear,
+    /// 发起配对（控制台确认码交互）
+    Pair { addr: String },
+    /// 设置中心配对向导发起端（文件确认）
+    #[command(name = "pair-ui")]
+    PairUi { addr: String },
+    /// 列出已配对设备
+    Devices,
+    /// 取消配对
+    Unpair { fp: String },
+    /// 配置或关闭自托管同步中继
+    Relay { value: String },
+    /// 更新自托管云词库
+    #[command(name = "dict-update")]
+    DictUpdate { url: String },
+    /// 重新部署：重建二进制词典（方案/词库改动后）
+    Deploy,
+    /// 回滚词库（默认上一代）
+    #[command(name = "dict-rollback")]
+    DictRollback {
+        /// 回滚到指定版本或内置
+        #[arg(long)]
+        revision: Option<String>,
+    },
+    /// 列出本地可回滚的历史版本
+    #[command(name = "dict-history")]
+    DictHistory,
+    /// 打印当前词库版本
+    #[command(name = "dict-current")]
+    DictCurrent,
+    /// 立即执行留存清理
+    Retention,
+    #[cfg(debug_assertions)]
+    #[command(name = "test-set-image")]
+    TestSetImage {
+        width: Option<u32>,
+        height: Option<u32>,
+    },
+    #[cfg(debug_assertions)]
+    #[command(name = "test-inspect-image")]
+    TestInspectImage,
+    #[cfg(debug_assertions)]
+    #[command(name = "tsf-native-probe")]
+    TsfNativeProbe,
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let cmd = args.first().map(String::as_str).unwrap_or("help");
-    match cmd {
-        "run" => {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Run => {
             // 崩溃必须留痕：面板/监听均为回调驱动，控制台通常不可见
             hide_own_console();
             // 单实例强制：同一时刻只允许一个 worker。已有实例（如未走
@@ -114,80 +204,55 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        "supervise" => {
+        Command::Supervise => {
             // 登录自启动进入 supervisor；独占控制台时立即隐藏，避免用户看到黑窗口。
             hide_own_console();
             supervis::supervise()
         }
-        "status" => supervis::cmd_status(),
-        "stop" => supervis::cmd_stop(),
-        "list" => {
-            let n = parse_arg(&args, 1).unwrap_or(20);
+        Command::Status => supervis::cmd_status(),
+        Command::Stop => supervis::cmd_stop(),
+        Command::List { n } => {
+            let n = n.unwrap_or(20);
             print_entries(&open_store().list(n, 0).unwrap_or_default());
         }
-        "search" => {
-            let Some(query) = args.get(1) else {
-                eprintln!("用法：shurufa-host search <关键词>");
-                std::process::exit(2);
-            };
-            print_entries(&open_store().search(query, 50).unwrap_or_default());
+        Command::Search { query } => {
+            print_entries(&open_store().search(&query, 50).unwrap_or_default());
         }
-        // clip-search 只是 search 的别名，供 AI/脚本以语义更清晰的名称调用本机历史
-        "clip-search" => {
-            let Some(query) = args.get(1) else {
-                eprintln!("用法：shurufa-host clip-search <关键词>");
-                std::process::exit(2);
-            };
-            print_entries(&open_store().search(query, 50).unwrap_or_default());
+        Command::ClipSearch { query } => {
+            print_entries(&open_store().search(&query, 50).unwrap_or_default());
         }
-        "clip-remote-search" => {
-            let Some(query) = args.get(1) else {
-                eprintln!("用法：shurufa-host clip-remote-search <关键词>");
-                std::process::exit(2);
-            };
-            sync::cli_remote_search(query);
+        Command::ClipRemoteSearch { query } => {
+            sync::cli_remote_search(&query);
         }
-        "ai" => {
-            let Some(action) = args.get(1) else {
-                eprintln!(
-                    "用法：shurufa-host ai <show>（唤起 AI 帮写面板；划词润色/翻译请用热键 Ctrl+Shift+R / Ctrl+Shift+T）"
-                );
-                std::process::exit(2);
-            };
-            match action.as_str() {
-                "show" => {
-                    use windows::Win32::Foundation::{LPARAM, WPARAM};
-                    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
-                    let class = windows::core::w!("ShurufaAiPanel");
-                    match unsafe { FindWindowW(class, None) } {
-                        Ok(hwnd) => {
-                            let _ = unsafe {
-                                PostMessageW(
-                                    Some(hwnd),
-                                    ai_panel::WM_AI_EXTERNAL_SHOW,
-                                    WPARAM(0),
-                                    LPARAM(0),
-                                )
-                            };
-                            println!("已唤起 AI 帮写面板");
-                        }
-                        Err(_) => {
-                            eprintln!("AI 面板尚未创建（后台服务未运行？先执行 start-service）");
-                            std::process::exit(1);
-                        }
+        Command::Ai { action } => match action.as_str() {
+            "show" => {
+                use windows::Win32::Foundation::{LPARAM, WPARAM};
+                use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+                let class = windows::core::w!("ShurufaAiPanel");
+                match unsafe { FindWindowW(class, None) } {
+                    Ok(hwnd) => {
+                        let _ = unsafe {
+                            PostMessageW(
+                                Some(hwnd),
+                                ai_panel::WM_AI_EXTERNAL_SHOW,
+                                WPARAM(0),
+                                LPARAM(0),
+                            )
+                        };
+                        println!("已唤起 AI 帮写面板");
+                    }
+                    Err(_) => {
+                        eprintln!("AI 面板尚未创建（后台服务未运行？先执行 start-service）");
+                        std::process::exit(1);
                     }
                 }
-                other => {
-                    eprintln!("未知动作：{other}（仅支持 show）");
-                    std::process::exit(2);
-                }
             }
-        }
-        "chat" => {
-            let Some(prompt) = args.get(1) else {
-                eprintln!("用法：shurufa-host chat <提示词>  （走 Agnes，AI 帮写同款通道）");
+            other => {
+                eprintln!("未知动作：{other}（仅支持 show）");
                 std::process::exit(2);
-            };
+            }
+        },
+        Command::Chat { prompt } => {
             let key = std::env::var("AGNES_API_KEY")
                 .unwrap_or_default()
                 .trim()
@@ -196,7 +261,7 @@ fn main() {
                 eprintln!("缺少 AGNES_API_KEY（系统环境变量）。key 不落盘、不入日志。");
                 std::process::exit(1);
             }
-            match ai_panel::call_agnes(&key, prompt, ai_panel::SYSTEM_PROMPT) {
+            match ai_panel::call_agnes(&key, &prompt, ai_panel::SYSTEM_PROMPT) {
                 Ok(draft) => println!("{draft}"),
                 Err(e) => {
                     eprintln!("请求失败：{e}");
@@ -204,29 +269,19 @@ fn main() {
                 }
             }
         }
-        "pin" | "unpin" => {
-            let Some(id) = parse_arg(&args, 1) else {
-                eprintln!("用法：shurufa-host {cmd} <id>");
-                std::process::exit(2);
-            };
-            let ok = open_store()
-                .set_pinned(id as i64, cmd == "pin")
-                .unwrap_or(false);
+        Command::Pin { id } => {
+            let ok = open_store().set_pinned(id as i64, true).unwrap_or(false);
             println!("{}", if ok { "已更新" } else { "条目不存在" });
         }
-        "delete" => {
-            let Some(id) = parse_arg(&args, 1) else {
-                eprintln!("用法：shurufa-host delete <id>");
-                std::process::exit(2);
-            };
+        Command::Unpin { id } => {
+            let ok = open_store().set_pinned(id as i64, false).unwrap_or(false);
+            println!("{}", if ok { "已更新" } else { "条目不存在" });
+        }
+        Command::Delete { id } => {
             let ok = open_store().delete(id as i64).unwrap_or(false);
             println!("{}", if ok { "已删除" } else { "条目不存在" });
         }
-        "copy" => {
-            let Some(id) = parse_arg(&args, 1) else {
-                eprintln!("用法：shurufa-host copy <id>");
-                std::process::exit(2);
-            };
+        Command::Copy { id } => {
             let store = open_store();
             match store.get(id as i64) {
                 Ok(Some(entry)) => match paste::copy_entry_to_clipboard(&store, &entry) {
@@ -240,98 +295,44 @@ fn main() {
                 _ => println!("条目不存在"),
             }
         }
-        "install-autostart" => match install_autostart() {
+        Command::InstallAutostart => match install_autostart() {
             Ok(cmd) => println!("已写入开机自启（HKCU Run）：{cmd}"),
             Err(e) => {
                 eprintln!("写入自启失败：{e}");
                 std::process::exit(1);
             }
         },
-        "uninstall-autostart" => match uninstall_autostart() {
+        Command::UninstallAutostart => match uninstall_autostart() {
             Ok(()) => println!("已移除开机自启"),
             Err(e) => {
                 eprintln!("移除自启失败：{e}");
                 std::process::exit(1);
             }
         },
-        "clear" => {
+        Command::Clear => {
             let n = open_store().clear_unpinned().unwrap_or(0);
             println!("已清空 {n} 条未置顶记录");
         }
-        "pair" => {
-            let Some(addr) = args.get(1) else {
-                eprintln!("用法：shurufa-host pair <对方IP[:端口]>");
-                std::process::exit(2);
-            };
-            sync::cli_pair(addr);
-        }
-        "pair-ui" => {
-            let Some(addr) = args.get(1) else {
-                eprintln!("用法：shurufa-host pair-ui <对方IP[:端口]>（设置中心配对向导发起端）");
-                std::process::exit(2);
-            };
-            sync::cli_pair_ui(addr);
-        }
-        "devices" => sync::cli_devices(),
-        "unpair" => {
-            let Some(fp) = args.get(1) else {
-                eprintln!("用法：shurufa-host unpair <指纹前缀>");
-                std::process::exit(2);
-            };
-            sync::cli_unpair(fp);
-        }
-        "relay" => {
-            let Some(value) = args.get(1) else {
-                eprintln!("用法：shurufa-host relay <中继主机:端口|off>");
-                std::process::exit(2);
-            };
-            sync::cli_relay(value);
-        }
-        "dict-update" => {
-            let Some(url) = args.get(1) else {
-                eprintln!("用法：shurufa-host dict-update <HTTPS 词库清单地址>");
-                std::process::exit(2);
-            };
-            dict_update::cli_update(url);
-        }
-        "deploy" => dict_update::cli_deploy(),
-        "dict-rollback" => {
-            // 支持 `dict-rollback --revision <rev>` 回滚到任意本地快照中的版本；
-            // 不带参数时保持上一代行为。
-            let mut revision: Option<&str> = None;
-            let mut i = 1;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--revision" => {
-                        let Some(value) = args.get(i + 1) else {
-                            eprintln!(
-                                "用法：shurufa-host dict-rollback [--revision <版本号|内置>]"
-                            );
-                            std::process::exit(2);
-                        };
-                        revision = Some(value.as_str());
-                        i += 2;
-                    }
-                    other => {
-                        eprintln!("未知参数：{other}\n用法：shurufa-host dict-rollback [--revision <版本号|内置>]");
-                        std::process::exit(2);
-                    }
-                }
-            }
-            dict_update::cli_rollback(revision);
-        }
-        "dict-current" => dict_update::cli_current(),
-        "dict-history" => dict_update::cli_history(),
-        "retention" => {
+        Command::Pair { addr } => sync::cli_pair(&addr),
+        Command::PairUi { addr } => sync::cli_pair_ui(&addr),
+        Command::Devices => sync::cli_devices(),
+        Command::Unpair { fp } => sync::cli_unpair(&fp),
+        Command::Relay { value } => sync::cli_relay(&value),
+        Command::DictUpdate { url } => dict_update::cli_update(&url),
+        Command::Deploy => dict_update::cli_deploy(),
+        Command::DictRollback { revision } => dict_update::cli_rollback(revision.as_deref()),
+        Command::DictCurrent => dict_update::cli_current(),
+        Command::DictHistory => dict_update::cli_history(),
+        Command::Retention => {
             let n = open_store()
                 .apply_retention(&RetentionPolicy::default())
                 .unwrap_or(0);
             println!("清理 {n} 条过期记录");
         }
         #[cfg(debug_assertions)]
-        "test-set-image" => {
-            let width = parse_arg(&args, 1).unwrap_or(41);
-            let height = parse_arg(&args, 2).unwrap_or(29);
+        Command::TestSetImage { width, height } => {
+            let width = width.unwrap_or(41);
+            let height = height.unwrap_or(29);
             if listener::request_test_image(width, height) {
                 println!("已请求常驻进程写入测试图片剪贴板：{width}x{height}");
             } else {
@@ -340,7 +341,7 @@ fn main() {
             }
         }
         #[cfg(debug_assertions)]
-        "test-inspect-image" => match listener::inspect_test_image() {
+        Command::TestInspectImage => match listener::inspect_test_image() {
             Some((width, height)) => println!("图片={width}x{height}"),
             None => {
                 eprintln!("常驻进程无法读取当前位图剪贴板");
@@ -348,38 +349,10 @@ fn main() {
             }
         },
         #[cfg(debug_assertions)]
-        "tsf-native-probe" => match tsf_probe::run() {
+        Command::TsfNativeProbe => match tsf_probe::run() {
             Ok(text) => println!("原生编辑控件 TSF 验收通过：{text}"),
             Err(error) => exit_with_error(&format!("原生编辑控件 TSF 验收失败：{error}")),
         },
-        _ => {
-            println!(
-                "用法：shurufa-host <子命令>\n\
-                 \x20 run             启动剪贴板监听（常驻 worker）\n\
-                 \x20 supervise       常驻监管：看护 worker，崩溃自动重启\n\
-                 \x20 status          查看监管与运行状态\n\
-                 \x20 stop            停止 supervisor\n\
-                 \x20 list [N]        最近 N 条历史（默认 20）\n\
-                 \x20 search <关键词>  搜索文本与文件名\n\
-                 \x20 clip-search <关键词>     search 同义别名（供脚本用）\n\
-                 \x20 clip-remote-search <关键词> 跨设备搜索（8 秒聚合）\n\
-                 \x20 chat <提示词>     Agnes 一次性帮写（不弹面板）\n\
-                 \x20 ai <show>       唤起 AI 帮写面板（后台服务常驻时）\n\
-                 \x20 pair <对方IP>    发起配对（控制台确认码交互）\n\
-                 \x20 pair-ui <对方IP> 设置中心配对向导发起端（文件确认）\n\
-                 \x20 pin/unpin <id>  置顶/取消置顶\n\
-                 \x20 copy <id>       把条目写回剪贴板\n\
-                 \x20 delete <id>     删除单条\n\
-                 \x20 clear           清空未置顶记录\n\
-                 \x20 retention       立即执行留存清理
-                 \x20 relay <地址|off> 配置或关闭自托管同步中继
-                 \x20 dict-update <HTTPS地址> 更新自托管云词库
-                 \x20 deploy          重新部署：重建二进制词典（方案/词库改动后）
-                 \x20 dict-rollback [--revision <版本号|内置>] 回滚词库（默认上一代）
-                 \x20 dict-history     列出本地可回滚的历史版本
-                 \x20 dict-current    打印当前词库版本"
-            );
-        }
     }
 }
 
@@ -430,10 +403,6 @@ fn hide_own_console() {
 
 fn should_hide_console(process_count: u32) -> bool {
     process_count == 1
-}
-
-fn parse_arg(args: &[String], idx: usize) -> Option<u32> {
-    args.get(idx)?.parse().ok()
 }
 
 fn print_entries(entries: &[ClipEntry]) {

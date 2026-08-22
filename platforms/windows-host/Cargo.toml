@@ -10,6 +10,7 @@ name = "shurufa-host"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 clipboard-store = { path = "../../core/clipboard" }
 ime-ipc = { path = "../../core/ime-ipc" }
 shurufa-options = { path = "../../core/options" }
