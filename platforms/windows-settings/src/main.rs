@@ -1926,7 +1926,7 @@ async fn set_input_scheme(scheme: String) -> Result<(), String> {
 
 /// 直连算法服务发一个请求并取回应答；失败返回 None（服务未启动等）。
 fn algo_rpc(request: &ime_ipc::Request) -> Option<ime_ipc::Response> {
-    use ime_ipc::pipe::PipeClient;
+    use windows_ipc::pipe::PipeClient;
     let client = PipeClient::connect().ok()?;
     let frame = ime_ipc::encode_request(request).ok()?;
     client.write_frame(&frame).ok()?;

@@ -48,8 +48,8 @@ const ALGO_GRACE_PERIOD: Duration = Duration::from_secs(30);
 /// 健康探针：连接算法服务管道，发一个轻量请求并在超时预算内读到合法应答。
 /// 任何一环失败（连不上 / 写不进 / 读超时 / 应答非法）都视为不健康。
 fn algo_health_check() -> bool {
-    use ime_ipc::pipe::PipeClient;
     use ime_ipc::{decode_response, encode_request, Request};
+    use windows_ipc::pipe::PipeClient;
     let Ok(client) = PipeClient::connect() else {
         return false;
     };

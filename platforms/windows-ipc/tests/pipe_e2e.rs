@@ -9,8 +9,8 @@ use std::process::{Child, Command};
 use std::thread;
 use std::time::Duration;
 
-use ime_ipc::pipe::PipeClient;
 use ime_ipc::{decode_response, encode_request, Request, Response};
+use windows_ipc::pipe::PipeClient;
 
 fn repo_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

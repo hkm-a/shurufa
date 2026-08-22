@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::time::Duration;
 
-use ime_ipc::pipe::{PipeServer, PIPE_NAME};
 use ime_policy::{JianpinIndex, MruStore};
+use windows_ipc::pipe::{PipeServer, PIPE_NAME};
 
 fn log(msg: &str) {
     eprintln!("[algo] {msg}");
@@ -330,7 +330,7 @@ fn run_service() -> ! {
         // 管道实例，连接处理在独立线程中进行，避免首个宿主阻塞全部后续宿主。
         let scheme_slot = current_scheme.clone();
         std::thread::spawn(move || {
-            ime_ipc::server::serve_connection(
+            windows_ipc::server::serve_connection(
                 &server,
                 move || create_session_with_scheme(engine, &scheme_slot),
                 decorate_process_key,

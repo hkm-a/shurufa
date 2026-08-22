@@ -1,7 +1,7 @@
 //! 命名管道传输：服务端（shurufa-algo 内）与客户端（TSF 内）的收发原语。
 //!
 //! 用 Windows 消息模式管道：每次 WriteFile 是一条消息，每次 ReadFile 收一条
-//! 完整消息，天然一帧一帧对齐。协议层仍保留长度前缀（[crate::encode_*]），
+//! 完整消息，天然一帧一帧对齐。协议层仍保留长度前缀（[ime_ipc::encode_*]），
 //! 便于将来切换为字节流模式或跨进程复用。
 
 use std::io;
@@ -27,7 +27,7 @@ use windows::Win32::System::Pipes::{
 pub const PIPE_NAME: &str = r"\\.\pipe\shurufa-algo";
 
 /// 每帧最大字节（候选最多 8 页 × 10 条，文本 UTF-8 足够）。
-const MAX_FRAME: u32 = crate::MAX_FRAME_BYTES as u32;
+const MAX_FRAME: u32 = ime_ipc::MAX_FRAME_BYTES as u32;
 
 type IoResult<T> = Result<T, io::Error>;
 

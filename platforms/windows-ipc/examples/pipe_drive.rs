@@ -1,12 +1,12 @@
 //! 实机管道驱动：连接运行中的 shurufa-algo 服务，模拟键序并打印候选。
-//! 用法：cargo run -p ime-ipc --example pipe_drive -- hello
+//! 用法：cargo run -p windows-ipc --example pipe_drive -- hello
 //! 多参数依次模拟（每组前自动 Escape 清空）。
 //! 参数以 `pk:` 开头时改为逐键 ProcessKey 喂入（走真实按键路径，
 //! 候选窗装饰逻辑只在 ProcessKey 应答上生效），如 `pk:hello`。
 //! 参数以 `pg:N` 开头时在当前组合上连续下翻 N 页并打印每页候选。
-use ime_ipc::pipe::PipeClient;
 use ime_ipc::{decode_response, encode_request, Request, Response};
 use std::io::{self, Write};
+use windows_ipc::pipe::PipeClient;
 
 fn send(client: &PipeClient, req: &Request) -> Response {
     let bytes = encode_request(req).expect("编码请求失败");

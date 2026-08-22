@@ -4,7 +4,30 @@ use ime_bridge::Session;
 use ime_policy::{is_overlong_composition, note_commit, note_key, GLOBAL_ASCII};
 
 use crate::pipe::PipeServer;
-use crate::{decode_request, encode_response, Request, Response};
+use ime_ipc::{decode_request, encode_response, Request, Response};
+
+/// 把 ime_bridge 上下文（含引擎侧生命周期内的 C 字符串）复制为可序列化的 DTO。
+fn context_from_bridge(ctx: &ime_bridge::Context) -> ime_ipc::Context {
+    ime_ipc::Context {
+        preedit: ctx.preedit.clone(),
+        candidates: ctx
+            .candidates
+            .iter()
+            .map(|c| ime_ipc::Candidate {
+                text: c.text.clone(),
+                comment: c.comment.clone(),
+            })
+            .collect(),
+        highlighted: ctx.highlighted,
+        cursor_pos: ctx.cursor_pos,
+        page_no: ctx.page_no,
+        page_size: ctx.page_size,
+        is_last_page: ctx.is_last_page,
+        // 状态位需要会话访问，此处没有 session，置默认；由本函数调用方填充
+        is_ascii: false,
+        is_full_shape: false,
+    }
+}
 
 /// 处理一个客户端连接：循环读取请求、基于会话执行、写回应答。
 /// `create_session` 可在会话丢失时重建（引擎由调用方持有）。
@@ -101,11 +124,11 @@ fn handle_request(
                     return Response::ProcessKey {
                         eaten: false,
                         commit: None,
-                        context: crate::Context::default(),
+                        context: ime_ipc::Context::default(),
                     };
                 }
             };
-            let mut context = crate::context_from_bridge(&s.context());
+            let mut context = context_from_bridge(&s.context());
             let (is_ascii, is_full_shape, _) = s.status_bits();
             context.is_ascii = is_ascii;
             context.is_full_shape = is_full_shape;
@@ -120,7 +143,7 @@ fn handle_request(
             }
         }
         Request::Commit => Response::Commit(s.commit()),
-        Request::Context => Response::Context(crate::context_from_bridge(&s.context())),
+        Request::Context => Response::Context(context_from_bridge(&s.context())),
         Request::Simulate(keys) => Response::Simulate(s.simulate(&keys)),
         Request::GetOption(name) => {
             // ascii_mode 是全局态：返回全局值（会话值可能滞后未同步）

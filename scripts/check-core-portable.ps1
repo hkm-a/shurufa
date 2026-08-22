@@ -10,9 +10,9 @@
 # 超长组合策略的 Windows 专属 crate，导致 Android 只能在 rimejni 里重写一份更
 # 弱的按键路径，同一个 AI 跳过逻辑的 bug 只修了 Windows 一端。
 #
-# 实现说明：这里做的是 Cargo.toml 静态检查而非真正的 `cargo check --target
-# <非 Windows>`。后者更彻底但需要在 CI 上装交叉 target 与链接器；静态检查零成本、
-# 秒级完成，且足以拦住「随手加一个 windows 依赖」这个真实的退化路径。
+# 实现说明：这里做的是 Cargo.toml 静态检查，秒级拦住「随手加一个 windows
+# 依赖」的退化路径；真正的非 Windows target 编译由 CI 的 core-portable-check
+# 作业（Linux 原生 `cargo check -p ...`）兜底。
 
 [CmdletBinding()]
 param()
@@ -26,13 +26,9 @@ $platformCrates = @('windows', 'windows-sys', 'windows-core', 'windows-registry'
 
 # 既有违规基线。**只允许缩短，不允许加长。**
 # 每一项都必须写明欠债内容与偿还方向，删除一项即代表该债已还清。
-$baseline = @{
-    # ime-ipc 仍持有 Windows 命名管道传输（pipe.rs / server.rs 依赖 windows）。
-    # 策略部分（全局中英、超长组合、统计、MRU、简拼）已下沉 core/ime-policy；
-    # 传输部分待拆为 platforms/windows-ipc。偿还前 core/ime-ipc 无法在
-    # 非 Windows target 通过 cargo check，Android 仍无法复用其按键策略。
-    'ime-ipc' = 'Windows 命名管道传输仍留在 core；待拆为 platforms/windows-ipc'
-}
+# 2026-08-22：ime-ipc 的 Windows 管道/服务端已拆到 platforms/windows-ipc，
+# core/ 下已无无条件平台依赖，基线清空。
+$baseline = @{}
 
 $violations = @()
 $baselineHit = @()

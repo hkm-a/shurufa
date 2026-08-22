@@ -1,14 +1,8 @@
-//! librime 独立算法服务与 TSF 客户端之间的 IPC。
+//! 跨平台 IPC 协议与 DTO：librime 算法服务与各前端（TSF/Android）之间的
+//! 请求/应答、上下文快照与帧编解码。
 //!
-//! 目标（架构 M6 前置）：把 librime 引擎从每个 TSF 宿主进程内移出，放进单独
-//! 的算法服务进程（shurufa-algo）。TSF 客户端经命名管道向其转发按键与读取
-//! 上下文。好处：
-//!  - 引擎与用户词库（leveldb LOCK）只在**一个**进程里加载，消除多宿主进程
-//!    抢锁导致的“造词/调频只在抢到锁的进程生效”。
-//!  - 候选窗/状态由服务侧集中管理，宿主反复进出不重建引擎。
-
-pub mod pipe;
-pub mod server;
+//! 阶段 4 拆分后，本 crate 不包含任何平台传输实现；Windows 命名管道
+//! `pipe` / 算法服务接入 `server` 位于 `platforms/windows-ipc`。
 
 use serde::{Deserialize, Serialize};
 
@@ -155,29 +149,6 @@ pub fn decode_request(data: &[u8]) -> Result<Request, String> {
 
 pub fn decode_response(data: &[u8]) -> Result<Response, String> {
     serde_json::from_slice(data).map_err(|e| e.to_string())
-}
-
-/// 把 ime_bridge 上下文（含引擎侧生命周期内的 C 字符串）复制为可序列化的 DTO。
-pub fn context_from_bridge(ctx: &ime_bridge::Context) -> Context {
-    Context {
-        preedit: ctx.preedit.clone(),
-        candidates: ctx
-            .candidates
-            .iter()
-            .map(|c| Candidate {
-                text: c.text.clone(),
-                comment: c.comment.clone(),
-            })
-            .collect(),
-        highlighted: ctx.highlighted,
-        cursor_pos: ctx.cursor_pos,
-        page_no: ctx.page_no,
-        page_size: ctx.page_size,
-        is_last_page: ctx.is_last_page,
-        // 状态位需要会话访问，此处没有 session，置默认；由 server.rs 填充
-        is_ascii: false,
-        is_full_shape: false,
-    }
 }
 
 /// 超长组合防护判定（weasel#649 同类，2026-08-16）：实现已下沉到

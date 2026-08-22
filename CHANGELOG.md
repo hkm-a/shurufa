@@ -34,6 +34,16 @@
 - 新增 13 项单元测试（全局中英、超长组合、MRU、简拼），全工作区
   fmt/clippy/ime-policy/ime-ipc/algo 验证通过。
 
+### 重构（2026-08-22，阶段 4 第 2 批：ime-ipc 拆出 Windows 传输层）
+- **新增 `platforms/windows-ipc`**：Windows 命名管道 `pipe`、算法服务接入
+  `server`、管道 e2e 测试与示例全部从 `core/ime-ipc` 移出。
+- **`core/ime-ipc` 变成纯跨平台协议 crate**：不再依赖 `ime-bridge` /
+  `windows`，只保留 `Request` / `Response` / DTO / 帧编解码。
+- **core/ 平台中立门禁清零**：`check-core-portable.ps1` 基线欠债从 1 降为 0。
+- **CI 新增 `core-portable-check`**：Ubuntu 上用 Linux 原生 target 对
+  `shurufa-options` / `ime-policy` / `ime-ipc` / `clipboard-store` / `sync-core`
+  执行 `cargo check --locked`，真正把“core/ 必须非 Windows 可编译”变成机器门禁。
+
 ### 工程与治理（2026-08-21）
 - **CI 恢复为可信信号**：此前 main 分支连续 14 次运行全红，README 却声称
   「clippy 与 fmt 零告警、约 240 项测试全绿」。实测四项声明全部不成立

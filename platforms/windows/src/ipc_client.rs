@@ -5,10 +5,10 @@
 //! 恢复后重建会话。
 
 use backoff::backoff::Backoff;
-use ime_ipc::pipe::PipeClient;
 use ime_ipc::{decode_response, encode_request, Request, Response};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use windows_ipc::pipe::PipeClient;
 
 /// 单个 TSF 宿主的 IPC 客户端。`connect` 是惰性的：首次使用时才建连。
 ///

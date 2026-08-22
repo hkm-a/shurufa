@@ -3,27 +3,15 @@ name = "ime-ipc"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "librime 独立算法服务与 TSF 客户端的 IPC 协议与管道收发"
+description = "跨平台 IPC 协议与 DTO（管道传输在 platforms/windows-ipc）"
 
 [lib]
 name = "ime_ipc"
 
 [dependencies]
-ime-bridge = { path = "../ime-bridge" }
 ime-policy = { path = "../ime-policy" }
-shurufa-options = { path = "../options" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 帧协议用 tokio_util::codec::LengthDelimitedCodec，替代手写 [u32 LE][JSON]。
 bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
-windows = { version = "0.62", features = [
-    "Win32_Foundation",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Pipes",
-    "Win32_System_IO",
-    "Win32_System_SystemServices",
-    "Win32_Security",
-    "Win32_Security_Authorization",
-    "Win32_System_Memory",
-] }

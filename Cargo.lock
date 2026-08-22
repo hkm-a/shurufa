@@ -2884,13 +2884,10 @@ name = "ime-ipc"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "ime-bridge",
  "ime-policy",
  "serde",
  "serde_json",
- "shurufa-options",
  "tokio-util",
- "windows 0.62.2",
 ]
 
 [[package]]
@@ -5735,6 +5732,7 @@ dependencies = [
  "shurufa-options",
  "windows 0.62.2",
  "windows-core 0.62.2",
+ "windows-ipc",
 ]
 
 [[package]]
@@ -5764,6 +5762,7 @@ dependencies = [
  "ureq",
  "uuid",
  "windows 0.62.2",
+ "windows-ipc",
  "windows-registry",
 ]
 
@@ -5831,6 +5830,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-window-state",
  "windows 0.61.3",
+ "windows-ipc",
  "windows-registry",
 ]
 
@@ -5847,6 +5847,7 @@ dependencies = [
  "ureq",
  "windows 0.62.2",
  "windows-core 0.62.2",
+ "windows-ipc",
  "windows-registry",
 ]
 
@@ -7786,6 +7787,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "windows-ipc"
+version = "0.1.0"
+dependencies = [
+ "ime-bridge",
+ "ime-ipc",
+ "ime-policy",
+ "windows 0.62.2",
 ]
 
 [[package]]

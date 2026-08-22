@@ -26,6 +26,19 @@ jobs:
           ./scripts/regenerate-generated.ps1
           git diff --exit-code -- schemas/generated-files.sha256
 
+  # 阶段 4 第 2 项：core/ 必须在非 Windows target 上可 cargo check。
+  # ime-ipc 已拆出 Windows 管道（platforms/windows-ipc），这里用 Linux
+  # 原生 target 验证 core 下全部平台无关 crate 真正可编译。
+  core-portable-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.97.0'
+      - name: core 各 crate 在 Linux target 上 cargo check
+        run: cargo check --locked -p shurufa-options -p ime-policy -p ime-ipc -p clipboard-store -p sync-core
+
   windows-build:
     runs-on: windows-latest
     needs: consistency
