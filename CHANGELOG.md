@@ -126,6 +126,12 @@
 - **`windows-host` PCM→WAV 组装改用 `hound`**：删除手写 44 字节 RIFF 头
   `build_wav_header`，`pcm_to_wav` 用 `hound::WavWriter` 写头与采样。
 
+### 重构（2026-08-21，换库周第 17 批：Android AI SSE 改用 OkHttp-SSE）
+- **Android `ShurufaImeService` 流式 AI 改用 OkHttp SSE**：新增
+  `okhttp` / `okhttp-sse` 依赖，`callAgnesChat` 不再手写
+  `HttpURLConnection` 逐行读 `data:`；改用 `EventSourceListener`
+  消费增量，取消路径改用 `EventSource.cancel()`。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除

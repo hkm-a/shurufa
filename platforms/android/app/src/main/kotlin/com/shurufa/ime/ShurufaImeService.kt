@@ -48,6 +48,8 @@ import androidx.core.view.inputmethod.InputContentInfoCompat
 import java.io.File
 import java.io.ByteArrayOutputStream
 import java.net.URLConnection
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.Calendar
 import kotlin.concurrent.thread
 
@@ -186,6 +188,8 @@ class ShurufaImeService : InputMethodService() {
     private var aiLastDraft: String? = null
     /// 进行中的 SSE 连接；标题栏 ✕ 在流式期间对其 disconnect 即中止（Android 上跨线程安全）。
     @Volatile private var aiActiveConn: java.net.HttpURLConnection? = null
+    /// 进行中的 OkHttp EventSource（流式 SSE）；取消时调用 cancel()。
+    @Volatile private var aiActiveEventSource: okhttp3.sse.EventSource? = null
     /// 用户点了「取消流式生成」的标记；readLine 抛异常后据此区分「取消」与「网络错误」。
     @Volatile private var aiStreamCancelled = false
     /// 上次推到 UI 的草稿长度：SSE 增量每满 12 个新字符才刷新一次，避免高频 setText。
@@ -2071,7 +2075,7 @@ class ShurufaImeService : InputMethodService() {
             setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
             setOnClickListener {
                 // 流式期间 ✕ = 取消生成（保留已生成的部分草稿）；否则直接关面板。
-                if (aiActiveConn != null) {
+                if (aiActiveEventSource != null) {
                     cancelAiStream()
                 } else {
                     aiPanel?.visibility = View.GONE
@@ -2287,7 +2291,7 @@ class ShurufaImeService : InputMethodService() {
                 if (partial.length - aiLastPushedLen >= 12) {
                     aiLastPushedLen = partial.length
                     mainHandler.post {
-                        if (aiActiveConn != null) {
+                        if (aiActiveEventSource != null) {
                             aiDraftView?.text = partial
                             aiStatusLine?.text = getString(R.string.ai_panel_generating, partial.length)
                         }
@@ -2322,10 +2326,9 @@ class ShurufaImeService : InputMethodService() {
     /** 标题栏 ✕ 在流式期间的行为：打断连接、保留部分草稿、回到可编辑状态。 */
     private fun cancelAiStream() {
         aiStreamCancelled = true
-        // HttpURLConnection.disconnect() 在 Android 上跨线程调用是安全的：
-        // 正在 readLine 的 io 线程会以异常退出，进入 AiResult.Aborted 分支。
-        aiActiveConn?.disconnect()
-        aiActiveConn = null
+        // OkHttp EventSource.cancel() 跨线程安全：正在回调的线程会收到 onClosed/onFailure。
+        aiActiveEventSource?.cancel()
+        aiActiveEventSource = null
     }
 
     /** 「思考中…（X s）」每秒自更新，直至 SSE 首段到达覆盖为「生成中…」。 */
@@ -2410,38 +2413,64 @@ class ShurufaImeService : InputMethodService() {
                 return AiResult.Err("HTTP $code: ${errText.take(120)}")
             }
             if (stream) {
-                // SSE：逐行解析 "data: {...}"，[DONE] 终止。
-                aiActiveConn = conn
+                // 使用 OkHttp SSE 解析流，替代手写 HttpURLConnection 逐行解析。
+                val client = okhttp3.OkHttpClient()
+                val request = okhttp3.Request.Builder()
+                    .url(endpoint)
+                    .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .header("Authorization", "Bearer $apiKey")
+                    .build()
+                val latch = java.util.concurrent.CountDownLatch(1)
                 val acc = StringBuilder()
-                try {
-                    conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                        while (true) {
-                            val line = reader.readLine() ?: break
-                            if (!line.startsWith("data:")) continue
-                            val payload = line.removePrefix("data:").trim()
-                            if (payload == "[DONE]") break
-                            val delta = try {
-                                org.json.JSONObject(payload)
-                                    .optJSONArray("choices")
-                                    ?.optJSONObject(0)
-                                    ?.optJSONObject("delta")
-                                    ?.optString("content")
-                                    .orEmpty()
-                            } catch (_: Exception) { "" }
-                            if (delta.isNotEmpty()) {
-                                acc.append(delta)
-                                onPartial?.invoke(acc.toString())
-                            }
+                var failure: AiResult? = null
+                val listener = object : okhttp3.sse.EventSourceListener() {
+                    override fun onEvent(
+                        eventSource: okhttp3.sse.EventSource,
+                        id: String?,
+                        type: String?,
+                        data: String,
+                    ) {
+                        if (data == "[DONE]") {
+                            eventSource.cancel()
+                            latch.countDown()
+                            return
+                        }
+                        val delta = try {
+                            org.json.JSONObject(data)
+                                .optJSONArray("choices")
+                                ?.optJSONObject(0)
+                                ?.optJSONObject("delta")
+                                ?.optString("content")
+                                .orEmpty()
+                        } catch (_: Exception) { "" }
+                        if (delta.isNotEmpty()) {
+                            acc.append(delta)
+                            onPartial?.invoke(acc.toString())
                         }
                     }
-                } catch (e: Exception) {
-                    // 取消路径：disconnect 会让 readLine 抛 SocketException
-                    if (aiStreamCancelled) return AiResult.Aborted(acc.toString())
-                    return AiResult.Err(e.message ?: e.javaClass.simpleName)
-                } finally {
-                    aiActiveConn = null
+
+                    override fun onClosed(eventSource: okhttp3.sse.EventSource) {
+                        latch.countDown()
+                    }
+
+                    override fun onFailure(
+                        eventSource: okhttp3.sse.EventSource,
+                        t: Throwable?,
+                        response: okhttp3.Response?,
+                    ) {
+                        if (!aiStreamCancelled) {
+                            failure = AiResult.Err(t?.message ?: "SSE 流失败")
+                        }
+                        latch.countDown()
+                    }
                 }
+                aiActiveEventSource = okhttp3.sse.EventSources
+                    .createFactory(client)
+                    .newEventSource(request, listener)
+                latch.await()
+                aiActiveEventSource = null
                 if (aiStreamCancelled) return AiResult.Aborted(acc.toString())
+                failure?.let { return it }
                 val full = acc.toString().trim()
                 return if (full.isEmpty()) AiResult.Err("返回内容为空") else AiResult.Ok(full)
             }
