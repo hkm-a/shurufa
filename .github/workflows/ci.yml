@@ -20,6 +20,11 @@ jobs:
       - name: 校验文档（内部链接 / 版本号声明 / CHANGELOG 对账）
         shell: pwsh
         run: ./scripts/check-docs.ps1
+      - name: 校验生成物与生成脚本一致
+        shell: pwsh
+        run: |
+          ./scripts/regenerate-generated.ps1
+          git diff --exit-code -- schemas/shurufa_t9.dict.yaml schemas/jianpin_index.txt schemas/rime_ice_nojianpin.schema.yaml
 
   windows-build:
     runs-on: windows-latest

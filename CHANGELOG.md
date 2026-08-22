@@ -147,6 +147,8 @@
   base/ext/8105 三项（此前 3/4 与本地不符），并补充 `upstream` 标记。
 - **新增 `scripts/regenerate-generated.ps1`**：一键重新生成 T9 词典、
   简拼索引、无简拼 schema 三份构建期产物，为后续“生成物出库”铺路。
+- **CI 增加生成物一致性校验**：`consistency` 作业重跑生成脚本并用
+  `git diff --exit-code` 检查三份产物是否与脚本输出一致。
 
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
