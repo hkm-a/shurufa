@@ -58,7 +58,7 @@ pub const WM_AI_EXTERNAL_SHOW: u32 = WM_APP + 73;
 const AI_FOLLOW_TIMER_ID: usize = 0x5A11;
 
 /// 内置系统提示（默认"正式"）：控制输出端为"可直接粘贴的中文文本片段"。
-pub(crate) const SYSTEM_PROMPT: &str = SYSTEM_PROMPT_FORMAL;
+pub const SYSTEM_PROMPT: &str = SYSTEM_PROMPT_FORMAL;
 /// 提示词模板：按 TEMPLATES 下标索引；尾部约束统一保持"可直接粘贴中文段落"。
 const SYSTEM_PROMPT_FORMAL: &str = "你是用户输入法里的‘AI 帮写’助手。用正式、简洁的中文书面语写作，直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。";
 const SYSTEM_PROMPT_CHAT: &str = "你是用户输入法里的‘AI 帮写’助手。用轻松自然的口吻聊天，直接输出可粘贴的中文段落，不要解释、不要 Markdown 代码块；除非用户另有要求，控制在 300 字以内。";
@@ -658,11 +658,7 @@ fn start_request(query: String) {
 
 /// 一次性调用 Agnes（非流式）。划词润色用它：选区原文送进、回写时一次性
 /// 覆盖；主面板帮写改用 `call_agnes_stream`，两端并行演化不影响划词链路。
-pub(crate) fn call_agnes(
-    api_key: &str,
-    user_prompt: &str,
-    system_prompt: &str,
-) -> Result<String, String> {
+pub fn call_agnes(api_key: &str, user_prompt: &str, system_prompt: &str) -> Result<String, String> {
     let body = build_chat_body(user_prompt, system_prompt, false);
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))

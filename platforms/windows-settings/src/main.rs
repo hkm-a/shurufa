@@ -195,7 +195,12 @@ async fn run_blocking<T: Send + 'static>(
 }
 
 async fn launch_host(args: &[&str]) -> Result<String, String> {
-    let executable = sibling_exe("shurufa-host.exe");
+    // 阶段4拆分：supervise/stop 属数据路径（clipd），其余为一次性 CLI（ctl）。
+    let exe_name = match args.first().copied() {
+        Some("supervise") | Some("stop") => "shurufa-clipd.exe",
+        _ => "shurufa-ctl.exe",
+    };
+    let executable = sibling_exe(exe_name);
     let arguments: Vec<String> = args.iter().map(|argument| (*argument).to_owned()).collect();
     run_blocking(move || {
         Command::new(executable)
@@ -843,7 +848,7 @@ async fn update_dictionary() -> Result<String, String> {
 /// 无需重装即可生效）。同步等待结果并把宿主 stdout/退出码带回给前端。
 #[tauri::command]
 async fn redeploy_dictionaries() -> Result<String, String> {
-    let executable = sibling_exe("shurufa-host.exe");
+    let executable = sibling_exe("shurufa-ctl.exe");
     run_blocking(move || {
         let output = Command::new(&executable)
             .args(["deploy"])
@@ -1575,9 +1580,9 @@ fn save_speech_settings(s: SpeechDto) -> Result<(), String> {
     .map_err(|error| format!("保存语音转写设置失败：{error}"))
 }
 
-/// 自启开关：复用 shurufa-host 的 `install-autostart` / `uninstall-autostart`
-/// 子命令（HKCU Run `shurufa-host` 键的唯一事实源在 host main.rs）。
-/// 设置中心不直接写注册表，避免与 host 逻辑漂移。
+/// 自启开关：复用 shurufa-clipd 的 `install-autostart` / `uninstall-autostart`
+/// 子命令（HKCU Run `shurufa-host` 键的唯一事实源在 windows-host lib.rs）。
+/// 设置中心不直接写注册表，避免与宿主逻辑漂移。
 #[tauri::command]
 async fn set_autostart(enabled: bool) -> Result<String, String> {
     let sub = if enabled {
@@ -1585,7 +1590,17 @@ async fn set_autostart(enabled: bool) -> Result<String, String> {
     } else {
         "uninstall-autostart"
     };
-    run_host_capture(&[sub]).await?;
+    // 自启子命令在数据路径二进制（shurufa-clipd）上
+    run_blocking(move || {
+        let executable = sibling_exe("shurufa-clipd.exe");
+        Command::new(&executable)
+            .arg(sub)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|error| format!("无法启动后台宿主：{error}"))
+    })
+    .await
+    .map(|_| ())?;
     // 同步写回 options.json，让下次启动时 UI 显示真实状态
     shurufa_options::modify(|current| ImeOptions {
         general: GeneralSettings {
@@ -1659,7 +1674,7 @@ struct DictionaryInfo {
 }
 
 async fn run_host_capture(args: &[&str]) -> Result<String, String> {
-    let executable = sibling_exe("shurufa-host.exe");
+    let executable = sibling_exe("shurufa-ctl.exe");
     let arguments: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
     run_blocking(move || {
         let output = Command::new(executable)
@@ -1897,8 +1912,8 @@ async fn set_input_scheme(scheme: String) -> Result<(), String> {
     .map(|_| ())
     .map_err(|error| format!("保存输入方案失败：{error}"))?;
 
-    // 尝试 shurufa-host reload-scheme（wave 4 stub；不存在时走日志兜底）
-    let host = sibling_exe("shurufa-host.exe");
+    // 尝试 shurufa-ctl reload-scheme（wave 4 stub；不存在时走日志兜底）
+    let host = sibling_exe("shurufa-ctl.exe");
     let result: Result<std::process::Child, String> = run_blocking(move || {
         Command::new(&host)
             .arg("reload-scheme")
@@ -1986,7 +2001,7 @@ fn trigger_speech() -> Result<String, String> {
     }
     unsafe {
         let hwnd = FindWindowW(
-            windows::core::w!("ShurufaClipboardListener"),
+            windows::core::w!("ShurufaUiHost"),
             windows::core::PCWSTR::null(),
         )
         .map_err(|error| format!("查找后台宿主窗口失败：{error}"))?;
@@ -1995,7 +2010,7 @@ fn trigger_speech() -> Result<String, String> {
         }
         let _ = PostMessageW(
             Some(hwnd),
-            // 与 shurufa-host listener.rs 的 WM_APP_SPEECH_TOGGLE 一致
+            // 与 shurufa-ui（src/bin/shurufa-ui.rs）的 WM_APP_SPEECH_TOGGLE 一致
             windows::Win32::UI::WindowsAndMessaging::WM_APP + 44,
             WPARAM(0),
             LPARAM(0),

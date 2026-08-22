@@ -22,9 +22,9 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowThreadProcessId,
-    RegisterClassW, SetTimer, TranslateMessage, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_TIMER, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW,
+    GetWindowThreadProcessId, RegisterClassW, TranslateMessage, MSG, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_APP, WM_CLIPBOARDUPDATE, WNDCLASSW,
 };
 
 /// 敏感来源进程名（小写）：其复制内容不入历史
@@ -47,12 +47,6 @@ pub const WM_TEST_SET_IMAGE: u32 = WM_APP + 41;
 const WM_WRITE_CLIPBOARD: u32 = WM_APP + 42;
 #[cfg(debug_assertions)]
 const WM_TEST_INSPECT_IMAGE: u32 = WM_APP + 43;
-/// 控制中心（悬浮条麦克风按钮）经 WM_APP 消息触发语音转写面板
-/// （与 Ctrl+Shift+S 热键同一入口 speech::toggle）。
-pub const WM_APP_SPEECH_TOGGLE: u32 = WM_APP + 44;
-/// 热键门控轮询定时器 id：每 2 秒按 options.json 重读
-/// enable_ai_hotkey / enable_polish_hotkey，变化即重注册（见 ai_panel.rs）。
-const HOTKEY_GATE_TIMER_ID: usize = 1;
 
 enum ClipboardWrite {
     Text(String),
@@ -119,52 +113,10 @@ pub fn run(store: ClipboardStore) -> Result<()> {
             last_broadcast: None,
         });
         AddClipboardFormatListener(hwnd)?;
-        let hotkey = crate::panel::register_hotkey();
-        println!("历史面板热键：{hotkey}");
-        crate::log_line(&format!("历史面板热键：{hotkey}"));
-        let ai_hotkey = crate::ai_panel::register_hotkey();
-        println!("AI 帮写热键：{ai_hotkey}");
-        crate::log_line(&format!("AI 帮写热键：{ai_hotkey}"));
-        let speech_hotkey = crate::speech::register_hotkey();
-        println!("语音转写热键：{speech_hotkey}");
-        crate::log_line(&format!("语音转写热键：{speech_hotkey}"));
-        // AI/划词润色热键门控：与设置中心开关联动（默认全开），每 2 秒轮询
-        // options.json，门控变化时反注册+重注册（必须在消息循环线程执行）。
-        crate::ai_panel::sync_hotkey_gate_cache();
-        // M9-2：预热 AI 面板窗口，设置中心「AI 帮写」入口可随时外部唤起
-        crate::ai_panel::warm_up();
-        let _ = SetTimer(Some(hwnd), HOTKEY_GATE_TIMER_ID, 2000, None);
+        // 面板与热键在 shurufa-ui 进程（阶段4拆分）：本进程只做数据路径。
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            // 线程级热键的 WM_HOTKEY 不属于任何窗口，须在循环内截获
-            if msg.message == WM_HOTKEY {
-                let id = msg.wParam.0 as i32;
-                if id == crate::panel::HOTKEY_ID {
-                    #[allow(static_mut_refs)]
-                    if let Some(state) = STATE.as_ref() {
-                        let entries = state.store.list(9, 0).unwrap_or_default();
-                        crate::panel::show(entries);
-                    }
-                    continue;
-                }
-                if id == crate::ai_panel::HOTKEY_ID {
-                    crate::ai_panel::show();
-                    continue;
-                }
-                if id == crate::ai_panel::POLISH_HOTKEY_ID {
-                    crate::ai_panel::polish_selection();
-                    continue;
-                }
-                if id == crate::ai_panel::TRANSLATE_HOTKEY_ID {
-                    crate::ai_panel::translate_selection();
-                    continue;
-                }
-                if id == crate::speech::HOTKEY_ID {
-                    crate::speech::toggle();
-                    continue;
-                }
-            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -212,16 +164,6 @@ unsafe extern "system" fn wnd_proc(
             .unwrap_or(false);
         return LRESULT(if ok { 1 } else { 0 });
     }
-    if msg == WM_APP_SPEECH_TOGGLE {
-        // 悬浮条麦克风 → 语音转写面板（同热键入口，仅换触发方）
-        crate::speech::toggle();
-        return LRESULT(1);
-    }
-    if msg == WM_TIMER && wparam.0 == HOTKEY_GATE_TIMER_ID {
-        // 热键门控热更新：设置中心开关即改即存，变化才重注册
-        crate::ai_panel::refresh_hotkey_gates();
-        return LRESULT(0);
-    }
     #[cfg(debug_assertions)]
     if msg == WM_TEST_INSPECT_IMAGE {
         return match crate::paste::inspect_test_clipboard_image_with_owner(Some(hwnd)) {
@@ -255,23 +197,15 @@ fn listener_window() -> Option<HWND> {
         return Some(HWND(raw as *mut _));
     }
 
-    #[cfg(debug_assertions)]
-    {
-        use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
-
-        let title = listener_window_title();
-        let title = if title.is_empty() {
-            PCWSTR::null()
-        } else {
-            PCWSTR(title.as_ptr())
-        };
-        unsafe { FindWindowW(w!("ShurufaClipboardListener"), title).ok() }
-    }
-
-    #[cfg(not(debug_assertions))]
-    {
-        None
-    }
+    // 跨进程发现（阶段4拆分后 shurufa-ctl 的 copy 写回经监听窗口执行）：
+    // 同机内按窗口类名查找 clipd 的监听窗口。
+    let title = listener_window_title();
+    let title = if title.is_empty() {
+        PCWSTR::null()
+    } else {
+        PCWSTR(title.as_ptr())
+    };
+    unsafe { FindWindowW(w!("ShurufaClipboardListener"), title).ok() }
 }
 
 fn listener_window_title() -> HSTRING {

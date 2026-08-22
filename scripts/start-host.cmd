@@ -2,11 +2,11 @@
 rem Start the clipboard listener under the supervisor (daemon lifecycle).
 rem The supervisor enforces a single instance (named mutex), auto-restarts a
 rem crashed worker with backoff, and exposes unified status/stop:
-rem   shurufa-host status | stop
+rem   shurufa-clipd status | stop
 rem No more taskkill: a stale supervisor is refused by the singleton lock
 rem (use "stop" first, or just call status to see what is running).
 setlocal
-set EXE=%~dp0..\target\debug\shurufa-host.exe
+set EXE=%~dp0..\target\debug\shurufa-clipd.exe
 if not exist "%EXE%" (
     echo [error] build first: cargo build -p shurufa-host
     pause

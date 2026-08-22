@@ -1,0 +1,198 @@
+//! shurufa-ctl：一次性 CLI（阶段4第4项拆分）。
+//!
+//! 历史库查询管理、写回剪贴板、配对与词库维护。不常驻、无窗口依赖；
+//! `copy` 的剪贴板写回经 clipd 的监听窗口（按类名跨进程 SendMessage）。
+
+use clap::{Parser, Subcommand};
+use clipboard_store::ClipboardStore;
+use shurufa_host::{open_store, print_entries};
+
+#[derive(Parser)]
+#[command(name = "shurufa-ctl", about = "Shurufa CLI：历史库/配对/词库管理")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 最近 N 条历史（默认 20）
+    List { n: Option<u32> },
+    /// 搜索文本与文件名
+    Search { query: String },
+    /// search 同义别名（供脚本用）
+    #[command(name = "clip-search")]
+    ClipSearch { query: String },
+    /// 跨设备搜索（8 秒聚合）
+    #[command(name = "clip-remote-search")]
+    ClipRemoteSearch { query: String },
+    /// Agnes 一次性帮写（不弹面板）
+    Chat { prompt: String },
+    /// 唤起 AI 帮写面板（shurufa-ui 常驻时）
+    Ai { action: String },
+    /// 置顶
+    Pin { id: u32 },
+    /// 取消置顶
+    Unpin { id: u32 },
+    /// 删除单条
+    Delete { id: u32 },
+    /// 把条目写回剪贴板
+    Copy { id: u32 },
+    /// 清空未置顶记录
+    Clear,
+    /// 发起配对（控制台确认码交互）
+    Pair { addr: String },
+    /// 设置中心配对向导发起端（文件确认）
+    #[command(name = "pair-ui")]
+    PairUi { addr: String },
+    /// 列出已配对设备
+    Devices,
+    /// 取消配对
+    Unpair { fp: String },
+    /// 配置或关闭自托管同步中继
+    Relay { value: String },
+    /// 更新自托管云词库
+    #[command(name = "dict-update")]
+    DictUpdate { url: String },
+    /// 重新部署：重建二进制词典（方案/词库改动后）
+    Deploy,
+    /// 回滚词库（默认上一代）
+    #[command(name = "dict-rollback")]
+    DictRollback {
+        /// 回滚到指定版本或内置
+        #[arg(long)]
+        revision: Option<String>,
+    },
+    /// 列出本地可回滚的历史版本
+    #[command(name = "dict-history")]
+    DictHistory,
+    /// 打印当前词库版本
+    #[command(name = "dict-current")]
+    DictCurrent,
+    /// 立即执行留存清理
+    Retention,
+    #[cfg(debug_assertions)]
+    #[command(name = "tsf-native-probe")]
+    TsfNativeProbe,
+}
+
+fn main() {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::List { n } => {
+            let n = n.unwrap_or(20);
+            print_entries(&open_store().list(n, 0).unwrap_or_default());
+        }
+        Command::Search { query } => {
+            print_entries(&open_store().search(&query, 50).unwrap_or_default());
+        }
+        Command::ClipSearch { query } => {
+            print_entries(&open_store().search(&query, 50).unwrap_or_default());
+        }
+        Command::ClipRemoteSearch { query } => {
+            shurufa_host::sync::cli_remote_search(&query);
+        }
+        Command::Ai { action } => match action.as_str() {
+            "show" => {
+                use windows::Win32::Foundation::{LPARAM, WPARAM};
+                use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+                let class = windows::core::w!("ShurufaAiPanel");
+                match unsafe { FindWindowW(class, None) } {
+                    Ok(hwnd) => {
+                        let _ = unsafe {
+                            PostMessageW(
+                                Some(hwnd),
+                                shurufa_host::ai_panel::WM_AI_EXTERNAL_SHOW,
+                                WPARAM(0),
+                                LPARAM(0),
+                            )
+                        };
+                        println!("已唤起 AI 帮写面板");
+                    }
+                    Err(_) => {
+                        eprintln!("AI 面板尚未创建（shurufa-ui 未运行？）");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            other => {
+                eprintln!("未知动作：{other}（仅支持 show）");
+                std::process::exit(2);
+            }
+        },
+        Command::Chat { prompt } => {
+            let key = std::env::var("AGNES_API_KEY")
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            if key.is_empty() {
+                eprintln!("缺少 AGNES_API_KEY（系统环境变量）。key 不落盘、不入日志。");
+                std::process::exit(1);
+            }
+            match shurufa_host::ai_panel::call_agnes(
+                &key,
+                &prompt,
+                shurufa_host::ai_panel::SYSTEM_PROMPT,
+            ) {
+                Ok(draft) => println!("{draft}"),
+                Err(e) => {
+                    eprintln!("请求失败：{e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Pin { id } => {
+            let ok = open_store().set_pinned(id as i64, true).unwrap_or(false);
+            println!("{}", if ok { "已更新" } else { "条目不存在" });
+        }
+        Command::Unpin { id } => {
+            let ok = open_store().set_pinned(id as i64, false).unwrap_or(false);
+            println!("{}", if ok { "已更新" } else { "条目不存在" });
+        }
+        Command::Delete { id } => {
+            let ok = open_store().delete(id as i64).unwrap_or(false);
+            println!("{}", if ok { "已删除" } else { "条目不存在" });
+        }
+        Command::Copy { id } => {
+            let store: ClipboardStore = open_store();
+            match store.get(id as i64) {
+                Ok(Some(entry)) => {
+                    match shurufa_host::paste::copy_entry_to_clipboard(&store, &entry) {
+                        Ok(true) => println!("已写回剪贴板"),
+                        Ok(false) => println!("条目数据缺失，无法写回"),
+                        Err(e) => {
+                            eprintln!("写回失败：{e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                _ => println!("条目不存在"),
+            }
+        }
+        Command::Clear => {
+            let n = open_store().clear_unpinned().unwrap_or(0);
+            println!("已清空 {n} 条未置顶记录");
+        }
+        Command::Pair { addr } => shurufa_host::sync::cli_pair(&addr),
+        Command::PairUi { addr } => shurufa_host::sync::cli_pair_ui(&addr),
+        Command::Devices => shurufa_host::sync::cli_devices(),
+        Command::Unpair { fp } => shurufa_host::sync::cli_unpair(&fp),
+        Command::Relay { value } => shurufa_host::sync::cli_relay(&value),
+        Command::DictUpdate { url } => shurufa_host::dict_update::cli_update(&url),
+        Command::Deploy => shurufa_host::dict_update::cli_deploy(),
+        Command::DictRollback { revision } => {
+            shurufa_host::dict_update::cli_rollback(revision.as_deref())
+        }
+        Command::DictCurrent => shurufa_host::dict_update::cli_current(),
+        Command::DictHistory => shurufa_host::dict_update::cli_history(),
+        Command::Retention => shurufa_host::apply_retention_now(),
+        #[cfg(debug_assertions)]
+        Command::TsfNativeProbe => match shurufa_host::tsf_probe::run() {
+            Ok(text) => println!("原生编辑控件 TSF 验收通过：{text}"),
+            Err(error) => {
+                eprintln!("原生编辑控件 TSF 验收失败：{error}");
+                std::process::exit(1);
+            }
+        },
+    }
+}

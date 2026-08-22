@@ -50,7 +50,9 @@ if (-not $SkipBuild) {
 $required = @(
     (Join-Path $targetDir 'shurufa_tsf.dll'),
     (Join-Path $targetDir 'shurufa-algo.exe'),
-    (Join-Path $targetDir 'shurufa-host.exe'),
+    (Join-Path $targetDir 'shurufa-clipd.exe'),
+    (Join-Path $targetDir 'shurufa-ui.exe'),
+    (Join-Path $targetDir 'shurufa-ctl.exe'),
     (Join-Path $targetDir 'Shurufa.exe'),
     (Join-Path $sourceRoot 'third_party\librime\dist\lib\rime.dll'),
     (Join-Path $sourceRoot 'third_party\librime\dist\bin\rime_deployer.exe')

@@ -29,6 +29,8 @@ const SUPERVISOR_MUTEX: &str = "Global\\shurufa-host-supervisor";
 pub const WORKER_MUTEX: &str = "Global\\shurufa-host-worker";
 /// 算法服务（shurufa-algo）单实例锁名。
 const ALGO_MUTEX: &str = "Global\\shurufa-algo";
+/// 面板进程（shurufa-ui）单实例锁名（ui 自身持有，此处只探测）。
+const UI_MUTEX: &str = "Global\\shurufa-ui";
 /// 过快重启时最大幂次退避（秒上限）。
 const BACKOFF_CAP: u32 = 5;
 
@@ -175,6 +177,14 @@ fn algo_exe_path() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("shurufa-algo.exe")))
         .unwrap_or_else(|| PathBuf::from("shurufa-algo.exe"))
+}
+
+/// 当前 exe 同目录下的兄弟可执行文件（shurufa-ui.exe）。
+fn ui_exe_path() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("shurufa-ui.exe")))
+        .unwrap_or_else(|| PathBuf::from("shurufa-ui.exe"))
 }
 
 /// 探测算法服务单实例锁：已被他人持有返回 true（跳过拉起）。
@@ -378,6 +388,61 @@ pub fn supervise() -> ! {
         }
     }
 
+    // 面板进程看护（阶段4拆分）：ui 与 worker/algo 独立故障域，崩溃只重启
+    // 自己，不影响数据路径；停机时一并结束。
+    let ui_stop = Arc::new(AtomicBool::new(false));
+    {
+        let ui_stop = ui_stop.clone();
+        std::thread::spawn(move || {
+            let mut ui_restarts: u32 = 0;
+            while !ui_stop.load(Ordering::SeqCst) {
+                // ui 自身持 Global\shurufa-ui 单实例锁；已被他人持有说明
+                // 有独立启动的 ui 在跑，跳过拉起。
+                if let Ok(Some(_)) = acquire_singleton(UI_MUTEX) {
+                    crate::log_line("检测到独立运行的 shurufa-ui，跳过拉起");
+                } else {
+                    let exe = ui_exe_path();
+                    if exe.exists() {
+                        match Command::new(&exe)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .spawn()
+                        {
+                            Ok(child) => {
+                                let pid = child.id();
+                                crate::log_line(&format!("shurufa-ui 已启动 pid={pid}"));
+                                let mut child = child;
+                                loop {
+                                    if ui_stop.load(Ordering::SeqCst) {
+                                        let _ = child.kill();
+                                        let _ = child.wait();
+                                        return;
+                                    }
+                                    match child.try_wait() {
+                                        Ok(Some(_)) => break,
+                                        Ok(None) => std::thread::sleep(Duration::from_millis(500)),
+                                        Err(_) => break,
+                                    }
+                                }
+                                ui_restarts += 1;
+                                crate::log_line(&format!(
+                                    "shurufa-ui 退出，第 {ui_restarts} 次重启"
+                                ));
+                                std::thread::sleep(Duration::from_secs(backoff_secs(ui_restarts)));
+                                continue;
+                            }
+                            Err(e) => {
+                                crate::log_line(&format!("spawn shurufa-ui 失败：{e}"));
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(3));
+            }
+        });
+    }
+
     loop {
         crate::log_line("supervisor 拉起 worker（run）…");
         let worker = Command::new(&exe)
@@ -413,8 +478,9 @@ pub fn supervise() -> ! {
             Outcome::Stopped => {
                 let _ = worker.kill();
                 let _ = worker.wait();
-                // 停止算法服务
+                // 停止算法服务与面板进程
                 stop_algo(&algo_stop, &algo_pid);
+                ui_stop.store(true, Ordering::SeqCst);
                 let _ = std::fs::remove_file(stop_token_path());
                 write_state("stopped", None, None, restarts);
                 crate::log_line("supervisor 已退出");
@@ -423,6 +489,7 @@ pub fn supervise() -> ! {
             Outcome::Exit { code: Some(0) } => {
                 crate::log_line("worker 正常退出（受控停机），不再重启");
                 stop_algo(&algo_stop, &algo_pid);
+                ui_stop.store(true, Ordering::SeqCst);
                 write_state("stopped", None, None, restarts);
                 std::process::exit(0);
             }

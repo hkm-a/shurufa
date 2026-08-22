@@ -19,7 +19,7 @@
 # 退出码：0 = 成功；非 0 = 失败（验证不过）。
 
 param(
-  [switch]$Services,   # 构建+部署服务二进制（shurufa-host.exe / shurufa-algo.exe）
+  [switch]$Services,   # 构建+部署服务二进制（shurufa-clipd/ui/ctl.exe / shurufa-algo.exe）
   [switch]$Cc,         # 构建+部署控制中心（npm run tauri build → release Shurufa.exe）
   [switch]$Tsf,        # 构建+部署 TSF DLL（版本化文件名，需注销/重启应用生效）
   [switch]$Schemas,    # robocopy /MIR 同步 schemas 到 ProgramData
@@ -84,7 +84,7 @@ if (-not $NoBuild) {
 # 且新 supervisor 抢不到单实例锁会直接退出（"更新了个寂寞"）。
 $copyLines = @()
 if ($Services) {
-  foreach ($f in 'shurufa-host.exe','shurufa-algo.exe') {
+  foreach ($f in 'shurufa-clipd.exe','shurufa-ui.exe','shurufa-ctl.exe','shurufa-algo.exe') {
     $s = "$repo\target\debug\$f"
     if (Test-Path $s) { $copyLines += "Copy-Item '$s' '$dst\$f' -Force -ErrorAction Stop" }
     else { Log "WARN: 产物缺失 $s"; }
@@ -119,13 +119,13 @@ if ($copyLines.Count -eq 0) {
 
 # 停旧：先普通用户发 stop-token（supervisor 自停），提权兜底强杀残留。
 # 直接提权强杀有误杀 explorer 风险，故优先 stop-token 受控停机。
-& "$dst\shurufa-host.exe" stop 2>&1 | Out-Null
+& "$dst\shurufa-clipd.exe" stop 2>&1 | Out-Null
 Start-Sleep -Milliseconds 1200
 
 $elev = "$env:TEMP\shurufa-update-copy.ps1"
 $elevBody = @(
   '$ErrorActionPreference = "Stop"'
-  'foreach ($n in "shurufa-host","shurufa-algo","shurufa-host-worker") {'
+  'foreach ($n in "shurufa-clipd","shurufa-ui","shurufa-algo","shurufa-host-worker") {'
   '  Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue'
   '}'
   'Start-Sleep -Milliseconds 500'
@@ -152,7 +152,7 @@ if ($NoStart) {
   exit 0
 }
 Log "以普通用户启动 supervisor …"
-Start-Process -FilePath "$dst\shurufa-host.exe" -ArgumentList 'supervise' -WindowStyle Hidden
+Start-Process -FilePath "$dst\shurufa-clipd.exe" -ArgumentList 'supervise' -WindowStyle Hidden
 
 # ---------- 4) 健康验证 ----------
 Log "等待服务就绪（algo 引擎首次部署可能需数十秒）…"
@@ -160,7 +160,7 @@ $ready = $false
 for ($i = 0; $i -lt 40; $i++) {
   Start-Sleep -Seconds 1
   $a = Get-Process shurufa-algo -ErrorAction SilentlyContinue
-  $h = Get-Process shurufa-host -ErrorAction SilentlyContinue
+  $h = Get-Process shurufa-clipd -ErrorAction SilentlyContinue
   if ($a -and ($h | Measure-Object).Count -ge 1) { $ready = $true; break }
 }
 if (-not $ready) {

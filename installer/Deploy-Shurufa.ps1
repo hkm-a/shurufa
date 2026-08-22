@@ -52,7 +52,7 @@ function Resolve-ShurufaPaths {
 
 function Resolve-ShurufaHostSuperviseCommand {
     param([Parameter(Mandatory)][string]$Dir)
-    return '"{0}" supervise' -f (Join-Path $Dir 'shurufa-host.exe')
+    return '"{0}" supervise' -f (Join-Path $Dir 'shurufa-clipd.exe')
 }
 
 function Get-ShurufaStartupEntry {
@@ -65,7 +65,7 @@ function Get-ShurufaStartupEntry {
 function Register-ShurufaStartup {
     param([Parameter(Mandatory)][string]$Dir)
     $expected = Resolve-ShurufaHostSuperviseCommand -Dir $Dir
-    $hostPath = Join-Path $Dir 'shurufa-host.exe'
+    $hostPath = Join-Path $Dir 'shurufa-clipd.exe'
     if (-not (Test-Path -LiteralPath $hostPath -PathType Leaf)) {
         throw "后台宿主不存在：$hostPath"
     }
@@ -109,8 +109,11 @@ function Test-ShurufaInstallComplete {
         if ((Get-ShurufaStartupEntry) -ne $expected) {
             $problems += "登录自启动项异常：期望 [$expected]，实际 [$(Get-ShurufaStartupEntry)]"
         }
-        if (-not (Get-Process -Name 'shurufa-host' -ErrorAction SilentlyContinue)) {
-            $problems += '后台宿主 shurufa-host.exe 未运行'
+        if (-not (Get-Process -Name 'shurufa-clipd' -ErrorAction SilentlyContinue)) {
+            $problems += '数据路径进程 shurufa-clipd.exe 未运行'
+        }
+        if (-not (Get-Process -Name 'shurufa-ui' -ErrorAction SilentlyContinue)) {
+            $problems += '面板进程 shurufa-ui.exe 未运行'
         }
         if (-not (Get-Process -Name 'shurufa-algo' -ErrorAction SilentlyContinue)) {
             $problems += '算法服务 shurufa-algo.exe 未运行'
@@ -131,7 +134,7 @@ function Stop-ShurufaInstall {
     # 覆盖安装前释放所有可能锁住 DLL/EXE 的进程；未运行时静默继续。
     Get-Process -Name 'Shurufa', 'ctfmon', 'TextInputHost' -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
-    $hostExe = Join-Path $Dir 'shurufa-host.exe'
+    $hostExe = Join-Path $Dir 'shurufa-clipd.exe'
     if (Test-Path -LiteralPath $hostExe -PathType Leaf) {
         & $hostExe stop | Out-Null
     }
@@ -160,7 +163,7 @@ function Install-ShurufaFiles {
     if (-not (Test-Path -LiteralPath $versionedTarget -PathType Leaf)) {
         Copy-Item (Join-Path $Paths.TargetDir 'shurufa_tsf.dll') $versionedTarget
     }
-    foreach ($exe in @('shurufa-algo.exe', 'shurufa-host.exe', 'Shurufa.exe')) {
+    foreach ($exe in @('shurufa-algo.exe', 'shurufa-clipd.exe', 'shurufa-ui.exe', 'shurufa-ctl.exe', 'Shurufa.exe')) {
         Copy-Item (Join-Path $Paths.TargetDir $exe) $Paths.InstallDir -Force
     }
     Copy-Item (Join-Path $Paths.LibrimeDist 'lib\rime.dll') $Paths.InstallDir -Force
@@ -194,7 +197,7 @@ function Register-ShurufaTsf {
 
 function Start-ShurufaHost {
     param([Parameter(Mandatory)][string]$Dir)
-    Start-Process -FilePath (Join-Path $Dir 'shurufa-host.exe') -ArgumentList 'supervise' -WindowStyle Hidden
+    Start-Process -FilePath (Join-Path $Dir 'shurufa-clipd.exe') -ArgumentList 'supervise' -WindowStyle Hidden
 }
 
 function Assert-ShurufaInstall {

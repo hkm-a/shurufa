@@ -154,7 +154,7 @@ if (-not $gradle) { throw "未找到 Gradle 8.10.2" }
 
 $adb = Join-Path $androidSdk "platform-tools\adb.exe"
 $emulator = Join-Path $androidSdk "emulator\emulator.exe"
-$hostExe = Join-Path $targetDir "debug\shurufa-host.exe"
+$hostExe = Join-Path $targetDir "debug\shurufa-clipd.exe"
 $imeApk = Join-Path $androidRoot "app\build\outputs\apk\debug\app-debug.apk"
 $testApk = Join-Path $androidRoot "attachment-test\build\outputs\apk\debug\attachment-test-debug.apk"
 
@@ -194,7 +194,7 @@ if (-not $serial) {
 
 $hostProcess = $null
 $dailyHostProcess = $null
-$dailyHostExe = Join-Path $repoRoot "target\debug\shurufa-host.exe"
+$dailyHostExe = Join-Path $repoRoot "target\debug\shurufa-clipd.exe"
 $dailyHostWasRunning = $false
 $forwardCreated = $false
 $primaryError = $null
@@ -210,7 +210,7 @@ try {
         Select-Object -First 1
     if ($dailyListener) {
         $candidate = Get-Process -Id $dailyListener.OwningProcess -ErrorAction Stop
-        if ($candidate.ProcessName -ne "shurufa-host" -or -not (Test-Path -LiteralPath $dailyHostExe)) {
+        if ($candidate.ProcessName -ne "shurufa-clipd" -or -not (Test-Path -LiteralPath $dailyHostExe)) {
             throw "默认同步端口被未知进程占用，拒绝继续：PID $($dailyListener.OwningProcess)"
         }
         $dailyHostProcess = $candidate

@@ -5,8 +5,8 @@ rem unless the environment variable SHURUFA_PURGE_DATA=1 is set before running.
 setlocal
 set DEST=%ProgramData%\shurufa
 
-if exist "%DEST%\shurufa-host.exe" (
-    "%DEST%\shurufa-host.exe" stop >nul 2>nul
+if exist "%DEST%\shurufa-clipd.exe" (
+    "%DEST%\shurufa-clipd.exe" stop >nul 2>nul
 )
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v ShurufaHost /f >nul 2>nul
 if exist "%DEST%\shurufa_tsf.dll" (
