@@ -47,6 +47,9 @@
   `load_json_from<T>` 与 `write_json_atomically<T>`，options/stats/
   favorites/sync_activity/app_shortcuts 的 load_from/save_to 全部改为调用
   同一实现；保留各自的 pretty/compact 与既有原子替换语义。
+- **原子写改用 `tempfile::NamedTempFile::persist`**：`write_json_atomically`
+  不再手写 `.json.tmp` 文件名，改为同目录临时文件 + 写入 + `sync_all` +
+  `persist`，避免临时文件命名冲突并保留崩溃安全。
 
 ### 重构（2026-08-21，换库周第 3 批：clap CLI）
 - **`shurufa-host` 手写 CLI 解析改用 `clap 4 derive`**：删除按 `args[0]`

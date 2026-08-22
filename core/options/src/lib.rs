@@ -23,23 +23,29 @@ where
         .unwrap_or_default()
 }
 
-/// 通用 JSON 原子写：先写同目录 `.tmp` 再 rename，避免崩溃留下半截文件。
+/// 通用 JSON 原子写：用 tempfile 在目标同目录创建临时文件，写入并 fsync 后
+/// persist（原子 rename），避免崩溃留下半截文件或手写 `.json.tmp` 命名冲突。
 fn write_json_atomically<T>(path: &std::path::Path, value: &T, pretty: bool) -> std::io::Result<()>
 where
     T: Serialize,
 {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    use std::io::Write;
+
+    let parent = path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    std::fs::create_dir_all(&parent)?;
     let bytes = if pretty {
         serde_json::to_vec_pretty(value)
     } else {
         serde_json::to_vec(value)
     }
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(&parent)?;
+    tmp.write_all(&bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|e| e.error)?;
     Ok(())
 }
 
