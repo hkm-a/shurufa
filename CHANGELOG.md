@@ -68,6 +68,8 @@
 - **移除 vendored `@tauri-apps/api`（约 9,116 行）**：安装器 UI 已启用
   `withGlobalTauri`，`tauri-api/` 整目录删除；`mcp-plugin.js` 改为直接使用
   `window.__TAURI__` 全局 API，三个 HTML 的 import map 一并移除。
+- **根目录 `sougou.txt` 移入 `tools/research/`**：一次性逆向研究数据归位，
+  `docs/开发计划.md` 引用同步更新。
 
 ### 修复（2026-08-21）
 - **辅码检字（uU 部件反查）多部件码完全失效**：`recognizer/patterns/radical_lookup`
