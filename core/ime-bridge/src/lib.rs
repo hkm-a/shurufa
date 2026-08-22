@@ -102,20 +102,24 @@ impl Engine {
 
             // 每个待调用的 FFI 字段都必须非空，否则后续调用是未定义行为。
             let api_ptrs: [*const (); 14] = [
-                api_ref.setup as *const (),
-                api_ref.initialize as *const (),
-                api_ref.start_maintenance as *const (),
-                api_ref.join_maintenance_thread as *const (),
-                api_ref.create_session as *const (),
-                api_ref.destroy_session as *const (),
-                api_ref.process_key as *const (),
-                api_ref.get_context as *const (),
-                api_ref.free_context as *const (),
-                api_ref.get_commit as *const (),
-                api_ref.free_commit as *const (),
-                api_ref.get_option as *const (),
-                api_ref.set_option as *const (),
-                api_ref.simulate_key_sequence as *const (),
+                api_ref.setup.expect("setup") as *const (),
+                api_ref.initialize.expect("initialize") as *const (),
+                api_ref.start_maintenance.expect("start_maintenance") as *const (),
+                api_ref
+                    .join_maintenance_thread
+                    .expect("join_maintenance_thread") as *const (),
+                api_ref.create_session.expect("create_session") as *const (),
+                api_ref.destroy_session.expect("destroy_session") as *const (),
+                api_ref.process_key.expect("process_key") as *const (),
+                api_ref.get_context.expect("get_context") as *const (),
+                api_ref.free_context.expect("free_context") as *const (),
+                api_ref.get_commit.expect("get_commit") as *const (),
+                api_ref.free_commit.expect("free_commit") as *const (),
+                api_ref.get_option.expect("get_option") as *const (),
+                api_ref.set_option.expect("set_option") as *const (),
+                api_ref
+                    .simulate_key_sequence
+                    .expect("simulate_key_sequence") as *const (),
             ];
             if api_ptrs.iter().any(|p| p.is_null()) {
                 ENGINE_ALIVE.store(false, Ordering::SeqCst);
@@ -133,15 +137,17 @@ impl Engine {
             traits.min_log_level = 2;
             traits.log_dir = log_dir.as_ptr(); // 空串表示仅输出到 stderr
 
-            (api_ref.setup)(&mut traits);
-            (api_ref.initialize)(&mut traits);
+            (api_ref.setup.expect("setup"))(&mut traits);
+            (api_ref.initialize.expect("initialize"))(&mut traits);
 
             // 增量部署（librime#1077）：full_check=0 只重建 mtime 变化的
             // schema/词典，启动秒级；首装无 build 产物时 librime 仍会全量
             // 构建，等价于 full_check=1 的首次行为。安装器预构建 + host
             // deploy 命令已覆盖 schema 变更场景，无需每次启动全量重编译。
-            if (api_ref.start_maintenance)(0) != 0 {
-                (api_ref.join_maintenance_thread)();
+            if (api_ref.start_maintenance.expect("start_maintenance"))(0) != 0 {
+                (api_ref
+                    .join_maintenance_thread
+                    .expect("join_maintenance_thread"))();
             }
 
             Ok(Engine {
@@ -175,7 +181,7 @@ impl Engine {
 
     pub fn create_session(&self) -> Result<Session<'_>, String> {
         let _guard = self.lock();
-        let id = unsafe { (self.api().create_session)() };
+        let id = unsafe { (self.api().create_session.expect("create_session"))() };
         if id == 0 {
             return Err("创建 Rime 会话失败".into());
         }
@@ -188,9 +194,14 @@ impl Engine {
     pub fn deploy_schema(&self, schema_id: &str) -> bool {
         let _guard = self.lock();
         let id = to_cstring(schema_id);
-        let ok = unsafe { (self.api().deploy_schema)(id.as_ptr()) != 0 };
+        let ok = unsafe { (self.api().deploy_schema.expect("deploy_schema"))(id.as_ptr()) != 0 };
         // deploy_schema 可能启动后台维护线程，等待其结束避免与后续部署竞争
-        unsafe { (self.api().join_maintenance_thread)() };
+        unsafe {
+            (self
+                .api()
+                .join_maintenance_thread
+                .expect("join_maintenance_thread"))()
+        };
         ok
     }
 }
@@ -199,8 +210,11 @@ impl Drop for Engine {
     fn drop(&mut self) {
         let _guard = self.lock();
         unsafe {
-            (self.api().cleanup_all_sessions)();
-            (self.api().finalize)();
+            (self
+                .api()
+                .cleanup_all_sessions
+                .expect("cleanup_all_sessions"))();
+            (self.api().finalize.expect("finalize"))();
         }
         ENGINE_ALIVE.store(false, Ordering::SeqCst);
     }
@@ -211,13 +225,22 @@ impl Session<'_> {
     pub fn simulate(&self, keys: &str) -> bool {
         let _guard = self.engine.lock();
         let keys = to_cstring(keys);
-        unsafe { (self.engine.api().simulate_key_sequence)(self.id, keys.as_ptr()) != 0 }
+        unsafe {
+            (self
+                .engine
+                .api()
+                .simulate_key_sequence
+                .expect("simulate_key_sequence"))(self.id, keys.as_ptr())
+                != 0
+        }
     }
 
     /// 发送单个键（X11 keysym 编码，与 librime 约定一致）。
     pub fn process_key(&self, keycode: i32, mask: i32) -> bool {
         let _guard = self.engine.lock();
-        unsafe { (self.engine.api().process_key)(self.id, keycode, mask) != 0 }
+        unsafe {
+            (self.engine.api().process_key.expect("process_key"))(self.id, keycode, mask) != 0
+        }
     }
 
     /// 引擎忙时的非阻塞喂键（weasel#1867 手段3 同类）：引擎锁被其他会话
@@ -226,14 +249,16 @@ impl Session<'_> {
     /// `process_key`，返回 `Some(eaten)`。
     pub fn try_process_key(&self, keycode: i32, mask: i32) -> Option<bool> {
         let _guard = self.engine.try_lock()?;
-        unsafe { Some((self.engine.api().process_key)(self.id, keycode, mask) != 0) }
+        unsafe {
+            Some((self.engine.api().process_key.expect("process_key"))(self.id, keycode, mask) != 0)
+        }
     }
 
     /// 读取布尔开关（如 "ascii_mode"、"simplification"）。
     pub fn get_option(&self, option: &str) -> bool {
         let _guard = self.engine.lock();
         let opt = to_cstring(option);
-        unsafe { (self.engine.api().get_option)(self.id, opt.as_ptr()) != 0 }
+        unsafe { (self.engine.api().get_option.expect("get_option"))(self.id, opt.as_ptr()) != 0 }
     }
 
     /// 设置布尔开关。
@@ -241,7 +266,11 @@ impl Session<'_> {
         let _guard = self.engine.lock();
         let opt = to_cstring(option);
         unsafe {
-            (self.engine.api().set_option)(self.id, opt.as_ptr(), value as ffi::Bool);
+            (self.engine.api().set_option.expect("set_option"))(
+                self.id,
+                opt.as_ptr(),
+                value as ffi::Bool,
+            );
         }
     }
 
@@ -256,9 +285,9 @@ impl Session<'_> {
         let _guard = self.engine.lock();
         let api = self.engine.api();
         let opt = to_cstring("ascii_mode");
-        let now = unsafe { (api.get_option)(self.id, opt.as_ptr()) == 0 };
+        let now = unsafe { (api.get_option.expect("get_option"))(self.id, opt.as_ptr()) == 0 };
         unsafe {
-            (api.set_option)(self.id, opt.as_ptr(), now as ffi::Bool);
+            (api.set_option.expect("set_option"))(self.id, opt.as_ptr(), now as ffi::Bool);
         }
         now
     }
@@ -270,7 +299,7 @@ impl Session<'_> {
         unsafe {
             let mut ctx = MaybeUninit::<ffi::RimeContext>::zeroed().assume_init();
             ffi::rime_struct_init::<ffi::RimeContext>(&mut ctx.data_size);
-            if (api.get_context)(self.id, &mut ctx) == 0 {
+            if (api.get_context.expect("get_context"))(self.id, &mut ctx) == 0 {
                 return Context::default();
             }
             let preedit = cstr_to_string(ctx.composition.preedit);
@@ -296,7 +325,7 @@ impl Session<'_> {
                     });
                 }
             }
-            (api.free_context)(&mut ctx);
+            (api.free_context.expect("free_context"))(&mut ctx);
             result
         }
     }
@@ -308,11 +337,11 @@ impl Session<'_> {
         unsafe {
             let mut commit = MaybeUninit::<ffi::RimeCommit>::zeroed().assume_init();
             ffi::rime_struct_init::<ffi::RimeCommit>(&mut commit.data_size);
-            if (api.get_commit)(self.id, &mut commit) == 0 {
+            if (api.get_commit.expect("get_commit"))(self.id, &mut commit) == 0 {
                 return None;
             }
             let text = cstr_to_string(commit.text);
-            (api.free_commit)(&mut commit);
+            (api.free_commit.expect("free_commit"))(&mut commit);
             if text.is_empty() {
                 None
             } else {
@@ -324,20 +353,20 @@ impl Session<'_> {
     /// 设置组合内光标（字节偏移，以待编辑的 raw input 为准，即 UTF-8）。
     pub fn set_caret_pos(&self, byte_pos: usize) {
         let _guard = self.engine.lock();
-        unsafe { (self.engine.api().set_caret_pos)(self.id, byte_pos) }
+        unsafe { (self.engine.api().set_caret_pos.expect("set_caret_pos"))(self.id, byte_pos) }
     }
 
     /// 当前组合内光标的字节偏移。
     pub fn caret_pos(&self) -> usize {
         let _guard = self.engine.lock();
-        unsafe { (self.engine.api().get_caret_pos)(self.id) }
+        unsafe { (self.engine.api().get_caret_pos.expect("get_caret_pos"))(self.id) }
     }
 
     /// 当前原始输入串（raw input，ASCII 拼音）。
     pub fn input(&self) -> String {
         let _guard = self.engine.lock();
         unsafe {
-            let p = (self.engine.api().get_input)(self.id);
+            let p = (self.engine.api().get_input.expect("get_input"))(self.id);
             if p.is_null() {
                 String::new()
             } else {
@@ -349,19 +378,36 @@ impl Session<'_> {
     /// 选择当前页第 `index` 个候选；成功返回 true。
     pub fn select_candidate_on_current_page(&self, index: usize) -> bool {
         let _guard = self.engine.lock();
-        unsafe { (self.engine.api().select_candidate_on_current_page)(self.id, index) != 0 }
+        unsafe {
+            (self
+                .engine
+                .api()
+                .select_candidate_on_current_page
+                .expect("select_candidate_on_current_page"))(self.id, index)
+                != 0
+        }
     }
 
     /// 翻一页候选；`backward` 为 true 是上一页。
     pub fn change_page(&self, backward: bool) -> bool {
         let _guard = self.engine.lock();
-        unsafe { (self.engine.api().change_page)(self.id, backward as ffi::Bool) != 0 }
+        unsafe {
+            (self.engine.api().change_page.expect("change_page"))(self.id, backward as ffi::Bool)
+                != 0
+        }
     }
 
     /// 删除当前页第 `index` 个候选（"忘记该词"）；成功返回 true。
     pub fn forget_on_current_page(&self, index: usize) -> bool {
         let _guard = self.engine.lock();
-        unsafe { (self.engine.api().delete_candidate_on_current_page)(self.id, index) != 0 }
+        unsafe {
+            (self
+                .engine
+                .api()
+                .delete_candidate_on_current_page
+                .expect("delete_candidate_on_current_page"))(self.id, index)
+                != 0
+        }
     }
 
     /// 读取引擎状态位：(是否英文直输, 是否全角, 是否英文标点)。
@@ -372,7 +418,7 @@ impl Session<'_> {
         unsafe {
             let mut status = MaybeUninit::<ffi::RimeStatus>::zeroed().assume_init();
             ffi::rime_struct_init::<ffi::RimeStatus>(&mut status.data_size);
-            if (api.get_status)(self.id, &mut status) == 0 {
+            if (api.get_status.expect("get_status"))(self.id, &mut status) == 0 {
                 return (false, false, false);
             }
             let bits = (
@@ -381,7 +427,7 @@ impl Session<'_> {
                 status.is_ascii_punct != 0,
             );
             // RimeStatus 内含 C 字符串，必须交还引擎释放
-            (api.free_status)(&mut status);
+            (api.free_status.expect("free_status"))(&mut status);
             bits
         }
     }
@@ -391,7 +437,9 @@ impl Session<'_> {
     pub fn select_schema(&self, schema_id: &str) -> bool {
         let _guard = self.engine.lock();
         let id = to_cstring(schema_id);
-        unsafe { (self.engine.api().select_schema)(self.id, id.as_ptr()) != 0 }
+        unsafe {
+            (self.engine.api().select_schema.expect("select_schema"))(self.id, id.as_ptr()) != 0
+        }
     }
 }
 
@@ -399,7 +447,7 @@ impl Drop for Session<'_> {
     fn drop(&mut self) {
         let _guard = self.engine.lock();
         unsafe {
-            (self.engine.api().destroy_session)(self.id);
+            (self.engine.api().destroy_session.expect("destroy_session"))(self.id);
         }
     }
 }
