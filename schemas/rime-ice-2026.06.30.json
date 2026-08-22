@@ -39,5 +39,6 @@
       "size": 16862
     }
   ],
-  "upstream": "iDvel/rime-ice@2026.06.30"
+  "upstream": "iDvel/rime-ice@2026.06.30",
+  "upstream_commit": "6810e8916d160498620a16fef2135956fecbd485"
 }

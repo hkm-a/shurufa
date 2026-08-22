@@ -149,6 +149,8 @@
   简拼索引、无简拼 schema 三份构建期产物，为后续“生成物出库”铺路。
 - **CI 增加生成物一致性校验**：`consistency` 作业重跑生成脚本并用
   `git diff --exit-code` 检查三份产物是否与脚本输出一致。
+- **记录 rime-ice 上游 commit SHA**：`rime-ice-2026.06.30.json` 新增
+  `upstream_commit = 6810e8916d160498620a16fef2135956fecbd485`。
 
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
