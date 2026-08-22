@@ -8,8 +8,8 @@
   2) 知名扩展 B 补充字（龘靐齉爩…，12 字，权重 1000）。
 拼音来源：rime-ice 41448 大字表（https://cdn.jsdelivr.net/gh/iDvel/rime-ice@2026.06.30/cn_dicts/41448.dict.yaml）
 
-输出：把词条**内联追加到 schemas/rime_ice.dict.yaml**（实测 librime import_tables
-对这些补充词库不生效，内联才是可靠路径，2026-08-19）。
+输出：把词条写入 schemas/shurufa_ext.dict.yaml（本地扩展词典，由
+rime_ice.dict.yaml 经 import_tables 挂载；不再污染上游文件）。
 """
 import collections
 import io
@@ -69,18 +69,22 @@ def main():
             seen.add(c)
     block = ['# ===== v1.2 常用生僻字词库包（%d 字）=====' % len(rows),
              '# 来源：base/ext/others 词库中非 8105 规范字（按 25 亿字语料字频权重）+ 知名扩展 B 补充；',
-             '# 拼音来自 rime-ice 41448（Unihan kMandarin + 汉典 zdic）。内联进主词典才能被编译',
-             '# （实测 librime import_tables 对部分单字不生效，2026-08-19）。']
+             '# 拼音来自 rime-ice 41448（Unihan kMandarin + 汉典 zdic）。写入 shurufa_ext 扩展词典。']
     for c, p, w in rows:
         block.append('%s\t%s\t%d' % (c, p, w))
-    path = REPO + '/schemas/rime_ice.dict.yaml'
+    path = REPO + '/schemas/shurufa_ext.dict.yaml'
     content = io.open(path, encoding='utf-8').read()
     start = content.find('# ===== v1.2 常用生僻字词库包')
-    if start != -1:
-        content = content[:start].rstrip() + '\n'
-    content += '\n'.join(block) + '\n'
+    next_marker = content.find('\n# =====', start) if start != -1 else -1
+    block_text = '\n'.join(block) + '\n'
+    if start == -1:
+        content = content.rstrip() + '\n' + block_text
+    elif next_marker == -1:
+        content = content[:start].rstrip() + '\n' + block_text
+    else:
+        content = content[:start].rstrip() + '\n' + block_text + content[next_marker + 1:]
     io.open(path, 'w', encoding='utf-8').write(content)
-    print('inlined %d entries into rime_ice.dict.yaml' % len(rows))
+    print('wrote %d entries into shurufa_ext.dict.yaml' % len(rows))
 
 
 if __name__ == '__main__':
