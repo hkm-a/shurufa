@@ -1,19 +1,10 @@
 //! 算法服务的会话处理：把命名管道上的 [Request] 映射到 ime_bridge 会话。
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use ime_bridge::Session;
+use ime_policy::{is_overlong_composition, note_commit, note_key, GLOBAL_ASCII};
 
 use crate::pipe::PipeServer;
 use crate::{decode_request, encode_response, Request, Response};
-
-/// 全局中/英状态（模拟搜狗"全局中英"语义，悬浮条可显示/切换）：
-/// - 任一会话 ToggleAscii / SetOption("ascii_mode") 都会更新它；
-/// - ProcessKey 喂键前把本会话同步到全局值——所有应用下一个按键自动跟上；
-/// - GetOption("ascii_mode") 返回全局值，供悬浮条/控制中心查询。
-///
-/// 内存态即可：中英切换属于会话运行时状态，无需持久化。
-static GLOBAL_ASCII: AtomicBool = AtomicBool::new(false);
 
 /// 处理一个客户端连接：循环读取请求、基于会话执行、写回应答。
 /// `create_session` 可在会话丢失时重建（引擎由调用方持有）。
@@ -82,10 +73,10 @@ fn handle_request(
         Request::DestroySession => Response::Ok,
         Request::ProcessKey { keysym, mask } => {
             // 打字统计埋点：按键必计一次；上屏非空时计字符数（失败静默）
-            shurufa_options::stats::note_keys(1);
+            note_key();
             // 全局中/英同步：喂键前让本会话跟上全局态（任一处切换，全部
             // 应用下一个按键即生效——搜狗全局中英语义；悬浮条切换依赖此）
-            let global_ascii = GLOBAL_ASCII.load(Ordering::Relaxed);
+            let global_ascii = GLOBAL_ASCII.load();
             if s.get_option("ascii_mode") != global_ascii {
                 s.set_option("ascii_mode", global_ascii);
             }
@@ -95,7 +86,7 @@ fn handle_request(
             // 让超长串"转纯字母直通"（与微软输入法超长转字母同思路）。
             // 阈值 64 码远高于正常整句输入（"zhonghuarenmingongheguo" 21 码），
             // 正常使用零影响；超长时宁可放弃组合也不让引擎爆炸。
-            if crate::is_overlong_composition(s.input().chars().count()) {
+            if is_overlong_composition(s.input().chars().count()) {
                 let _ = s.simulate("{Escape}");
             }
             // 引擎忙 try-lock（weasel#1867 手段3 同类）：另一宿主的会话正持锁
@@ -120,9 +111,7 @@ fn handle_request(
             context.is_full_shape = is_full_shape;
             let commit = s.commit();
             if let Some(text) = commit.as_deref() {
-                if !text.is_empty() {
-                    shurufa_options::stats::note_chars(text.chars().count());
-                }
+                note_commit(text);
             }
             Response::ProcessKey {
                 eaten,
@@ -136,22 +125,21 @@ fn handle_request(
         Request::GetOption(name) => {
             // ascii_mode 是全局态：返回全局值（会话值可能滞后未同步）
             if name == "ascii_mode" {
-                Response::Option(GLOBAL_ASCII.load(Ordering::Relaxed))
+                Response::Option(GLOBAL_ASCII.load())
             } else {
                 Response::Option(s.get_option(&name))
             }
         }
         Request::SetOption { name, value } => {
             if name == "ascii_mode" {
-                GLOBAL_ASCII.store(value, Ordering::Relaxed);
+                GLOBAL_ASCII.store(value);
             }
             s.set_option(&name, value);
             Response::Ok
         }
         Request::ToggleAscii => {
             // 全局优先翻转：保证任意来源的切换都落在全局态上
-            let next = !GLOBAL_ASCII.load(Ordering::Relaxed);
-            GLOBAL_ASCII.store(next, Ordering::Relaxed);
+            let next = GLOBAL_ASCII.toggle();
             s.set_option("ascii_mode", next);
             Response::Ascii(next)
         }

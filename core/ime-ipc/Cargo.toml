@@ -10,6 +10,7 @@ name = "ime_ipc"
 
 [dependencies]
 ime-bridge = { path = "../ime-bridge" }
+ime-policy = { path = "../ime-policy" }
 shurufa-options = { path = "../options" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

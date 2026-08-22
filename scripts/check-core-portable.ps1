@@ -27,11 +27,11 @@ $platformCrates = @('windows', 'windows-sys', 'windows-core', 'windows-registry'
 # 既有违规基线。**只允许缩短，不允许加长。**
 # 每一项都必须写明欠债内容与偿还方向，删除一项即代表该债已还清。
 $baseline = @{
-    # ime-ipc 同时是「命名管道传输」与「输入法策略层」。策略部分（全局中英
-    # 状态机、超长组合防护、打字统计埋点、候选装饰钩子）本应下沉到平台无关的
-    # core/ime-policy，传输部分则应移到 platforms/windows-ipc。
-    # 偿还前，Android 无法复用任何按键策略，双端行为会持续分叉。
-    'ime-ipc' = 'IPC 传输与 IME 策略混装；待拆为 core/ime-policy + platforms/windows-ipc'
+    # ime-ipc 仍持有 Windows 命名管道传输（pipe.rs / server.rs 依赖 windows）。
+    # 策略部分（全局中英、超长组合、统计、MRU、简拼）已下沉 core/ime-policy；
+    # 传输部分待拆为 platforms/windows-ipc。偿还前 core/ime-ipc 无法在
+    # 非 Windows target 通过 cargo check，Android 仍无法复用其按键策略。
+    'ime-ipc' = 'Windows 命名管道传输仍留在 core；待拆为 platforms/windows-ipc'
 }
 
 $violations = @()

@@ -20,7 +20,15 @@ impl JianpinIndex {
             max_code_len: 8,
         }
     }
+}
 
+impl Default for JianpinIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl JianpinIndex {
     /// 加载索引文件：每行 `编码\t词\t权重`，同编码按权重降序。
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)

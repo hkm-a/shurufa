@@ -1,0 +1,14 @@
+[package]
+name = "ime-policy"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "跨平台输入法策略层：全局中英、超长组合、打字统计、MRU、简拼与候选装饰"
+
+[lib]
+name = "ime_policy"
+
+[dependencies]
+shurufa-options = { path = "../options" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

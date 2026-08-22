@@ -16,6 +16,7 @@ use std::process::exit;
 use std::time::Duration;
 
 use ime_ipc::pipe::{PipeServer, PIPE_NAME};
+use ime_policy::{JianpinIndex, MruStore};
 
 fn log(msg: &str) {
     eprintln!("[algo] {msg}");
@@ -30,16 +31,12 @@ fn log(msg: &str) {
 // 纯判定函数 input_scheme_differs 的测试见 platforms/windows/src/service.rs。
 // ---------------------------------------------------------------------------
 
-mod jianpin;
-mod mru;
-
 /// 供 service 调用：按会话的 raw composition 作 key 做 MRU boost。
 /// `pinyin` 由调用方提供；当前会话层由 ime-ipc 上游（TSF 宿主）记录，
 /// 本服务仅按上下文里"已选"回调『记录』。MRU 查询在候选返回后做。
-fn mru_store() -> &'static std::sync::Mutex<mru::MruStore> {
-    static INSTANCE: std::sync::OnceLock<std::sync::Mutex<mru::MruStore>> =
-        std::sync::OnceLock::new();
-    INSTANCE.get_or_init(|| std::sync::Mutex::new(mru::MruStore::load()))
+fn mru_store() -> &'static std::sync::Mutex<MruStore> {
+    static INSTANCE: std::sync::OnceLock<std::sync::Mutex<MruStore>> = std::sync::OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::Mutex::new(MruStore::load()))
 }
 
 /// 处理一个候选 list 并返回按 MRU 提升后的新列表（不改 librime 原序的剩余部分）。
@@ -51,15 +48,15 @@ fn mru_boost_candidates(pinyin: &str, candidates: Vec<String>) -> Vec<String> {
 }
 
 /// 简拼索引单例：启动后从 shared_data_dir/jianpin_index.txt 加载一次。
-fn jianpin_store() -> &'static jianpin::JianpinIndex {
-    static INSTANCE: std::sync::OnceLock<jianpin::JianpinIndex> = std::sync::OnceLock::new();
+fn jianpin_store() -> &'static JianpinIndex {
+    static INSTANCE: std::sync::OnceLock<JianpinIndex> = std::sync::OnceLock::new();
     INSTANCE.get_or_init(|| {
         let p = shared_data_dir().join("jianpin_index.txt");
-        match jianpin::JianpinIndex::load(&p) {
+        match JianpinIndex::load(&p) {
             Ok(idx) => idx,
             Err(e) => {
                 log(&e);
-                jianpin::JianpinIndex::new()
+                JianpinIndex::new()
             }
         }
     })
@@ -128,7 +125,7 @@ fn decorate_process_key(
     // 查词库预生成的简拼索引（jianpin_index.txt）把词条注入候选。
     // librime 原生不支持多音节简拼词（简拼音节不参与词条匹配），
     // 单字简拼/完整拼音正常；搜狗/微信式简拼词靠这层前端索引补上。
-    if context.candidates.is_empty() && jianpin::JianpinIndex::is_pure_consonant(raw_after) {
+    if context.candidates.is_empty() && JianpinIndex::is_pure_consonant(raw_after) {
         let words = jianpin_store().lookup(raw_after, 9);
         if !words.is_empty() {
             context.candidates = words

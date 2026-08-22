@@ -23,6 +23,17 @@
   `__include` 无法从列表中精准删除 `abbrev` 条目而不可行，继续保留完整副本
   生成，避免破坏引擎集成测试安全网。
 
+### 重构（2026-08-22，阶段 4 第 1 批：core/ime-policy）
+- **新增 `core/ime-policy` 零平台依赖策略层**：承接全局中/英状态机、
+  超长组合防护、打字统计埋点、MRU 候选提频、简拼索引查询。
+- **`windows-algo` 的 `mru.rs` / `jianpin.rs` 移入 `core/ime-policy`**：
+  删除本地重复实现，`shurufa-algo` 改为复用 `ime_policy::{MruStore, JianpinIndex}`。
+- **`core/ime-ipc` server 改用 `ime_policy`**：`GLOBAL_ASCII`、
+  `is_overlong_composition`、`note_key` / `note_commit` 不再由传输层持有，
+  为后续把 Windows 命名管道拆到 `platforms/windows-ipc` 铺路。
+- 新增 13 项单元测试（全局中英、超长组合、MRU、简拼），全工作区
+  fmt/clippy/ime-policy/ime-ipc/algo 验证通过。
+
 ### 工程与治理（2026-08-21）
 - **CI 恢复为可信信号**：此前 main 分支连续 14 次运行全红，README 却声称
   「clippy 与 fmt 零告警、约 240 项测试全绿」。实测四项声明全部不成立
