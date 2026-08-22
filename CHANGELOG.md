@@ -84,6 +84,10 @@
   HKCU Run `FOXSettings` 键读写，`settings_autostart_info` / `set` 改用
   `AutoLaunchManager`；仍保留“已部署目录才允许自动开启”的 installed 判断。
 
+### 重构（2026-08-21，换库周第 9 批：multipart boundary 改用 uuid）
+- **`windows-host` ASR multipart boundary 改用 `uuid::Uuid::new_v4()`**：
+  删除手写时间戳 boundary，减少随机源手写代码。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除

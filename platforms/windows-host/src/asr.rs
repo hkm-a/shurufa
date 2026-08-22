@@ -5,8 +5,6 @@
 //! - Base URL / 模型来自 options.json（speech.cloud_base_url / cloud_model）。
 //! - multipart 手写（ureq 2.12 无内置 multipart），纯函数可单测。
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 /// 云端转写配置。
 #[derive(Debug, Clone)]
 pub struct AsrConfig {
@@ -84,11 +82,7 @@ pub fn build_multipart(
 }
 
 fn random_boundary() -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("shurufa-asr-{ts:x}")
+    format!("shurufa-asr-{}", uuid::Uuid::new_v4().simple())
 }
 
 /// 解析 OpenAI 兼容转写响应 {"text": "..."}；失败返回可展示的错误。
