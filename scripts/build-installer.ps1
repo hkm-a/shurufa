@@ -20,6 +20,10 @@ $version = [string]$manifest.version
 & (Join-Path $sourceRoot 'scripts\set-version.ps1') -Check
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+# 先重新生成三份构建期产物，避免仓内生成物过期（阶段 3）。
+& (Join-Path $sourceRoot 'scripts\regenerate-generated.ps1')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 if (-not $SkipBuild) {
     Push-Location $sourceRoot
     try {

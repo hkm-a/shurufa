@@ -84,3 +84,28 @@ fn 无简拼变体方案可部署且全拼不回归() {
     // （librime 简拼依赖 prism 部署增量与码表编码，实机验证）；此处仅锁定
     // 变体方案可部署且全拼不回归。
 }
+
+/// 阶段 3 第 5 项证据：librime 原生 abbrev 只对单音节生效，
+/// 多音节简拼词（如 lw → 另外）在未加载外部索引时不会命中，
+/// 因此 windows-algo 的 jianpin_index.txt 是必要的前端补丁。
+#[test]
+fn 原生简拼不命中多音节简拼词() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = repo_root();
+    let user_dir = root.join("target/rime-jianpin-native-limit-user-data");
+    if user_dir.exists() {
+        std::fs::remove_dir_all(&user_dir).expect("清理测试用户词典失败");
+    }
+    let engine = Engine::init(&root.join("schemas"), &user_dir).expect("引擎初始化失败");
+    let session = engine.create_session().expect("创建会话失败");
+
+    // lw 是“另外/论文/礼物”的简拼；原生 librime 不应把它们当词条命中。
+    assert!(session.simulate("lw"), "lw 键序未被接受");
+    let cands = candidate_texts(&session);
+    assert!(
+        !cands
+            .iter()
+            .any(|c| c.contains("另外") || c.contains("论文") || c.contains("礼物")),
+        "原生 librime 不应命中多音节简拼词，实际：{cands:?}"
+    );
+}

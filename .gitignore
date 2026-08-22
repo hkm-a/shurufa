@@ -47,3 +47,8 @@
 
 # 本机 Android 交叉编译配置（含绝对 NDK 路径），从 .cargo/config.toml.example 复制
 /.cargo/config.toml
+
+# 构建期生成物（阶段 3 出库，由 scripts/regenerate-generated.py 生成）
+/schemas/shurufa_t9.dict.yaml
+/schemas/jianpin_index.txt
+/schemas/rime_ice_nojianpin.schema.yaml

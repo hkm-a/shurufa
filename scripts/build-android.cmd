@@ -11,6 +11,8 @@ set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
 set GRADLE=%LOCALAPPDATA%\gradle-dist\gradle-8.10.2\bin\gradle.bat
 
 cd /d "%ROOT%"
+rem 阶段 3：schemas 已出库，构建前重新生成三份产物（T9/简拼/无简拼）。
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\regenerate-generated.ps1" || goto :fail
 cargo build --release --target aarch64-linux-android -p shurufa-rimejni || goto :fail
 if not exist "%ROOT%\platforms\android\app\src\main\jniLibs\arm64-v8a" mkdir "%ROOT%\platforms\android\app\src\main\jniLibs\arm64-v8a"
 copy /y "%ROOT%\target\aarch64-linux-android\release\libshurufa_rime.so" "%ROOT%\platforms\android\app\src\main\jniLibs\arm64-v8a\" >nul || goto :fail

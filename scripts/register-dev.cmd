@@ -26,6 +26,9 @@ if not exist "%SRC%\third_party\librime\dist\lib\rime.dll" (
 
 if not exist "%DEST%" mkdir "%DEST%"
 
+rem 阶段 3：生成三份构建期产物（已出库），再复制 schemas。
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%\scripts\regenerate-generated.ps1" >nul || goto :copyfail
+
 rem Loaded DLLs and memory-mapped dictionaries cannot be overwritten,
 rem but they CAN be renamed. Move live files out of the way first and
 rem sweep leftovers from previous runs (best effort; locked ones stay).

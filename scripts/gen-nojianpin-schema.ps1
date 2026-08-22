@@ -1,5 +1,8 @@
 param()
-# 生成「无简拼」变体方案（M10 困难项简拼开关的部署期替代）：
+# 生成「无简拼」变体方案（M10 困难项简拼开关的部署期替代）。
+# 实际逻辑在 scripts/gen-nojianpin-schema.py（阶段 3 起统一走 Python，
+# 保证 Windows/Linux 输出一致；本脚本保留为 PowerShell 兼容入口）。
+#
 # librime 1.17 speller/algebra 不支持条件规则（option@jianpin: 实测
 # Error loading formula #13），无法热开关简拼；改为生成去掉 abbrev 规则的
 # rime_ice_nojianpin.schema.yaml，由设置中心方案页切换 + 重新部署生效。
@@ -9,17 +12,5 @@ param()
 # 继续保留“生成完整副本”策略，避免破坏 20 个引擎集成测试的安全网。
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$src = Join-Path $root "schemas\rime_ice.schema.yaml"
-$dst = Join-Path $root "schemas\rime_ice_nojianpin.schema.yaml"
-$lines = Get-Content $src -Encoding UTF8
-$kept = New-Object System.Collections.Generic.List[string]
-$removed = 0
-foreach ($line in $lines) {
-  if ($line -match "^\s+- abbrev/") { $removed++; continue }
-  if ($line -eq "  schema_id: rime_ice") { $kept.Add("  schema_id: rime_ice_nojianpin"); continue }
-  if ($line -eq "  name: 雾凇拼音") { $kept.Add("  name: 雾凇拼音（无简拼）"); continue }
-  $kept.Add($line)
-}
-$enc = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllLines($dst, $kept.ToArray(), $enc)
-Write-Host ("已生成 {0}（删除 abbrev 规则 {1} 行）" -f $dst, $removed)
+python (Join-Path $PSScriptRoot 'gen-nojianpin-schema.py') $root
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+### 重构（2026-08-22，阶段 3 收尾：schemas 生成物出库）
+- **三份构建期生成物出库**：`shurufa_t9.dict.yaml`（约 15 MB）、
+  `jianpin_index.txt`（约 13.8 MB）、`rime_ice_nojianpin.schema.yaml` 不再提交
+  Git，改为 `.gitignore` + 构建/部署前统一生成。
+  - 新增跨平台 Python 入口 `scripts/regenerate-generated.py`，内部调用
+    `gen-t9-dict.py` / `gen-jianpin-index.py` / `gen-nojianpin-schema.py`；
+    `regenerate-generated.ps1` 改为薄封装。
+  - 自动接入：`build-installer.ps1`、Android Gradle `syncSchemas`、
+    `build-android.cmd`、`register-dev.cmd`、`update-all.ps1 -Schemas`。
+  - CI 一致性校验改为对比 `schemas/generated-files.sha256`（小清单入库），
+    不再对大文件做 `git diff`。
+- **简拼上游穷尽验证补证据**：新增 `core/ime-bridge/tests/jianpin_switch.rs`
+  测试，证明 librime 原生 `abbrev` 只对单音节生效、多音节简拼词（`lw` →
+  另外/论文/礼物）不命中；因此 `windows-algo` 的前端 `jianpin_index.txt`
+  仍是必要补丁。
+- **记录 nojianpin 生成策略决策**：`*.custom.yaml` patch 覆盖层因 Rime
+  `__include` 无法从列表中精准删除 `abbrev` 条目而不可行，继续保留完整副本
+  生成，避免破坏引擎集成测试安全网。
+
 ### 工程与治理（2026-08-21）
 - **CI 恢复为可信信号**：此前 main 分支连续 14 次运行全红，README 却声称
   「clippy 与 fmt 零告警、约 240 项测试全绿」。实测四项声明全部不成立

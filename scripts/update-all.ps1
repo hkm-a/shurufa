@@ -41,6 +41,16 @@ if ($All) { $Services = $true; $Cc = $true; $Tsf = $true; $Schemas = $true }
 "=== $(Get-Date -Format o) ===" | Out-File $log
 Log "开始更新：Services=$Services Cc=$Cc Tsf=$Tsf Schemas=$Schemas Build=$(-not $NoBuild) Start=$(-not $NoStart)"
 
+# 阶段 3：schemas 已出库，同步前必须重新生成三份构建期产物。
+if ($Schemas) {
+    Log "重新生成构建期 schemas 产物（regenerate-generated.ps1）…"
+    & (Join-Path $PSScriptRoot 'regenerate-generated.ps1')
+    if ($LASTEXITCODE -ne 0) {
+        Log "FAIL: 重新生成 schemas 产物失败"
+        exit 1
+    }
+}
+
 # ---------- 1) 构建（普通用户即可） ----------
 if (-not $NoBuild) {
   if ($Services) {

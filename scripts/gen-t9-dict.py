@@ -66,7 +66,7 @@ def main():
         entries.extend(load_source(path))
     # 同码内按权重降序，与 rime sort: by_weight 一致；整体按码排序便于二分。
     entries.sort(key=lambda e: (e[1], -e[2]))
-    with io.open(OUT, 'w', encoding='utf-8') as f:
+    with io.open(OUT, 'w', encoding='utf-8', newline='\n') as f:
         f.write('# Rime dictionary\n')
         f.write('# encoding: utf-8\n')
         f.write('---\n')

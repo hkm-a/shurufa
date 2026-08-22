@@ -12,6 +12,28 @@ NSIS 安装器（`installer\shurufa.nsi`）与 Android assets（`platforms\andro
 | `essay.txt` | 语言模型语料（八股文） |
 | `shurufa-skin.json` | 跨端皮肤单一入口，Android 与 Windows 控制中心读取 |
 
+## 构建期生成物（阶段 3 已出库）
+
+以下三份文件由词库/方案源文件生成，**不提交 Git**，使用前必须重新生成：
+
+| 文件 | 生成脚本 | 用途 |
+| --- | --- | --- |
+| `shurufa_t9.dict.yaml` | `scripts/gen-t9-dict.py` | Android 9 键 T9 词库 |
+| `jianpin_index.txt` | `scripts/gen-jianpin-index.py` | Windows algo 简拼前端索引 |
+| `rime_ice_nojianpin.schema.yaml` | `scripts/gen-nojianpin-schema.py` | 无简拼变体方案 |
+
+统一入口：
+
+```powershell
+python scripts/regenerate-generated.py
+# 或
+.\scripts\regenerate-generated.ps1
+```
+
+CI 通过 `schemas/generated-files.sha256`（小清单，入库）校验生成物与脚本一致；
+Windows 安装器、Android Gradle、`register-dev.cmd`、`update-all.ps1 -Schemas`
+均会在使用前自动调用本入口。
+
 ## 词库版本与更新
 
 `rime-ice-2026.06.30.json` 是当前锁定的 rime-ice manifest：列出每个 `cn_dicts` 文件的

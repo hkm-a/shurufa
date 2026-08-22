@@ -24,7 +24,7 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/regenerate-generated.ps1
-          git diff --exit-code -- schemas/shurufa_t9.dict.yaml schemas/jianpin_index.txt schemas/rime_ice_nojianpin.schema.yaml
+          git diff --exit-code -- schemas/generated-files.sha256
 
   windows-build:
     runs-on: windows-latest
@@ -58,6 +58,9 @@ jobs:
           New-Item -ItemType Directory -Force third_party\librime | Out-Null
           Invoke-WebRequest -Uri "https://github.com/rime/librime/releases/download/${env:LIBRIME_VERSION}/${env:LIBRIME_TAG}-Windows-msvc-x64.7z" -OutFile third_party\librime\rime.7z
           7z x -y third_party\librime\rime.7z -othird_party\librime
+      - name: 生成构建期 schemas 产物（阶段 3 出库后构建前统一生成）
+        shell: pwsh
+        run: ./scripts/regenerate-generated.ps1
       - name: 格式与 lint
         run: |
           cargo fmt --all -- --check

@@ -59,7 +59,16 @@ android {
     }
 }
 
+// 阶段 3：schemas 三份构建期产物已出库，Android 构建前由 Python 脚本统一生成。
+val regenerateSchemas = tasks.register<Exec>("regenerateSchemas") {
+    val script = File(repoRootDir, "scripts/regenerate-generated.py").absolutePath
+    val python = if (System.getProperty("os.name").startsWith("Windows")) "python" else "python3"
+    commandLine(python, script, repoRootDir.absolutePath)
+    outputs.upToDateWhen { false }
+}
+
 val syncSchemas = tasks.register<Copy>("syncSchemas") {
+    dependsOn(regenerateSchemas)
     from(File(repoRootDir, "schemas")) {
         include(
             "rime_ice.schema.yaml",

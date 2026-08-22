@@ -56,6 +56,7 @@ Android 构建（需 JDK 17、Android SDK 与 Rust Android target）：
 常用本地验证：
 
 ```powershell
+.\scripts\regenerate-generated.ps1   # 首次拉取/生成物缺失时先执行（阶段 3 已出库）
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
