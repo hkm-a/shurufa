@@ -208,36 +208,7 @@ enum Outbound {
 
 /// 生成一条出站消息 id（uuid v4，无连字符小写）。
 fn new_msg_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // 基于时间戳 + 进程内自增 + 随机源构造 128bit，避免引入 uuid 依赖。
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let rand: u64 = rand_part();
-    let a = (now as u64) ^ rand.rotate_left(21);
-    let b = ((now >> 64) as u64) ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ rand;
-    format!("{a:016x}{b:016x}")
-}
-
-/// 取一个 64bit 随机数：优先 `getrandom` 不可用则回退到地址熵 + 时间。
-fn rand_part() -> u64 {
-    use std::collections::hash_map::RandomState;
-    use std::hash::BuildHasher;
-    // RandomState 每次进程启动随机播种；用来快速取一个无法预测的 64bit。
-    let state = RandomState::new();
-    let hasher = state.build_hasher();
-    use std::hash::Hasher;
-    let mut h = hasher;
-    h.write_u64(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u64)
-            .unwrap_or(0),
-    );
-    h.finish()
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 /// 配对确认提示：宿主展示 `code` 并让用户比对两端一致后放行。
@@ -902,11 +873,7 @@ fn send_file_impl(shared: Arc<Shared>, path: PathBuf) -> Result<String, SendErr>
             file.read_to_end(&mut buf)
                 .map_err(|e| format!("读文件失败: {e}"))?;
             hasher.update(&buf);
-            let sha256 = hasher
-                .finalize()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>();
+            let sha256 = hex::encode(hasher.finalize());
             let chunks: Vec<String> = buf
                 .chunks(chunk_bytes as usize)
                 .map(|c| base64::engine::general_purpose::STANDARD.encode(c))
@@ -2254,13 +2221,7 @@ fn sha256_of_file(path: &Path) -> Option<String> {
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).ok()?;
     hasher.update(&buf);
-    Some(
-        hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect(),
-    )
+    Some(hex::encode(hasher.finalize()))
 }
 
 #[cfg(test)]

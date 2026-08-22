@@ -29,6 +29,19 @@
     与「当前版本」段纳入校验。此前 `-Check` 只覆盖 4 个 JSON 白名单，导致
     `version.json`=1.8.0 / 徽章=0.8.0 / 正文=1.7.0 三方矛盾长期无人察觉。
 
+### 重构（2026-08-21，换库周第 1 批：libloading + chrono + hex + uuid）
+- **Windows 运行期 DLL 加载改用 `libloading`**：`ime-bridge` 不再手写
+  `LoadLibraryW`/`GetProcAddress`/`transmute`；`self_module_dir` 保留（TSF
+  场景仍需要按当前 DLL 所在目录解析 rime.dll），加载后有意保持库常驻，
+  避免 `Library` drop 导致已取出的 `RimeApi` 指针失效。
+- **打字统计日期算法改用 `chrono`**：`core/options` 删掉手写 Hinnant
+  civil-from-days 及互逆/倒退实现，`today_utc`/`last_days_of` 直接用
+  `NaiveDate`，测试改为验证 `pred_opt`/`succ_opt` 语义。
+- **手写 hex 编码改用 `hex::encode`**：`fingerprint_hex`、文件 sha256、
+  `sha256_of_file` 三处统一走成熟库。
+- **自研 UUID v4 改用 `uuid::Uuid::new_v4()`**：删除基于时间戳+自增+熵的
+  手写 `new_msg_id`/`rand_part`，消息 id 仍保持 32 位小写无连字符格式。
+
 ### 修复（2026-08-21）
 - **辅码检字（uU 部件反查）多部件码完全失效**：`recognizer/patterns/radical_lookup`
   为 `^uU[a-z]+$` 不含撇号，而 `radical_pinyin.schema.yaml` 的 algebra 自 c12a576

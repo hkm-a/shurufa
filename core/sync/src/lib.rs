@@ -32,7 +32,7 @@ use sha2::{Digest, Sha256};
 /// 证书 DER 的 SHA-256 十六进制指纹（64 字符小写）。
 pub fn fingerprint_hex(cert_der: &[u8]) -> String {
     let hash = Sha256::digest(cert_der);
-    hash.iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(hash)
 }
 
 /// 配对确认码：对两端指纹排序拼接后取哈希，两端计算结果必然一致；

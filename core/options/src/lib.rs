@@ -483,26 +483,12 @@ pub mod stats {
         pub today_keys: u64,
     }
 
-    /// 日期按 UTC 日切换：从 unix 秒手工算 YYYY-MM-DD。Windows 上拿本地
-    /// 时区偏移代价高且易错；打字统计按 UTC 日切在业务上可接受（注释说明）。
+    /// 日期按 UTC 日切换：打字统计按 UTC 日切在业务上可接受（注释说明）。
     fn today_utc() -> String {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let days = (secs / 86_400) as i64;
-        // Howard Hinnant 的 civil-from-days 算法
-        let z = days + 719_468;
-        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-        let doe = (z - era * 146_097) as u64; // [0, 146096]
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-        let y = yoe as i64 + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-        let mp = (5 * doy + 2) / 153; // [0, 11]
-        let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-        let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-        let y = if m <= 2 { y + 1 } else { y };
-        format!("{y:04}-{m:02}-{d:02}")
+        chrono::Utc::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string()
     }
 
     fn load_from(path: &Path) -> StatsFile {
@@ -604,58 +590,16 @@ pub mod stats {
     fn last_days_of(stats: &StatsFile, n: usize) -> Vec<(String, u64)> {
         // 从 today_utc() 逐日回推；BTreeMap 按 key 字典序即日期序。
         let mut out = Vec::with_capacity(n);
-        let today = today_utc();
-        let (mut y, mut m, mut d) = parse_ymd(&today).unwrap_or((2000, 1, 1));
+        let mut day = chrono::NaiveDate::parse_from_str(&today_utc(), "%Y-%m-%d")
+            .unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap());
         for _ in 0..n {
-            let key = format!("{y:04}-{m:02}-{d:02}");
+            let key = day.format("%Y-%m-%d").to_string();
             let chars = stats.days.get(&key).map(|c| c.chars).unwrap_or(0);
             out.push((key, chars));
-            // 逐日倒退一天
-            let (py, pm, pd) = prev_day(y, m, d);
-            y = py;
-            m = pm;
-            d = pd;
+            day = day.pred_opt().unwrap_or(day);
         }
         out.reverse();
         out
-    }
-
-    fn parse_ymd(s: &str) -> Option<(i64, u32, u32)> {
-        let mut parts = s.split('-');
-        let y = parts.next()?.parse().ok()?;
-        let m = parts.next()?.parse().ok()?;
-        let d = parts.next()?.parse().ok()?;
-        Some((y, m, d))
-    }
-
-    fn prev_day(y: i64, m: u32, d: u32) -> (i64, u32, u32) {
-        // days-from-civil 逆运算：用与 today_utc 相同的 Hinnant 算法回退。
-        let days = days_from_civil(y, m, d) - 1;
-        civil_from_days(days)
-    }
-
-    fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-        let y_adj = if m <= 2 { y - 1 } else { y };
-        let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
-        let yoe = (y_adj - era * 400) as u64;
-        let mp = if m > 2 { m - 3 } else { m + 9 } as u64;
-        let doy = (153 * mp + 2) / 5 + d as u64 - 1;
-        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        era * 146_097 + doe as i64 - 719_468
-    }
-
-    fn civil_from_days(z: i64) -> (i64, u32, u32) {
-        let z = z + 719_468;
-        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-        let doe = (z - era * 146_097) as u64;
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let y = yoe as i64 + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let y = if m <= 2 { y + 1 } else { y };
-        (y, m as u32, d as u32)
     }
 
     fn totals_of(stats: &StatsFile) -> StatsTotals {
@@ -751,13 +695,17 @@ pub mod stats {
 
         #[test]
         fn 日前后推算与逆运算保持一致() {
-            // 覆盖跨月/跨年边界
+            // 覆盖跨月/跨年边界；日期算术交给 chrono，这里只验证 API 语义。
             for (y, m, d) in [(2026, 8, 8), (2024, 1, 1), (2025, 12, 31), (2000, 2, 29)] {
-                let days = days_from_civil(y, m, d);
-                assert_eq!(civil_from_days(days), (y, m, d), "互逆失败 {y}-{m}-{d}");
-                let (py, pm, pd) = prev_day(y, m, d);
-                let days2 = days_from_civil(py, pm, pd);
-                assert_eq!(days2, days - 1, "prev_day 差一天 {y}-{m}-{d}");
+                let date = chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap();
+                let prev = date.pred_opt().expect("日期应有前一天");
+                assert_eq!(
+                    prev.succ_opt(),
+                    Some(date),
+                    "prev 的次日应回到原日期 {y}-{m}-{d}"
+                );
+                let diff = date.signed_duration_since(prev).num_days();
+                assert_eq!(diff, 1, "prev 应差一天 {y}-{m}-{d}");
             }
         }
     }

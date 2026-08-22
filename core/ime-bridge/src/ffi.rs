@@ -377,18 +377,12 @@ mod loader {
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn LoadLibraryW(name: *const u16) -> *mut c_void;
-        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
         fn GetModuleHandleExW(flags: u32, addr: *const c_void, module: *mut *mut c_void) -> i32;
         fn GetModuleFileNameW(module: *mut c_void, buf: *mut u16, len: u32) -> u32;
     }
 
     const FROM_ADDRESS: u32 = 0x4;
     const UNCHANGED_REFCOUNT: u32 = 0x2;
-
-    fn wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain(std::iter::once(0)).collect()
-    }
 
     /// 包含本段代码的模块（TSF 场景是 shurufa_tsf.dll，测试场景是测试 exe）
     /// 所在目录，rime.dll 与其同目录分发。
@@ -416,27 +410,36 @@ mod loader {
     pub fn get_api() -> Result<*mut RimeApi, String> {
         static API: OnceLock<Result<usize, String>> = OnceLock::new();
         let cached = API.get_or_init(|| unsafe {
-            let mut module = std::ptr::null_mut();
-            if let Some(dir) = self_module_dir() {
+            let library = if let Some(dir) = self_module_dir() {
                 let candidate = dir.join("rime.dll");
-                module = LoadLibraryW(wide(&candidate.to_string_lossy()).as_ptr());
-            }
-            if module.is_null() {
-                // 回落到常规搜索路径（PATH、系统目录）
-                module = LoadLibraryW(wide("rime.dll").as_ptr());
-            }
-            if module.is_null() {
-                return Err("加载 rime.dll 失败：本模块目录与搜索路径均未找到".into());
-            }
-            let proc = GetProcAddress(module, c"rime_get_api".as_ptr() as *const u8);
-            if proc.is_null() {
-                return Err("rime.dll 中未找到 rime_get_api 导出".into());
-            }
-            let get_api: unsafe extern "C" fn() -> *mut RimeApi = std::mem::transmute(proc);
+                libloading::Library::new(&candidate).ok()
+            } else {
+                None
+            };
+            let library = match library {
+                Some(lib) => lib,
+                None => match libloading::Library::new("rime.dll") {
+                    Ok(lib) => lib,
+                    Err(e) => {
+                        return Err(format!(
+                            "加载 rime.dll 失败：本模块目录与搜索路径均未找到（{e}）"
+                        ))
+                    }
+                },
+            };
+            let get_api = match library
+                .get::<unsafe extern "C" fn() -> *mut RimeApi>(c"rime_get_api".to_bytes())
+            {
+                Ok(symbol) => symbol,
+                Err(e) => return Err(format!("rime.dll 中未找到 rime_get_api 导出: {e}")),
+            };
             let api = get_api();
             if api.is_null() {
                 return Err("rime_get_api 返回空指针".into());
             }
+            // 保持 rime.dll 常驻：Library drop 会 FreeLibrary，导致已取出的
+            // RimeApi 指针失效。这里与旧实现一样有意泄漏模块句柄。
+            std::mem::forget(library);
             Ok(api as usize)
         });
         cached.clone().map(|p| p as *mut RimeApi)

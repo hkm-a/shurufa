@@ -7,3 +7,9 @@ description = "librime 引擎的 Rust FFI 桥接层"
 
 [lib]
 name = "ime_bridge"
+
+[target.'cfg(windows)'.dependencies]
+# 运行期 DLL 加载用 libloading 替代手写 LoadLibraryW/GetProcAddress。
+# self_module_dir 仍需保留：TSF 场景要按包含本代码的 DLL 所在目录解析 rime.dll，
+# libloading 不提供“当前模块目录”能力。
+libloading = "0.8"
