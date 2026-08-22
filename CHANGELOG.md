@@ -59,6 +59,9 @@
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除
   `candidate_window.rs` 中的 DComp 选路/初始化/重绘/尺寸通知/皮肤刷新分支，
   以及 Cargo 的 `Win32_Graphics_DirectComposition` feature。
+- **移除自研虚拟键盘（软键盘）**：`onscreen_kbd.rs` 861 行整体删除，同时移除
+  `listener.rs` 里的 Ctrl+Shift+K 热键注册与 WM_HOTKEY 分支。Windows 自带
+  `osk.exe`/`TabTip.exe`，不再维护第三套 GDI 面板。
 
 ### 修复（2026-08-21）
 - **辅码检字（uU 部件反查）多部件码完全失效**：`recognizer/patterns/radical_lookup`

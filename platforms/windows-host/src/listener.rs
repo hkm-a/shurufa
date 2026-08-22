@@ -125,9 +125,6 @@ pub fn run(store: ClipboardStore) -> Result<()> {
         let ai_hotkey = crate::ai_panel::register_hotkey();
         println!("AI 帮写热键：{ai_hotkey}");
         crate::log_line(&format!("AI 帮写热键：{ai_hotkey}"));
-        let osk_hotkey = crate::onscreen_kbd::register_hotkey();
-        println!("虚拟键盘热键：{osk_hotkey}");
-        crate::log_line(&format!("虚拟键盘热键：{osk_hotkey}"));
         let speech_hotkey = crate::speech::register_hotkey();
         println!("语音转写热键：{speech_hotkey}");
         crate::log_line(&format!("语音转写热键：{speech_hotkey}"));
@@ -161,10 +158,6 @@ pub fn run(store: ClipboardStore) -> Result<()> {
                 }
                 if id == crate::ai_panel::TRANSLATE_HOTKEY_ID {
                     crate::ai_panel::translate_selection();
-                    continue;
-                }
-                if id == crate::onscreen_kbd::HOTKEY_ID {
-                    crate::onscreen_kbd::toggle();
                     continue;
                 }
                 if id == crate::speech::HOTKEY_ID {

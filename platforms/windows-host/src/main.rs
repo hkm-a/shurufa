@@ -10,7 +10,6 @@ mod asr;
 mod audio_capture;
 mod dict_update;
 mod listener;
-mod onscreen_kbd;
 mod panel;
 mod paste;
 mod speech;
