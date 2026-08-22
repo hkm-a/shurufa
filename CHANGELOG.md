@@ -145,6 +145,8 @@
   `shurufa_ext.dict.yaml`，T9 生成器支持命令行传入仓库根目录。
 - **重新校准 `rime-ice-2026.06.30.json` sha256/size**：按仓内实际词典文件更新
   base/ext/8105 三项（此前 3/4 与本地不符），并补充 `upstream` 标记。
+- **新增 `scripts/regenerate-generated.ps1`**：一键重新生成 T9 词典、
+  简拼索引、无简拼 schema 三份构建期产物，为后续“生成物出库”铺路。
 
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
