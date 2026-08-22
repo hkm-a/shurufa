@@ -2684,10 +2684,12 @@ dependencies = [
 name = "ime-ipc"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "ime-bridge",
  "serde",
  "serde_json",
  "shurufa-options",
+ "tokio-util",
  "windows 0.62.2",
 ]
 

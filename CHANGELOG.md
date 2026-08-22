@@ -100,6 +100,12 @@
   `build_multipart`/`random_boundary`，`transcribe` 改用
   `reqwest::blocking::multipart::Form` 构造请求并发送。
 
+### 重构（2026-08-21，换库周第 12 批：ime-ipc 帧协议用 LengthDelimitedCodec）
+- **`core/ime-ipc` 手写 `[u32 LE][JSON]` 帧编解码改用
+  `tokio_util::codec::LengthDelimitedCodec`**：`encode_request` /
+  `encode_response` / `decode_frame` 不再手写长度前缀与边界判断，
+  统一走成熟 codec 并保留 `MAX_FRAME_BYTES` 限制。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除

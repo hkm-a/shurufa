@@ -98,38 +98,55 @@ pub enum Response {
 
 /// 请求在管道上的线格式：`[u32 长度][JSON]`。
 pub fn encode_request(req: &Request) -> Result<Vec<u8>, String> {
+    use bytes::Bytes;
+    use tokio_util::codec::{Encoder, LengthDelimitedCodec};
+
     let body = serde_json::to_vec(req).map_err(|e| e.to_string())?;
     if body.len() > MAX_FRAME_BYTES - 4 {
         return Err("请求过大".into());
     }
-    let mut out = Vec::with_capacity(4 + body.len());
-    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    out.extend_from_slice(&body);
-    Ok(out)
+    let mut out = bytes::BytesMut::with_capacity(4 + body.len());
+    LengthDelimitedCodec::builder()
+        .max_frame_length(MAX_FRAME_BYTES)
+        .new_codec()
+        .encode(Bytes::copy_from_slice(&body), &mut out)
+        .map_err(|e| e.to_string())?;
+    Ok(out.to_vec())
 }
 
 /// 应答在管道上的线格式：`[u32 长度][JSON]`。
 pub fn encode_response(resp: &Response) -> Result<Vec<u8>, String> {
+    use bytes::Bytes;
+    use tokio_util::codec::{Encoder, LengthDelimitedCodec};
+
     let body = serde_json::to_vec(resp).map_err(|e| e.to_string())?;
     if body.len() > MAX_FRAME_BYTES - 4 {
         return Err("应答过大".into());
     }
-    let mut out = Vec::with_capacity(4 + body.len());
-    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    out.extend_from_slice(&body);
-    Ok(out)
+    let mut out = bytes::BytesMut::with_capacity(4 + body.len());
+    LengthDelimitedCodec::builder()
+        .max_frame_length(MAX_FRAME_BYTES)
+        .new_codec()
+        .encode(Bytes::copy_from_slice(&body), &mut out)
+        .map_err(|e| e.to_string())?;
+    Ok(out.to_vec())
 }
 
 /// 从缓冲区解析一帧：返回 `(帧数据, 剩余)`。数据不足返回 `None`。
 pub fn decode_frame(buf: &[u8]) -> Option<(Vec<u8>, &[u8])> {
-    if buf.len() < 4 {
-        return None;
+    use tokio_util::codec::{Decoder, LengthDelimitedCodec};
+
+    let mut src = bytes::BytesMut::from(buf);
+    let mut codec = LengthDelimitedCodec::builder()
+        .max_frame_length(MAX_FRAME_BYTES)
+        .new_codec();
+    match codec.decode(&mut src) {
+        Ok(Some(frame)) => {
+            let used = buf.len() - src.len();
+            Some((frame.to_vec(), &buf[used..]))
+        }
+        _ => None,
     }
-    let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-    if buf.len() < 4 + len {
-        return None;
-    }
-    Some((buf[4..4 + len].to_vec(), &buf[4 + len..]))
 }
 
 pub fn decode_request(data: &[u8]) -> Result<Request, String> {
