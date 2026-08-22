@@ -132,6 +132,11 @@
   `HttpURLConnection` 逐行读 `data:`；改用 `EventSourceListener`
   消费增量，取消路径改用 `EventSource.cancel()`。
 
+### 重构（2026-08-21，换库周第 18 批：waveIn 改用 cpal）
+- **`windows-host` 麦克风采集改用 `cpal`**：删除 `waveIn*` 全家桶与
+  `WAVEHDR` 缓冲管理，`AudioCapture` 改为 cpal `build_input_stream`
+  回调累积 PCM；优先选择 16k 单声道 I16/F32 配置。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除
