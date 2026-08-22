@@ -65,6 +65,9 @@
 - **移除 `solar_terms.lua` 二十四节气近似公式**：该脚本自陈误差 ±1 天，与
   `lunar.lua + lunar.db`（GB/T 33661-2017 标准）重复；删除后从两个 schema
   移除 `lua_translator@*solar_terms`，原集成测试改为验证 `nl` 农历链路。
+- **移除 vendored `@tauri-apps/api`（约 9,116 行）**：安装器 UI 已启用
+  `withGlobalTauri`，`tauri-api/` 整目录删除；`mcp-plugin.js` 改为直接使用
+  `window.__TAURI__` 全局 API，三个 HTML 的 import map 一并移除。
 
 ### 修复（2026-08-21）
 - **辅码检字（uU 部件反查）多部件码完全失效**：`recognizer/patterns/radical_lookup`

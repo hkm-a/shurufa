@@ -164,9 +164,6 @@
         </div>
     </div>
 
-    <script type="importmap">
-    {"imports":{"@tauri-apps/api/core":"./tauri-api/core.js","@tauri-apps/api/event":"./tauri-api/event.js","@tauri-apps/api/webviewWindow":"./tauri-api/webviewWindow.js"}}
-    </script>
     <script type="module">
       import("./mcp-plugin.js").then((m) => { if (m.setupPluginListeners) m.setupPluginListeners(); })
         .catch((e) => console.warn("mcp 绑定未初始化", e));

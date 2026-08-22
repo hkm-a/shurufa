@@ -361,9 +361,6 @@
     <!-- 轻提示 -->
     <div class="toast" id="toast"></div>
 
-    <script type="importmap">
-    {"imports":{"@tauri-apps/api/core":"./tauri-api/core.js","@tauri-apps/api/event":"./tauri-api/event.js","@tauri-apps/api/webviewWindow":"./tauri-api/webviewWindow.js"}}
-    </script>
     <script type="module">
       // 开发期调试：初始化 tauri-plugin-mcp guest 绑定（MCP 的 DOM/点击/日志工具依赖）
       import("./mcp-plugin.js").then((m) => { if (m.setupPluginListeners) m.setupPluginListeners(); })

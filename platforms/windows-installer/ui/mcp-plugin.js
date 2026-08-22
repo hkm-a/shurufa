@@ -1,6 +1,7 @@
-import { emit } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+// 使用 Tauri 的 withGlobalTauri 全局 API，不再依赖 vendored @tauri-apps/api。
+const { emit } = window.__TAURI__.event;
+const { invoke } = window.__TAURI__.core;
+const { getCurrentWebviewWindow } = window.__TAURI__.webviewWindow;
 
 // --- addEventListener monkey-patch for interactive listener detection ---
 // Must run BEFORE any framework (React/Vue/Svelte) mounts, so placed at very top.
