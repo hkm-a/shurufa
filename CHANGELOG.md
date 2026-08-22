@@ -60,6 +60,11 @@
   `%TEMP%\shurufa-host.log`（`SHURUFA_LOG_PATH` 可覆盖），删除手写时间戳与
   每次 `OpenOptions`/`write_all`。`run`/`supervise` 启动时初始化日志。
 
+### 重构（2026-08-21，换库周第 5 批：官方 Tauri 插件 single-instance）
+- **`shurufa-settings` 手写 `Global\\FOXControlCenter` Mutex 改用
+  `tauri-plugin-single-instance`**：删除 `is_single_instance()` 与启动早退，
+  由插件保证单实例；重复启动时聚焦已有主窗口。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除

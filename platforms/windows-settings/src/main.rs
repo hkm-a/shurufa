@@ -2443,28 +2443,15 @@ fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// 控制中心单实例：命名 Mutex 保证一台机器只有一个悬浮条进程。
-/// 返回 false 表示已存在另一个实例，调用方应直接退出。
-fn is_single_instance() -> bool {
-    use windows::core::HSTRING;
-    use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
-    use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
-    let mutex =
-        match unsafe { CreateMutexW(None, true, &HSTRING::from("Global\\FOXControlCenter")) } {
-            Ok(m) => m,
-            Err(_) => return true, // 创建失败时放行，避免误伤
-        };
-    // 句柄不释放：进程生命周期内保持所有权，进程退出时系统自动释放
-    let r = unsafe { WaitForSingleObject(mutex, 0) };
-    r == WAIT_OBJECT_0 || r == WAIT_ABANDONED
-}
-
 fn main() {
-    // 单例：已有一个控制中心实例在跑 → 本进程直接退出
-    if !is_single_instance() {
-        return;
-    }
     let builder = tauri::Builder::default()
+        // 官方单实例插件：替代手写 Global\\FOXControlCenter Mutex。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 已有实例在跑时聚焦其主窗口；新进程由插件直接退出。
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }))
         .setup(|app| {
             // skipTaskbar 配置在窗口创建时（尚未显示/注册任务栏按钮）调用
             // tao 的 ITaskbarList::DeleteTab 大概率是 no-op；这里在窗口就绪后
