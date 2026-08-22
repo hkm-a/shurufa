@@ -122,6 +122,10 @@
   `eventsource_client::Client` + `HyperTransport` 消费 SSE 流；
   `parse_sse_line`/`SseEvent` 保留为 `#[cfg(test)]` 历史单测。
 
+### 重构（2026-08-21，换库周第 16 批：WAV 头改用 hound）
+- **`windows-host` PCM→WAV 组装改用 `hound`**：删除手写 44 字节 RIFF 头
+  `build_wav_header`，`pcm_to_wav` 用 `hound::WavWriter` 写头与采样。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除

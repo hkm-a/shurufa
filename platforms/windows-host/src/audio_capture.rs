@@ -179,59 +179,31 @@ impl AudioCapture {
     }
 }
 
-/// 组装 44 字节 WAV(PCM) 文件头（小端）。
-pub fn build_wav_header(data_len: usize) -> [u8; 44] {
-    let byte_rate = SAMPLE_RATE * (BITS_PER_SAMPLE as u32 / 8) * (CHANNELS as u32);
-    let block_align = CHANNELS * (BITS_PER_SAMPLE / 8);
-    let mut h = [0u8; 44];
-    h[0..4].copy_from_slice(b"RIFF");
-    h[4..8].copy_from_slice(&((36 + data_len) as u32).to_le_bytes());
-    h[8..12].copy_from_slice(b"WAVE");
-    h[12..16].copy_from_slice(b"fmt ");
-    h[16..20].copy_from_slice(&16u32.to_le_bytes());
-    h[20..22].copy_from_slice(&1u16.to_le_bytes());
-    h[22..24].copy_from_slice(&CHANNELS.to_le_bytes());
-    h[24..28].copy_from_slice(&SAMPLE_RATE.to_le_bytes());
-    h[28..32].copy_from_slice(&byte_rate.to_le_bytes());
-    h[32..34].copy_from_slice(&block_align.to_le_bytes());
-    h[34..36].copy_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
-    h[36..40].copy_from_slice(b"data");
-    h[40..44].copy_from_slice(&(data_len as u32).to_le_bytes());
-    h
-}
-
-/// PCM（16bit LE 单声道）→ 完整 WAV 字节。
+/// PCM（16bit LE 单声道）→ 完整 WAV 字节（用 hound 写头，替代手写 RIFF 头）。
 pub fn pcm_to_wav(pcm: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(44 + pcm.len());
-    out.extend_from_slice(&build_wav_header(pcm.len()));
-    out.extend_from_slice(pcm);
-    out
+    use std::io::Cursor;
+
+    let spec = hound::WavSpec {
+        channels: CHANNELS,
+        sample_rate: SAMPLE_RATE,
+        bits_per_sample: BITS_PER_SAMPLE,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut cursor, spec).expect("创建 WAV writer 失败");
+        for chunk in pcm.chunks_exact(2) {
+            let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+            writer.write_sample(sample).expect("写入 WAV 采样失败");
+        }
+        writer.finalize().expect("finalize WAV 失败");
+    }
+    cursor.into_inner()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn wav头_符合_riff规范() {
-        let h = build_wav_header(32000);
-        assert_eq!(&h[0..4], b"RIFF");
-        assert_eq!(&h[8..12], b"WAVE");
-        assert_eq!(&h[12..16], b"fmt ");
-        assert_eq!(u32::from_le_bytes(h[16..20].try_into().unwrap()), 16);
-        assert_eq!(u16::from_le_bytes(h[20..22].try_into().unwrap()), 1, "PCM");
-        assert_eq!(
-            u16::from_le_bytes(h[22..24].try_into().unwrap()),
-            1,
-            "单声道"
-        );
-        assert_eq!(u32::from_le_bytes(h[24..28].try_into().unwrap()), 16000);
-        assert_eq!(
-            u32::from_le_bytes(h[40..44].try_into().unwrap()),
-            32000,
-            "data 长度"
-        );
-    }
 
     #[test]
     fn pcm转wav_头部与数据完整() {

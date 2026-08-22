@@ -31,6 +31,7 @@ eventsource-client = "0.18"
 launchdarkly-sdk-transport = "0.1"
 futures = "0.3"
 csscolorparser = "0.8"
+hound = "3"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
