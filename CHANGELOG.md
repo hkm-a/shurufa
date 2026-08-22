@@ -42,6 +42,12 @@
 - **自研 UUID v4 改用 `uuid::Uuid::new_v4()`**：删除基于时间戳+自增+熵的
   手写 `new_msg_id`/`rand_part`，消息 id 仍保持 32 位小写无连字符格式。
 
+### 重构（2026-08-21，换库周第 2 批：JSON 原子读写合一）
+- **`core/options` 五处 JSON 读/写模板合并为通用助手**：新增
+  `load_json_from<T>` 与 `write_json_atomically<T>`，options/stats/
+  favorites/sync_activity/app_shortcuts 的 load_from/save_to 全部改为调用
+  同一实现；保留各自的 pretty/compact 与既有原子替换语义。
+
 ### 修复（2026-08-21）
 - **辅码检字（uU 部件反查）多部件码完全失效**：`recognizer/patterns/radical_lookup`
   为 `^uU[a-z]+$` 不含撇号，而 `radical_pinyin.schema.yaml` 的 algebra 自 c12a576

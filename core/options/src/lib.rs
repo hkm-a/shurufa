@@ -12,6 +12,37 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// 通用 JSON 读取：文件缺失/损坏一律回退默认值（读取路径不产生副作用）。
+fn load_json_from<T>(path: &std::path::Path) -> T
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// 通用 JSON 原子写：先写同目录 `.tmp` 再 rename，避免崩溃留下半截文件。
+fn write_json_atomically<T>(path: &std::path::Path, value: &T, pretty: bool) -> std::io::Result<()>
+where
+    T: Serialize,
+{
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = if pretty {
+        serde_json::to_vec_pretty(value)
+    } else {
+        serde_json::to_vec(value)
+    }
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 /// 输入法用户选项；serde 字段全部带默认值，老版本 JSON 缺字段仍可解析。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImeOptions {
@@ -380,10 +411,7 @@ pub fn load() -> ImeOptions {
 }
 
 fn load_from(path: &std::path::Path) -> ImeOptions {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::load_json_from(path)
 }
 
 /// 保存选项：先写同目录 `.tmp` 再 rename 原子替换，避免半截文件。
@@ -434,16 +462,7 @@ fn modify_at(
 }
 
 fn save_to(path: &std::path::Path, options: &ImeOptions) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // serde_json 只在写器出错时才失败，此处化简为 io 错误
-    let bytes = serde_json::to_vec_pretty(options)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    crate::write_json_atomically(path, options, true)
 }
 
 /// 打字统计：`app_dir()/stats.json`。
@@ -492,23 +511,12 @@ pub mod stats {
     }
 
     fn load_from(path: &Path) -> StatsFile {
-        std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        crate::load_json_from(path)
     }
 
     /// 原子写：先写 .tmp 再 rename。失败静默由调用方决定。
     fn save_to(path: &Path, stats: &StatsFile) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let bytes = serde_json::to_vec(stats)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        crate::write_json_atomically(path, stats, false)
     }
 
     /// 进程内缓存：避免每个按键都读盘。计划外进程退出至多丢 31 次计数，
@@ -765,23 +773,11 @@ pub mod favorites {
     }
 
     fn load_from(p: &Path) -> ClipFavorites {
-        std::fs::read(p)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        crate::load_json_from(p)
     }
 
     fn save_to(p: &Path, favs: &ClipFavorites) -> std::io::Result<()> {
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let bytes = serde_json::to_vec_pretty(favs)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        // 原子替换：先写 .tmp 再 rename，避免崩溃留下半截文件
-        let tmp = p.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, p)?;
-        Ok(())
+        crate::write_json_atomically(p, favs, true)
     }
 
     /// 进程内串行化：面板与设置中心可能在同一进程（受测宿主）里并发改，
@@ -1006,23 +1002,11 @@ pub mod sync_activity {
     }
 
     fn load_from(p: &Path) -> SyncActivity {
-        std::fs::read(p)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        crate::load_json_from(p)
     }
 
     fn save_to(p: &Path, act: &SyncActivity) -> std::io::Result<()> {
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let bytes = serde_json::to_vec_pretty(act)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        // 原子替换：先写 .tmp 再 rename，避免崩溃留下半截文件
-        let tmp = p.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, p)?;
-        Ok(())
+        crate::write_json_atomically(p, act, true)
     }
 
     /// 进程内串行化：host 多个事件回调与设置中心读取可能并发，先掐同进程。
@@ -1190,22 +1174,11 @@ pub mod app_shortcuts {
     }
 
     fn load_from(p: &Path) -> AppShortcuts {
-        std::fs::read(p)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        crate::load_json_from(p)
     }
 
     fn save_to(p: &Path, shortcuts: &AppShortcuts) -> std::io::Result<()> {
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let bytes = serde_json::to_vec_pretty(shortcuts)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let tmp = p.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, p)?;
-        Ok(())
+        crate::write_json_atomically(p, shortcuts, true)
     }
 
     static LOCAL: OnceLock<Mutex<()>> = OnceLock::new();
