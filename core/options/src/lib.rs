@@ -110,8 +110,9 @@ pub struct ImeOptions {
     pub ai_candidates: bool,
     /// 简拼开关（M10 后续，2026-08-23 接入）：true（默认）保留 librime abbrev
     /// 简拼与前端简拼词注入；false 时拼音方案切换为 rime_ice_nojianpin
-    /// （无 abbrev 规则，构建期生成）并停用前端注入——多音节简拼词不再
-    /// 出现，单字简拼/全拼不受影响。algo 侧 2 秒轮询生效（与
+    /// （无 abbrev 规则，构建期生成）并停用前端注入——多声母组合（lw/bj）
+    /// 不再出词；单字母词补全走 enable_word_completion 通道，开关前后
+    /// 行为一致。algo 侧 2 秒轮询生效（与
     /// input_scheme 同一管道）。
     #[serde(default = "default_true")]
     pub jianpin_enabled: bool,

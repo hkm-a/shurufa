@@ -21,7 +21,7 @@ ROOT = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.abspath(
 SCHEMAS = os.path.join(ROOT, 'schemas')
 SCRIPTS = os.path.join(ROOT, 'scripts')
 MANIFEST = os.path.join(SCHEMAS, 'generated-files.sha256')
-GENERATED = ['shurufa_t9.dict.yaml', 'jianpin_index.txt', 'rime_ice_nojianpin.schema.yaml']
+GENERATED = ['shurufa_t9.dict.yaml', 'jianpin_index.txt', 'rime_ice_nojianpin.schema.yaml', 'rime_ice_nojianpin.dict.yaml']
 
 
 def run(args):

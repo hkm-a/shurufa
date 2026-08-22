@@ -45,6 +45,26 @@
   `clipboard-store` / `sync-core` 执行 `cargo check --locked`，
   真正把“core/ 必须非 Windows 可编译”变成机器门禁。
 
+### 修复与验收（2026-08-23，简拼开关实机验收）
+- **简拼开关在隔离环境完成实测**（独立 APPDATA + rime_deployer 预编译 +
+  `algo --once`）：开 → `lw` 出另外/论文/礼物（前端注入）；关 →
+  `lw`/`bj`/`nh` 候选为空、`nihao`→你好 / `beijing`→北京 不回归；再开 →
+  恢复。单字母 `j`→就 来自 `enable_word_completion`（rime_ice 上游特性），
+  开关前后行为一致，UI 文案已按此校准。
+- **修复变体方案编译反噬缺陷**：原变体沿用 `translator/dictionary:
+  rime_ice`，librime 编译产物按词典名命名，编译变体会把 `rime_ice.prism.bin`
+  覆盖成无 abbrev 版——正常方案的引擎简拼被静默关闭。生成器改为独立词典名
+  `rime_ice_nojianpin`。
+- **修复 import_tables 不传递缺陷**：词典壳只 `import: rime_ice` 得到空表
+  （table.bin 仅 5KB、全拼无候选）；改为平铺镜像 rime_ice 的叶子词表
+  （cn_dicts/* + shurufa_ext + rime_ice 壳自身的大写字母/数字注音），
+  编译产物 29MB 与主方案同量级。
+- **`algo --once` 忠实化**：与 serve 路径一致地按 options 选方案（含简拼
+  开关）并应用前端简拼注入门控，冒烟结果可代表实机行为；注入逻辑抽为
+  `apply_jianpin_injection` 共用。
+- `rime_ice_nojianpin.dict.yaml` 纳入出库清单与 sha256 门禁；安装包已用
+  修复后的生成器重建。
+
 ### 变更（2026-08-23，架构审视后续项收尾）
 - **简拼开关全链路接入（M10 收尾）**：
   - `schemas/default.yaml` schema_list 注入 `rime_ice_nojianpin`（构建期

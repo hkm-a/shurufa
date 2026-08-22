@@ -121,32 +121,7 @@ fn decorate_process_key(
         .candidates
         .get(context.highlighted)
         .map(|c| c.text.clone());
-    // 简拼词注入：引擎候选为空且输入为纯辅音串（简拼）时，
-    // 查词库预生成的简拼索引（jianpin_index.txt）把词条注入候选。
-    // librime 原生不支持多音节简拼词（简拼音节不参与词条匹配），
-    // 单字简拼/完整拼音正常；搜狗/微信式简拼词靠这层前端索引补上。
-    // options.jianpin_enabled=false（简拼开关关）时停用注入——否则切到
-    // nojianpin 方案后多音节简拼词仍会出现，开关形同虚设。
-    if jianpin_injection_enabled()
-        && context.candidates.is_empty()
-        && JianpinIndex::is_pure_consonant(raw_after)
-    {
-        let words = jianpin_store().lookup(raw_after, 9);
-        if !words.is_empty() {
-            context.candidates = words
-                .into_iter()
-                .map(|text| ime_ipc::Candidate {
-                    text,
-                    // 简拼标记：TSF 辨识这些是前端注入候选（非 librime 候选），
-                    // 数字键/空格/点击选中时直接提交，不走引擎数字选词。
-                    comment: "简拼".to_string(),
-                })
-                .collect();
-            context.highlighted = 0;
-            context.page_no = 0;
-            context.is_last_page = true;
-        }
-    }
+    apply_jianpin_injection(&mut context, raw_after);
     // 提频：候选按 MRU 重排，高亮跟随原高亮词的新位置
     if !context.candidates.is_empty() && !raw_after.is_empty() {
         let original = context.candidates.clone();
@@ -182,6 +157,37 @@ fn decorate_process_key(
         commit,
         context,
     }
+}
+
+/// 前端简拼词注入：引擎候选为空且输入为纯辅音串（简拼）时，查词库预生成
+/// 的简拼索引（jianpin_index.txt）把词条注入候选。librime 原生不支持多
+/// 音节简拼词（简拼音节不参与词条匹配），搜狗/微信式简拼词靠这层前端
+/// 索引补上。options.jianpin_enabled=false（简拼开关关）时停用注入——
+/// 否则切到 nojianpin 方案后多音节简拼词仍会出现，开关形同虚设。
+/// serve 路径（decorate_process_key）与 `--once` 自检共用本函数。
+fn apply_jianpin_injection(context: &mut ime_ipc::Context, raw: &str) {
+    if !jianpin_injection_enabled()
+        || !context.candidates.is_empty()
+        || !JianpinIndex::is_pure_consonant(raw)
+    {
+        return;
+    }
+    let words = jianpin_store().lookup(raw, 9);
+    if words.is_empty() {
+        return;
+    }
+    context.candidates = words
+        .into_iter()
+        .map(|text| ime_ipc::Candidate {
+            text,
+            // 简拼标记：TSF 辨识这些是前端注入候选（非 librime 候选），
+            // 数字键/空格/点击选中时直接提交，不走引擎数字选词。
+            comment: "简拼".to_string(),
+        })
+        .collect();
+    context.highlighted = 0;
+    context.page_no = 0;
+    context.is_last_page = true;
 }
 
 /// 比对 options.json 前后两份快照的 input_scheme 是否不同。同一份判定逻辑
@@ -397,11 +403,39 @@ fn run_once(keys: &str) -> ! {
             exit(2);
         }
     };
+    // 与 serve 路径一致：按 options 选方案（含简拼开关 → nojianpin 变体），
+    // 并应用前端简拼词注入门控——否则 --once 冒烟结果不能代表实机行为。
+    let opts = shurufa_options::load();
+    let sid = schema_id_for(&opts.input_scheme, opts.jianpin_enabled);
+    set_jianpin_injection(opts.jianpin_enabled);
+    if !session.select_schema(sid) {
+        log(&format!("--once select_schema({sid}) 失败，回退 rime_ice"));
+    }
     if !session.simulate(keys) {
         log("键序列未被引擎接受");
         exit(4);
     }
-    let ctx = session.context();
+    let mut ctx = session.context();
+    // ime_bridge::Context 与 ime_ipc::Context 形状同构但类型不同，此处
+    // 内联同一段注入逻辑（门控与索引共用 jianpin_store/jianpin_injection_enabled）
+    if jianpin_injection_enabled()
+        && ctx.candidates.is_empty()
+        && JianpinIndex::is_pure_consonant(keys)
+    {
+        let words = jianpin_store().lookup(keys, 9);
+        if !words.is_empty() {
+            ctx.candidates = words
+                .into_iter()
+                .map(|text| ime_bridge::Candidate {
+                    text,
+                    comment: "简拼".to_string(),
+                })
+                .collect();
+            ctx.highlighted = 0;
+            ctx.page_no = 0;
+            ctx.is_last_page = true;
+        }
+    }
     // --once 没有后台节流线程，退出前把本次提交的 MRU 落盘
     let _ = mru_store().lock().unwrap_or_else(|p| p.into_inner()).save();
     println!("preedit: {}", ctx.preedit);

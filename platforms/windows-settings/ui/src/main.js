@@ -2121,7 +2121,7 @@ function schemePage() {
           <label class="setting-toggle" style="flex:1" for="jianpin-toggle">
             <div>
               <h3>简拼</h3>
-              <p>声母组合出多音节词（lw → 另外/论文/礼物）；关闭后仅保留全拼与单字简拼，约 2 秒内对新输入生效</p>
+              <p>声母组合出多音节词（lw → 另外/论文/礼物）；关闭后多声母组合不再出词（单字母词补全不受影响），约 2 秒内对新输入生效</p>
             </div>
           </label>
           <label class="switch">
@@ -2843,7 +2843,7 @@ function render() {
           schemeBanner = {
             message: next
               ? "简拼已开启（约 2 秒内对新输入生效）"
-              : "简拼已关闭：仅全拼与单字简拼（约 2 秒内对新输入生效）",
+              : "简拼已关闭：多声母组合不再出词（约 2 秒内对新输入生效）",
             error: false
           };
           render();
