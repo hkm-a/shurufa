@@ -6,6 +6,7 @@ NSIS 安装器（`installer\shurufa.nsi`）与 Android assets（`platforms\andro
 | 条目 | 说明 |
 | --- | --- |
 | `rime_ice.schema.yaml` + `rime_ice.dict.yaml` + `cn_dicts\*.dict.yaml` | 默认雾凇拼音方案与词库，版本见 `rime-ice-*.json` manifest |
+| `shurufa_ext.dict.yaml` | 本仓本地扩展词条（专业词/生僻字/拆字），由 `rime_ice.dict.yaml` 经 `import_tables` 挂载 |
 | `luna_pinyin.*` / `pinyin_simp.*` / `stroke.*` | 备用方案（Windows 侧可选启用） |
 | `default.yaml` / `pinyin.yaml` / `key_bindings.yaml` / `punctuation.yaml` / `symbols.yaml` | 全局与方案通用配置 |
 | `essay.txt` | 语言模型语料（八股文） |
