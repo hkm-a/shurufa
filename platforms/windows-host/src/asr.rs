@@ -3,7 +3,7 @@
 //! - API Key 只从环境变量读取（SHURUFA_ASR_API_KEY，回退 AGNES_API_KEY），
 //!   不落盘、不进日志（项目红线，与 ai_panel 同约定）。
 //! - Base URL / 模型来自 options.json（speech.cloud_base_url / cloud_model）。
-//! - multipart 手写（ureq 2.12 无内置 multipart），纯函数可单测。
+//! - multipart 由 reqwest 构造，不再手写 boundary/body。
 
 /// 云端转写配置。
 #[derive(Debug, Clone)]
@@ -43,48 +43,6 @@ impl AsrConfig {
     }
 }
 
-/// 构造 multipart/form-data 请求体（text 字段 + 一个文件字段）。
-/// boundary 由调用方生成；返回可直接作为请求体的字节。
-pub fn build_multipart(
-    boundary: &str,
-    file_field: &str,
-    file_name: &str,
-    file_bytes: &[u8],
-    fields: &[(&str, &str)],
-) -> Vec<u8> {
-    let mut body = Vec::new();
-    let crlf = "\r\n".as_bytes();
-    let bnd = format!("--{boundary}");
-    for (k, v) in fields {
-        body.extend_from_slice(bnd.as_bytes());
-        body.extend_from_slice(crlf);
-        body.extend_from_slice(format!("Content-Disposition: form-data; name=\"{k}\"").as_bytes());
-        body.extend_from_slice(crlf);
-        body.extend_from_slice(crlf);
-        body.extend_from_slice(v.as_bytes());
-        body.extend_from_slice(crlf);
-    }
-    body.extend_from_slice(bnd.as_bytes());
-    body.extend_from_slice(crlf);
-    body.extend_from_slice(
-        format!("Content-Disposition: form-data; name=\"{file_field}\"; filename=\"{file_name}\"")
-            .as_bytes(),
-    );
-    body.extend_from_slice(crlf);
-    body.extend_from_slice(b"Content-Type: audio/wav");
-    body.extend_from_slice(crlf);
-    body.extend_from_slice(crlf);
-    body.extend_from_slice(file_bytes);
-    body.extend_from_slice(crlf);
-    body.extend_from_slice(format!("{bnd}--").as_bytes());
-    body.extend_from_slice(crlf);
-    body
-}
-
-fn random_boundary() -> String {
-    format!("shurufa-asr-{}", uuid::Uuid::new_v4().simple())
-}
-
 /// 解析 OpenAI 兼容转写响应 {"text": "..."}；失败返回可展示的错误。
 pub fn parse_response(json: &str) -> Result<String, String> {
     let v: serde_json::Value =
@@ -103,31 +61,34 @@ pub fn parse_response(json: &str) -> Result<String, String> {
 
 /// 调用云端转写，返回转写文本。超时 60s（录音通常 3-10s，服务端排队可长）。
 pub fn transcribe(cfg: &AsrConfig, wav: &[u8]) -> Result<String, String> {
-    let boundary = random_boundary();
-    let body = build_multipart(
-        &boundary,
-        "file",
-        "speech.wav",
-        wav,
-        &[("model", &cfg.model), ("language", "zh")],
-    );
+    use reqwest::blocking::multipart::{Form, Part};
+
+    let form = Form::new()
+        .text("model", cfg.model.clone())
+        .text("language", "zh".to_string())
+        .part(
+            "file",
+            Part::bytes(wav.to_vec())
+                .file_name("speech.wav")
+                .mime_str("audio/wav")
+                .map_err(|e| format!("构造 multipart 失败：{e}"))?,
+        );
     let url = format!(
         "{}/audio/transcriptions",
         cfg.base_url.trim_end_matches('/')
     );
-    let resp = ureq::post(&url)
+    let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
-        .set("Authorization", &format!("Bearer {}", cfg.api_key))
-        .set(
-            "Content-Type",
-            &format!("multipart/form-data; boundary={boundary}"),
-        )
-        .send_bytes(&body)
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败：{e}"))?;
+    let resp = client
+        .post(&url)
+        .bearer_auth(&cfg.api_key)
+        .multipart(form)
+        .send()
         .map_err(|e| format!("转写请求失败：{e}"))?;
     let status = resp.status();
-    let text = resp
-        .into_string()
-        .map_err(|e| format!("读取转写响应失败：{e}"))?;
+    let text = resp.text().map_err(|e| format!("读取转写响应失败：{e}"))?;
     if status != 200 {
         return Err(format!(
             "转写服务返回 {status}：{}",
@@ -140,27 +101,6 @@ pub fn transcribe(cfg: &AsrConfig, wav: &[u8]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn multipart_结构正确() {
-        let body = build_multipart(
-            "BOUND",
-            "file",
-            "speech.wav",
-            b"\x52\x49\x46\x46",
-            &[("model", "whisper-1"), ("language", "zh")],
-        );
-        let s = String::from_utf8_lossy(&body);
-        assert!(s.contains("--BOUND\r\n"));
-        assert!(s.contains("Content-Disposition: form-data; name=\"model\""));
-        assert!(
-            s.contains("Content-Disposition: form-data; name=\"file\"; filename=\"speech.wav\"")
-        );
-        assert!(s.contains("Content-Type: audio/wav"));
-        assert!(s.contains("\r\nRIFF"));
-        assert!(s.ends_with("--BOUND--\r\n"));
-        assert!(s.find("name=\"model\"").unwrap() < s.find("name=\"file\"").unwrap());
-    }
 
     #[test]
     fn 响应解析_成功与失败() {

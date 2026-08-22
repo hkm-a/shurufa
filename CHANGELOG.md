@@ -95,6 +95,11 @@
 - 构建现在需要 libclang；`docs/开发环境.md` 已补充 LLVM/libclang 依赖。
 - 兼容处理：保留 `Bool` 别名；生成的函数指针对空值用 `expect` 明确断言。
 
+### 重构（2026-08-21，换库周第 11 批：ASR 改 reqwest multipart）
+- **`windows-host` ASR 手写 multipart 改用 `reqwest`**：删除手写
+  `build_multipart`/`random_boundary`，`transcribe` 改用
+  `reqwest::blocking::multipart::Form` 构造请求并发送。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除
