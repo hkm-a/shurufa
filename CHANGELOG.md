@@ -106,6 +106,11 @@
   `encode_response` / `decode_frame` 不再手写长度前缀与边界判断，
   统一走成熟 codec 并保留 `MAX_FRAME_BYTES` 限制。
 
+### 重构（2026-08-21，换库周第 13 批：皮肤颜色解析用 csscolorparser）
+- **`platforms/windows` 手写 #RRGGBB/#AARRGGBB 解析改用
+  `csscolorparser`**：`parse_colorref` 同时支持 CSS 颜色名与 hex，
+  减少手写进制转换；测试改用真正非法的 `#xyz` 验证回退。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除

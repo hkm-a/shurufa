@@ -544,19 +544,11 @@ fn parse_spacing(value: Option<i32>, fallback: i32) -> i32 {
     value.filter(|v| (0..=256).contains(v)).unwrap_or(fallback)
 }
 
-/// 按 Windows COLORREF 所需的 BGR 排列转换 #RRGGBB 或 #AARRGGBB。
+/// 按 Windows COLORREF 所需的 BGR 排列转换颜色文本（#RRGGBB / #AARRGGBB / CSS 颜色名）。
 fn parse_colorref(text: &str) -> Option<u32> {
-    let hex = text.strip_prefix('#')?;
-    let rgb = match hex.len() {
-        6 => hex,
-        8 => &hex[2..],
-        _ => return None,
-    };
-    let value = u32::from_str_radix(rgb, 16).ok()?;
-    let red = (value >> 16) & 0xff;
-    let green = (value >> 8) & 0xff;
-    let blue = value & 0xff;
-    Some(red | (green << 8) | (blue << 16))
+    let color = csscolorparser::parse(text).ok()?;
+    let [red, green, blue, _] = color.to_rgba8();
+    Some(red as u32 | ((green as u32) << 8) | ((blue as u32) << 16))
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,7 +1048,7 @@ mod tests {
     #[test]
     fn malformed_color_keeps_the_default() {
         let colors = candidate_colors_from_json(
-            r##"{"version":1,"light":{"candidate":{"background":"orange"}}}"##,
+            r##"{"version":1,"light":{"candidate":{"background":"#xyz"}}}"##,
         );
         assert_eq!(colors, CandidateColors::default());
     }
