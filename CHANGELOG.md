@@ -143,6 +143,8 @@
   `shurufa_ext`；Android 构建同步拷贝该文件。
 - **`gen-rare-dict.py` / `gen-t9-dict.py` 去除硬编码仓库路径**：生僻字输出到
   `shurufa_ext.dict.yaml`，T9 生成器支持命令行传入仓库根目录。
+- **重新校准 `rime-ice-2026.06.30.json` sha256/size**：按仓内实际词典文件更新
+  base/ext/8105 三项（此前 3/4 与本地不符），并补充 `upstream` 标记。
 
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`

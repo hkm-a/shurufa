@@ -5,30 +5,39 @@
     {
       "path": "cn_dicts/base.dict.yaml",
       "url": "https://cdn.jsdelivr.net/gh/iDvel/rime-ice@2026.06.30/cn_dicts/base.dict.yaml",
-      "fallback_urls": ["https://raw.githubusercontent.com/iDvel/rime-ice/2026.06.30/cn_dicts/base.dict.yaml"],
-      "sha256": "5a10ef44d5939071c026d954e181c5ebea2b96468da84da391966866d12cbe9f",
-      "size": 16626042
+      "fallback_urls": [
+        "https://raw.githubusercontent.com/iDvel/rime-ice/2026.06.30/cn_dicts/base.dict.yaml"
+      ],
+      "sha256": "3bbf598226fda9b629a7aa0c141ca20601a2c3e102562b3fb7322babf1ca56ba",
+      "size": 16626771
     },
     {
       "path": "cn_dicts/ext.dict.yaml",
       "url": "https://cdn.jsdelivr.net/gh/iDvel/rime-ice@2026.06.30/cn_dicts/ext.dict.yaml",
-      "fallback_urls": ["https://raw.githubusercontent.com/iDvel/rime-ice/2026.06.30/cn_dicts/ext.dict.yaml"],
-      "sha256": "436a551937c496c5d6a46e95f8858d239d226a2204c2d64c8beefbff744f6bdd",
-      "size": 11932907
+      "fallback_urls": [
+        "https://raw.githubusercontent.com/iDvel/rime-ice/2026.06.30/cn_dicts/ext.dict.yaml"
+      ],
+      "sha256": "543859f891dec5335b831840d895e1a1c4ef500648aef52b5e7c2963a2a2d256",
+      "size": 11930324
     },
     {
       "path": "cn_dicts/8105.dict.yaml",
       "url": "https://cdn.jsdelivr.net/gh/iDvel/rime-ice@2026.06.30/cn_dicts/8105.dict.yaml",
-      "fallback_urls": ["https://raw.githubusercontent.com/iDvel/rime-ice/2026.06.30/cn_dicts/8105.dict.yaml"],
-      "sha256": "d84a9e18a73a3eadc1b267745f833f5550ee7e2693b6d4af9e058c6e7ce56363",
-      "size": 114150
+      "fallback_urls": [
+        "https://raw.githubusercontent.com/iDvel/rime-ice/2026.06.30/cn_dicts/8105.dict.yaml"
+      ],
+      "sha256": "ddad7554a5bdecbbeb557ee703ecee548c828722a262ec9e5aee9caad8e52cf8",
+      "size": 114599
     },
     {
       "path": "cn_dicts/others.dict.yaml",
       "url": "https://cdn.jsdelivr.net/gh/iDvel/rime-ice@2026.06.30/cn_dicts/others.dict.yaml",
-      "fallback_urls": ["https://raw.githubusercontent.com/iDvel/rime-ice/2026.06.30/cn_dicts/others.dict.yaml"],
+      "fallback_urls": [
+        "https://raw.githubusercontent.com/iDvel/rime-ice/2026.06.30/cn_dicts/others.dict.yaml"
+      ],
       "sha256": "6a6b1a77d94c7cdf9203cf426e67f350215d2d73259fe3769c97d2a18f521c28",
       "size": 16862
     }
-  ]
+  ],
+  "upstream": "iDvel/rime-ice@2026.06.30"
 }
