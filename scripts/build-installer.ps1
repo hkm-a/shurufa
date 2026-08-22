@@ -27,25 +27,31 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if (-not $SkipBuild) {
     Push-Location $sourceRoot
     try {
-        # 运行时依赖（安装引擎 payload 与设置页）
+        # 运行时依赖（安装 payload 与设置页）
         Invoke-Native 'cargo' @('build', '--release', '-p', 'shurufa-tsf', '-p', 'shurufa-algo', '-p', 'shurufa-host')
         Invoke-Native 'npm' @('--prefix', 'platforms/windows-settings', 'run', 'tauri', '--', 'build', '--no-bundle')
-        # FOX 安装器本体（Tauri 自定义外壳，payload 由 build.rs 嵌入）
-        Invoke-Native 'cargo' @('build', '--release', '-p', 'shurufa-installer')
     }
     finally {
         Pop-Location
     }
 }
 
-$output = Join-Path $sourceRoot "target\release\FOX-Setup.exe"
-if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
-    throw "安装包未生成：$output"
+# FOX 安装包本体：NSIS 脚本（阶段4第5项，回 NSIS）。payload 直接取
+# target/release 与 schemas/（makensis 编译期打包，无需嵌入步骤）。
+$makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+if (-not (Test-Path -LiteralPath $makensis)) {
+    $makensis = "$env:ProgramFiles\NSIS\makensis.exe"
 }
-
+if (-not (Test-Path -LiteralPath $makensis)) {
+    throw "未找到 makensis.exe，请安装 NSIS 3.x（https://nsis.sourceforge.io）"
+}
 New-Item -ItemType Directory -Path (Join-Path $sourceRoot 'dist') -Force | Out-Null
+Invoke-Native $makensis @("-DFOX_VERSION=$version", (Join-Path $sourceRoot 'installer\shurufa.nsi'))
+
 $dist = Join-Path $sourceRoot "dist\FOX-Setup-$version.exe"
-Copy-Item -LiteralPath $output -Destination $dist -Force
+if (-not (Test-Path -LiteralPath $dist -PathType Leaf)) {
+    throw "安装包未生成：$dist"
+}
 
 $checksumFile = "$dist.sha256"
 Get-FileHash -LiteralPath $dist -Algorithm SHA256 |

@@ -45,6 +45,47 @@
   `clipboard-store` / `sync-core` 执行 `cargo check --locked`，
   真正把“core/ 必须非 Windows 可编译”变成机器门禁。
 
+### 重构（2026-08-22，阶段 4 第 6 批：shurufa-host 按故障域拆三二进制）
+- **`platforms/windows-host` 改为 lib + 三个 bin**：
+  - `shurufa-clipd`（数据路径）：剪贴板监听入库、同步 daemon、supervisor、
+    自启注册，无 UI；
+  - `shurufa-ui`（面板集合）：历史/AI/语音面板、全部热键与热键门控轮询、
+    AI 面板预热，独立消息循环（窗口类 `ShurufaUiHost`），崩溃不影响数据路径；
+  - `shurufa-ctl`（CLI）：历史库查询管理、写回剪贴板、配对、词库维护。
+- **supervisor 新增 shurufa-ui 看护**：独立故障域重启（退避），停机令牌
+  一并结束 ui；检测到独立运行的 ui 时跳过拉起。
+- **跨进程协作**：`ctl copy` 写回经 clipd 监听窗口（release 也允许按类名
+  FindWindow 跨进程发现）；设置页麦克风按钮改投 `ShurufaUiHost`；
+  `ai show` 仍按 `ShurufaAiPanel` 类名跨进程唤起。
+- **设置页与脚本/安装器同步改引用**：`windows-settings` 按子命令路由
+  clipd/ctl；`Deploy-Shurufa.ps1`、`update-all.ps1`、`install.ps1`、
+  `start-host.cmd`、`unregister-dev.cmd`、NSIS 脚本全部改为新进程名，
+  IFEO 高优先级覆盖 algo/clipd/ui。
+- 修复上一批遗留的 `SkinPaletteTest.kt` 类提前闭合导致的 JVM 测试编译失败。
+- `cargo clippy/test`、core-portable、Android 单测全部通过。
+
+### 重构（2026-08-22，阶段 4 第 5 批：安装器回 NSIS）
+- **删除自研 Tauri 安装器（`platforms/windows-installer`，约 1,300 行 Rust +
+  850 行 HTML/JS）**，回归 NSIS（weasel 同款技术栈）。
+- **新增 `installer/shurufa.nsi`**：完整移植 engine.rs 的十步安装逻辑——
+  停旧进程（多轮 taskkill + WMI Terminate 兜底）、清理旧安装目录、写 payload、
+  TSF DLL 被占用回退唯一文件名（6 次重试 + GetTickCount 后缀）、rime 词典
+  预构建、icacls AppContainer 授权、regsvr32 注册、孤儿 TSF DLL 清理、
+  自启动、快捷方式、卸载注册表、IFEO 高优先级、schtasks 降权启动宿主、
+  终态验证；卸载段对称还原（含 IFEO 三键清除）。
+- **`build-installer.ps1` 改用 makensis**（本机需装 NSIS 3.x），产物仍为
+  `dist\FOX-Setup-<版本>.exe` + sha256；`set-version.ps1` 移除 FOX 安装器
+  派生点（版本号改由 `-DFOX_VERSION` 传入）。
+- README / `docs/版本管理.md` 同步更新。
+
+### 重构（2026-08-22，阶段 4 第 4 批：Android 引入四样）
+- **新增依赖**：RecyclerView 1.3.2、Coil 2.7.0、kotlinx-coroutines-android
+  1.8.1、DataStore Preferences 1.1.1（阶段 4 第 6 项；Compose 迁移可缓）。
+- **`KeyboardPrefs` 持久化迁到 DataStore**：首次读取自动从旧
+  SharedPreferences 迁移（`migrated_from_sp` 标记），save 保持 fire-and-forget
+  语义（自有 IO scope）；`kb_*` 键仅该文件使用，无其他读写方。
+- RecyclerView/Coil 的面板接入属后续迭代（候选/历史/表情列表回收化）。
+
 ### 重构（2026-08-22，阶段 4 第 3 批：core/skin 与 windows-skin）
 - **新增 `core/skin`**：纯数据模型/解析（v1/v2、颜色、间距、滚动条），
   零平台依赖，可直接被 Windows/Android/测试复用。

@@ -20,7 +20,6 @@ $ErrorActionPreference = 'Stop'
 # Android 侧不在任一类中：app/build.gradle.kts 构建期直接读 version.json（拉而非推）。
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $versionFile = Join-Path $sourceRoot 'version.json'
-$foxTauriFile = Join-Path $sourceRoot 'platforms\windows-installer\tauri.conf.json'
 $tauriFile = Join-Path $sourceRoot 'platforms\windows-settings\tauri.conf.json'
 $npmFile = Join-Path $sourceRoot 'platforms\windows-settings\package.json'
 $gradleProps = Join-Path $sourceRoot 'platforms\android\gradle.properties'
@@ -43,20 +42,12 @@ function Read-VersionManifest {
 function Assert-VersionConsistency {
     $manifest = Read-VersionManifest
 
-    $foxTauri = Get-Content -LiteralPath $foxTauriFile -Raw | ConvertFrom-Json
     $tauri = Get-Content -LiteralPath $tauriFile -Raw | ConvertFrom-Json
     $npm = Get-Content -LiteralPath $npmFile -Raw | ConvertFrom-Json
 
     $mismatch = @()
-    if ([string]$foxTauri.version -ne $manifest.Version) { $mismatch += "FOX安装器 tauri.conf.json=$($foxTauri.version)" }
     if ([string]$tauri.version -ne $manifest.Version) { $mismatch += "设置页 tauri.conf.json=$($tauri.version)" }
     if ([string]$npm.version -ne $manifest.Version) { $mismatch += "package.json=$($npm.version)" }
-    # 安装器页面标题栏的品牌版本号（如 "FOX输入法 0.4.1"）至少一处与 version.json 对齐
-    $uiDir = Join-Path $sourceRoot 'platforms\windows-installer\ui'
-    $uiVersionOk = Get-ChildItem -LiteralPath $uiDir -Filter '*.html' -ErrorAction SilentlyContinue |
-        Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match "FOX输入法 $([regex]::Escape($manifest.Version))" } |
-        Select-Object -First 1
-    if (-not $uiVersionOk) { $mismatch += "安装器页面版本串" }
 
     # 文本声明点：README 等文档里写死的「当前版本」。这类漂移曾同时存在三个
     # 不同版本号（version.json=1.8.0 / 徽章=0.8.0 / 正文=1.7.0）而无人察觉。
@@ -127,17 +118,7 @@ if (-not $PSBoundParameters.ContainsKey('VersionCode')) {
 if ($PSCmdlet.ShouldProcess("Shurufa $($current.Version)/$($current.VersionCode) -> $Version/$VersionCode", '更新版本')) {
     Write-Utf8NoBom $versionFile (([pscustomobject]@{ version = $Version; versionCode = $VersionCode } | ConvertTo-Json))
 
-    $foxTauri = Get-Content -LiteralPath $foxTauriFile -Raw | ConvertFrom-Json
-    $foxTauri.version = $Version
-    Write-Utf8NoBom $foxTauriFile ($foxTauri | ConvertTo-Json -Depth 32)
-
-    # FOX 安装器页面里的品牌版本号（标题栏/完成标题），如 "FOX输入法 0.4.1"。
-    Get-ChildItem -LiteralPath (Join-Path $sourceRoot 'platforms\windows-installer\ui') -Filter '*.html' |
-        ForEach-Object {
-            $html = Get-Content -LiteralPath $_.FullName -Raw
-            $html = $html -replace 'FOX输入法 \d+\.\d+\.\d+', "FOX输入法 $Version"
-            Write-Utf8NoBom $_.FullName $html
-        }
+    # 安装器（NSIS）版本号由 build-installer.ps1 以 -DFOX_VERSION 传入，无派生文件。
 
     $tauri = Get-Content -LiteralPath $tauriFile -Raw | ConvertFrom-Json
     $tauri.version = $Version

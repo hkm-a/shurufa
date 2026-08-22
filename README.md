@@ -39,7 +39,7 @@ Windows 一键构建并打包：
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 ```
 
-产物位于 `dist\FOX-Setup-<版本>.exe`，同目录附 `.sha256` 校验和。安装器是仓内自研的 Tauri 外壳（`platforms/windows-installer`），payload 由其 `build.rs` 嵌入，**不需要 NSIS**；已 Release 构建过可加 `-SkipBuild`；正式发布请配 `SHURUFA_SIGN_PFX`/`SHURUFA_SIGN_PASSWORD` 后加 `-Sign`。
+产物位于 `dist\FOX-Setup-<版本>.exe`，同目录附 `.sha256` 校验和。安装器是 NSIS 脚本（`installer/shurufa.nsi`），需本机安装 [NSIS 3.x](https://nsis.sourceforge.io)；已 Release 构建过可加 `-SkipBuild`。
 
 Android 构建（需 JDK 17、Android SDK 与 Rust Android target）：
 
