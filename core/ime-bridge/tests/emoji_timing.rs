@@ -1,9 +1,9 @@
-//! M7-9 多时机表情推荐（搜狗 15.9「输入 okok/爱你 出表情」同类）：
+//! M7-9 多时机表情推荐（搜狗 15.9「输入 okok 出表情」同类）：
 //! lua_translator 对精确输入码附加 emoji 候选。
 //!
 //! 验证：
 //! - okok → 候选含 👌（OpenCC 管不到的非中文词触发）
-//! - aini（爱你）→ 候选含 ❤️（emoji.txt 无裸"爱你"，由本模块补）
+//! - wanan → 候选含 🌙
 //! - 常规输入不受影响：nihao → 你好
 
 use ime_bridge::Engine;
@@ -53,15 +53,6 @@ fn emoji_timing_triggers() {
     assert!(
         cands.iter().any(|t| t.contains("👌")),
         "okok 应出 👌 候选，实际：{cands:?}"
-    );
-
-    // aini（爱你）→ ❤️
-    assert!(session.simulate("{Escape}"));
-    assert!(session.simulate("aini"), "aini 键序未被引擎接受");
-    let cands = candidate_texts(&session);
-    assert!(
-        cands.iter().any(|t| t.contains("❤️")),
-        "aini 应出 ❤️ 候选，实际：{cands:?}"
     );
 
     // wanan（晚安）→ 🌙

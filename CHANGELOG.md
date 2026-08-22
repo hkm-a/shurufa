@@ -70,6 +70,9 @@
   `window.__TAURI__` 全局 API，三个 HTML 的 import map 一并移除。
 - **根目录 `sougou.txt` 移入 `tools/research/`**：一次性逆向研究数据归位，
   `docs/开发计划.md` 引用同步更新。
+- **移除 `emoji_timing.lua` 的中文触发项 `aini → ❤️`**：`爱你 → 🤟` 已由
+  OpenCC `emoji.txt` 覆盖，同一输入不应出现两种表情；保留 `okok`/`wanan`
+  等 OpenCC 覆盖不到的非中文串，集成测试同步收紧。
 
 ### 修复（2026-08-21）
 - **辅码检字（uU 部件反查）多部件码完全失效**：`recognizer/patterns/radical_lookup`
