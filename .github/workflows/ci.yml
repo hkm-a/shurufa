@@ -5,25 +5,35 @@ on:
     branches: [main]
   pull_request:
 
+# 说明：本流水线只承诺「能在 CI 上真正验证的事」。凡是 CI 无法复现的步骤
+# （如需要本地预编译 librime-android 的 JNI 交叉编译）一律不放进来假装绿灯，
+# 而是明确排除并在 docs/开发环境.md 说明本地怎么做。红着的 CI 等于没有 CI。
+
 jobs:
-  version-consistency:
+  consistency:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 校验四处版本与 version.json 一致
+      - name: 校验版本派生点与文本声明点一致
         shell: pwsh
         run: ./scripts/set-version.ps1 -Check
+      - name: 校验文档（内部链接 / 版本号声明 / CHANGELOG 对账）
+        shell: pwsh
+        run: ./scripts/check-docs.ps1
 
   windows-build:
     runs-on: windows-latest
-    needs: version-consistency
+    needs: consistency
     env:
       LIBRIME_VERSION: 1.17.0
       LIBRIME_TAG: rime-33e7814
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # 工具链由仓库根 rust-toolchain.toml 钉版，此处不再指定 @stable，
+      # 避免浮动版本的新 lint 在无关时间点让 -D warnings 转红。
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: '1.97.0'
           components: rustfmt, clippy
       - uses: actions/setup-node@v4
         with:
@@ -43,19 +53,22 @@ jobs:
           New-Item -ItemType Directory -Force third_party\librime | Out-Null
           Invoke-WebRequest -Uri "https://github.com/rime/librime/releases/download/${env:LIBRIME_VERSION}/${env:LIBRIME_TAG}-Windows-msvc-x64.7z" -OutFile third_party\librime\rime.7z
           7z x -y third_party\librime\rime.7z -othird_party\librime
-      - name: Rust 测试与 lint
+      - name: 格式与 lint
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace --locked
+      - name: 平台中立性门禁（core/ 不得依赖 Windows）
+        shell: pwsh
+        run: ./scripts/check-core-portable.ps1
+      - name: 全量测试
+        run: cargo test --workspace --locked
       - name: Tauri 设置页前端安装
         run: npm --prefix platforms/windows-settings ci
-      - name: Release 构建 Windows 宿主/算法/设置/安装器
-        run: |
-          cargo build --release --locked -p shurufa-tsf -p shurufa-algo -p shurufa-host -p shurufa-installer
-          npm --prefix platforms/windows-settings run tauri -- build --no-bundle
-      - name: 打包 FOX 安装器
-        run: ./scripts/build-installer.ps1 -SkipBuild
+      # 顺序必须与 scripts/build-installer.ps1 一致：安装器的 build.rs 会读取
+      # target/release 下 host/algo/tsf/设置页 的产物作为 payload，先构建安装器
+      # 会直接 panic。此处直接复用打包脚本，避免两套顺序漂移。
+      - name: 构建并打包 FOX 安装器
+        run: ./scripts/build-installer.ps1
       - name: 上传安装包与校验和
         uses: actions/upload-artifact@v4
         with:
@@ -65,47 +78,35 @@ jobs:
             dist/FOX-Setup-*.exe.sha256
           retention-days: 14
 
-  android-build:
+  # Android 侧 CI 只跑 Gradle lint 与 JVM 单元测试——它们不加载 native 库，
+  # 是当前唯一能在干净 runner 上复现的 Android 验证。
+  #
+  # 为什么不在 CI 构建 APK：APK 需要 libshurufa_rime.so，而它依赖预编译的
+  # librime-android。librime 上游 **不发布** Android 产物（1.17.0 的 assets
+  # 只有 macOS/Windows，实测原 CI 里那条 rime-...-Android-arm64-v8a.7z 链接
+  # 恒 404，curl 无 -f 时把错误页写进 .7z，再由 7z 报一个与真实原因无关的
+  # 「cannot open as archive」）。fcitx5-android 与 trime 都是自建 NDK 工具链
+  # 交叉编译 boost/glog 得到的。本地构建见 docs/开发环境.md。
+  android-jvm:
     runs-on: ubuntu-latest
-    needs: version-consistency
+    needs: consistency
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
       - uses: android-actions/setup-android@v3
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-      - name: 安装 Rust Android target 与 NDK 环境
-        run: |
-          sdkmanager --install "ndk;28.0.13004108"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.0.13004108" >> "$GITHUB_ENV"
-      - name: 配置第三方预编译 librime（Android）
-        run: |
-          mkdir -p third_party/librime-android
-          curl -L -o third_party/librime-android/rime.7z \
-            https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-Android-arm64-v8a.7z
-          7z x -y third_party/librime-android/rime.7z -othird_party/librime-android
-      - name: 构建 JNI 桥
-        run: cargo build --release --target aarch64-linux-android -p shurufa-rimejni --locked
-      - name: 复制 so 到 jniLibs
-        run: |
-          mkdir -p platforms/android/app/src/main/jniLibs/arm64-v8a
-          cp target/aarch64-linux-android/release/libshurufa_rime.so \
-            platforms/android/app/src/main/jniLibs/arm64-v8a/
-      - name: Gradle 校验与测试
+      - name: Gradle lint 与 JVM 单元测试
         working-directory: platforms/android
         run: |
           chmod +x gradlew
           ./gradlew lintDebug testDebugUnitTest --console=plain
-      - name: 构建 Debug APK
-        working-directory: platforms/android
-        run: ./gradlew assembleDebug --console=plain
-      - name: 上传 APK
+      - name: 上传测试报告
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: shurufa-apk
-          path: platforms/android/app/build/outputs/apk/versioned/*.apk
-          retention-days: 14
+          name: android-test-reports
+          path: platforms/android/app/build/reports/
+          retention-days: 7

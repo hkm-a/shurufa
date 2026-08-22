@@ -17,7 +17,6 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     GlobalFree, COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
-use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, ClientToScreen, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW,
     EndPaint, FillRect, GetDC, GetTextExtentPoint32W, InvalidateRect, LineTo, MoveToEx, ReleaseDC,
@@ -31,17 +30,18 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyW, SendInput, TrackMouseEvent, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, TME_LEAVE,
-    TRACKMOUSEEVENT, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, VIRTUAL_KEY,
+    MapVirtualKeyW, SendInput, TrackMouseEvent, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetSystemMetrics, LoadCursorW, MoveWindow, RegisterClassW, SetWindowPos, ShowWindow,
     TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, MF_SEPARATOR, MF_STRING,
     SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT, WM_LBUTTONDOWN,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE, WNDCLASSW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT,
+    WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_SETTINGCHANGE,
+    WM_SIZE, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use ime_ipc::Context;
@@ -132,17 +132,8 @@ pub(crate) fn tab_switch(tab: TabKind) {
     let skin = skin::load_with(|| extra);
     let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
     let screen_w = logical_screen_dim(unsafe { GetSystemMetrics(SM_CXSCREEN) }, dpi);
-    let screen_h = logical_screen_dim(unsafe { GetSystemMetrics(SM_CYSCREEN) }, dpi);
-    let (width, height) = compute_show_layout(
-        hwnd,
-        &view_ctx,
-        &skin,
-        dpi,
-        panel_mode,
-        screen_w,
-        screen_h,
-        ai_start,
-    );
+    let (width, height) =
+        compute_show_layout(hwnd, &view_ctx, &skin, dpi, panel_mode, screen_w, ai_start);
     let mut rect = RECT::default();
     unsafe {
         let _ = GetWindowRect(hwnd, &mut rect);
@@ -402,6 +393,22 @@ struct Item {
     source_badge: Option<&'static str>,
     /// 角标实测宽度（含间隙；布局槽位的一部分，D2D comment 起点据此偏移）。
     badge_w: i32,
+}
+
+/// 预编辑行的纵向度量（已按 (dpi, font_scale) 展开为物理像素）。
+///
+/// 单独成结构体而非散开传参：这几个值总是一起算、一起用，且散开后
+/// 参数表会长到 clippy::too_many_arguments 的阈值以上。
+#[derive(Clone, Copy, Debug)]
+struct PreeditMetrics {
+    /// 窗口内边距（同时是预编辑串的左起点与顶部起点）。
+    padding: i32,
+    /// 预编辑行整体高度。
+    preedit_h: i32,
+    /// 预编辑字体的字形高度（音节分隔竖线按它取半高居中）。
+    preedit_font_h: i32,
+    /// 候选服务 Tab 行高度；无 Tab 行时为 0。
+    tab_h: i32,
 }
 
 struct PaintData {
@@ -795,7 +802,6 @@ pub struct CandidateUi {
     last_height: i32,
 }
 
-
 /// 候选窗布局计算（show 与 AI 结果刷新共用）：字体实测 → items/宽高 →
 /// 写入 PAINT_DATA。返回 (width, height)。内容指纹短路由调用方负责（AI
 /// 刷新每次强制重算，触发频率低，成本可忽略）。
@@ -806,216 +812,211 @@ fn compute_show_layout(
     dpi: u32,
     panel_mode: CandidatePanelMode,
     screen_w: i32,
-    _screen_h: i32,
     ai_start: Option<usize>,
 ) -> (i32, i32) {
-            // M7-5 候选服务 Tab：英文候选（前缀联想）非空时显示 Tab 行；
-            // 激活英文组时候选列表替换为英文候选（独立编号，不走引擎）。
-            let english = crate::english_candidates::suggest(&ctx.preedit);
-            // Rime 无候选但英文候选有值（如输入串是英文词前缀、引擎无拼音命中）
-            // → 自动激活英文组；否则跟随用户手动选择的 Tab。
-            let tab_active = if ctx.candidates.is_empty() && !english.is_empty() {
-                TabKind::English
+    // M7-5 候选服务 Tab：英文候选（前缀联想）非空时显示 Tab 行；
+    // 激活英文组时候选列表替换为英文候选（独立编号，不走引擎）。
+    let english = crate::english_candidates::suggest(&ctx.preedit);
+    // Rime 无候选但英文候选有值（如输入串是英文词前缀、引擎无拼音命中）
+    // → 自动激活英文组；否则跟随用户手动选择的 Tab。
+    let tab_active = if ctx.candidates.is_empty() && !english.is_empty() {
+        TabKind::English
+    } else {
+        ACTIVE_TAB.with(|t| t.get())
+    };
+    let show_tab_bar = !english.is_empty();
+    let tab_h = if show_tab_bar {
+        scale(BASE_TAB_HEIGHT, dpi)
+    } else {
+        0
+    };
+    let view_items: Vec<ime_ipc::Candidate> = if tab_active == TabKind::English && show_tab_bar {
+        english
+            .iter()
+            .map(|w| ime_ipc::Candidate {
+                text: w.clone(),
+                comment: String::new(),
+            })
+            .collect()
+    } else {
+        ctx.candidates.clone()
+    };
+    let ai_start = if tab_active == TabKind::English && show_tab_bar {
+        None
+    } else {
+        ai_start
+    };
+    let font_scale = skin.metrics.font_scale;
+    let padding = scale(skin.metrics.padding_or(BASE_PADDING), dpi);
+    let item_gap = scale(skin.metrics.item_gap_or(BASE_ITEM_GAP), dpi);
+    let label_gap = scale(skin.metrics.label_gap_or(BASE_LABEL_GAP), dpi);
+    // 滚动条：皮肤开启且非单页时右缘预留轨道宽；单页/关闭时 0，宽度零漂移
+    let page = PageInfo {
+        page_no: ctx.page_no,
+        is_last_page: ctx.is_last_page,
+    };
+    let sb_w = if skin.metrics.scrollbar && page.total_pages() > 1 {
+        scale(skin::SCROLLBAR_BASE_WIDTH, dpi)
+    } else {
+        0
+    };
+    // 候选窗最大宽度 = 屏幕宽度 60%（主流输入法习惯，高 DPI/多候选下
+    // 防止单行 9 候选横贯屏幕"大到看不清"；超出部分靠翻页访问）。
+    // 至少不小于最小宽度，保证极端窄屏下仍可读。
+    // 注意：SM_CXSCREEN 返回物理像素，必须先换算成逻辑像素再取 60%，
+    // 否则高 DPI 下钳制上限被放大（详见 logical_screen_dim 注释）。
+    let max_width = (screen_w * 6 / 10).max(scale(BASE_MIN_WIDTH, dpi));
+
+    // 用与绘制一致的字体实测文本宽度，横向布槽
+    // max_row_used 在块外用于多行宽度计算（最宽行内容宽）。
+    let mut max_row_used = 0i32;
+    let (items, preedit_w) = unsafe {
+        let hdc = GetDC(Some(hwnd));
+        let cand_font = make_font(font_height(BASE_FONT_HEIGHT, dpi, font_scale));
+        let preedit_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
+
+        let old = SelectObject(hdc, HGDIOBJ(cand_font.0));
+        let sub_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
+        // 宽度预算：候选行可用的最大右缘（扣除右侧 padding 与滚动条轨道）。
+        let row_budget = (max_width - padding - sb_w).max(scale(BASE_MIN_WIDTH, dpi));
+        let mut items: Vec<Item> = Vec::with_capacity(9);
+        // 多行候选面板（M7，搜狗 16.3b 同类）：每行 MULTI_COLUMNS 个，
+        // 行内放不下或满列则换行；单行模式沿用"放不下即停、剩余翻页"。
+        let mut x = padding;
+        let mut row = 0i32;
+        let mut in_row = 0usize;
+        let mut row_used = 0i32;
+        for (i, c) in view_items.iter().enumerate().take(9) {
+            // AI 候选（2026-08-20）：合并列表里 ai_start 起为 AI 候选，
+            // 单行模式下强制从第二行起排——Rime 候选放不下 break 时
+            // 不波及 AI（AI 不参与引擎分页，必须可见可点）。
+            let is_ai = ai_start.is_some_and(|s| i >= s);
+            // TSF 端候选域固定 9 列；label 为 1..=9（超过 9 的索引不进此分支）
+            let label = format!("{}.", i + 1);
+            let label_w = text_width(hdc, &label);
+            // 长候选缩写（weasel candidate_abbreviate_length 同款）：显示文本
+            // 超长时截断为 前缀+…，只影响显示（引擎按索引提交，上屏仍完整）。
+            let (display_text, _abbreviated) =
+                abbreviate_text(&c.text, skin.metrics.abbreviate_length);
+            let text_w = text_width(hdc, &display_text);
+            // 候选来源角标（show_candidate_badge）：按文本特征分类，
+            // 角标占一个额外槽位（用 sub_font 实测宽度 + 间隙）。
+            let source_badge = if skin.metrics.show_candidate_badge {
+                Some(candidate_source_label(classify_candidate_source(&c.text)))
             } else {
-                ACTIVE_TAB.with(|t| t.get())
-            };
-            let show_tab_bar = !english.is_empty();
-            let tab_h = if show_tab_bar {
-                scale(BASE_TAB_HEIGHT, dpi)
-            } else {
-                0
-            };
-            let view_items: Vec<ime_ipc::Candidate> =
-                if tab_active == TabKind::English && show_tab_bar {
-                    english
-                        .iter()
-                        .map(|w| ime_ipc::Candidate {
-                            text: w.clone(),
-                            comment: String::new(),
-                        })
-                        .collect()
-                } else {
-                    ctx.candidates.clone()
-                };
-            let ai_start = if tab_active == TabKind::English && show_tab_bar {
                 None
-            } else {
-                ai_start
             };
-            let font_scale = skin.metrics.font_scale;
-            let padding = scale(skin.metrics.padding_or(BASE_PADDING), dpi);
-            let item_gap = scale(skin.metrics.item_gap_or(BASE_ITEM_GAP), dpi);
-            let label_gap = scale(skin.metrics.label_gap_or(BASE_LABEL_GAP), dpi);
-            // 滚动条：皮肤开启且非单页时右缘预留轨道宽；单页/关闭时 0，宽度零漂移
-            let page = PageInfo {
-                page_no: ctx.page_no,
-                is_last_page: ctx.is_last_page,
-            };
-            let sb_w = if skin.metrics.scrollbar && page.total_pages() > 1 {
-                scale(skin::SCROLLBAR_BASE_WIDTH, dpi)
+            let badge_w = if let Some(b) = source_badge {
+                SelectObject(hdc, HGDIOBJ(sub_font.0));
+                let w = text_width(hdc, b);
+                SelectObject(hdc, HGDIOBJ(cand_font.0));
+                w + scale(6, dpi)
             } else {
                 0
             };
-            // 候选窗最大宽度 = 屏幕宽度 60%（主流输入法习惯，高 DPI/多候选下
-            // 防止单行 9 候选横贯屏幕"大到看不清"；超出部分靠翻页访问）。
-            // 至少不小于最小宽度，保证极端窄屏下仍可读。
-            // 注意：SM_CXSCREEN 返回物理像素，必须先换算成逻辑像素再取 60%，
-            // 否则高 DPI 下钳制上限被放大（详见 logical_screen_dim 注释）。
-            let max_width = (screen_w * 6 / 10).max(scale(BASE_MIN_WIDTH, dpi));
-
-            // 用与绘制一致的字体实测文本宽度，横向布槽
-            // max_row_used 在块外用于多行宽度计算（最宽行内容宽）。
-            let mut max_row_used = 0i32;
-            let (items, preedit_w) = unsafe {
-                let hdc = GetDC(Some(hwnd));
-                let cand_font = make_font(font_height(BASE_FONT_HEIGHT, dpi, font_scale));
-                let preedit_font =
-                    make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
-
-                let old = SelectObject(hdc, HGDIOBJ(cand_font.0));
-                let sub_font = make_font(font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale));
-                // 宽度预算：候选行可用的最大右缘（扣除右侧 padding 与滚动条轨道）。
-                let row_budget = (max_width - padding - sb_w).max(scale(BASE_MIN_WIDTH, dpi));
-                let mut items: Vec<Item> = Vec::with_capacity(9);
-                // 多行候选面板（M7，搜狗 16.3b 同类）：每行 MULTI_COLUMNS 个，
-                // 行内放不下或满列则换行；单行模式沿用"放不下即停、剩余翻页"。
-                let mut x = padding;
-                let mut row = 0i32;
-                let mut in_row = 0usize;
-                let mut row_used = 0i32;
-                for (i, c) in view_items.iter().enumerate().take(9) {
-                    // AI 候选（2026-08-20）：合并列表里 ai_start 起为 AI 候选，
-                    // 单行模式下强制从第二行起排——Rime 候选放不下 break 时
-                    // 不波及 AI（AI 不参与引擎分页，必须可见可点）。
-                    let is_ai = ai_start.is_some_and(|s| i >= s);
-                    // TSF 端候选域固定 9 列；label 为 1..=9（超过 9 的索引不进此分支）
-                    let label = format!("{}.", i + 1);
-                    let label_w = text_width(hdc, &label);
-                    // 长候选缩写（weasel candidate_abbreviate_length 同款）：显示文本
-                    // 超长时截断为 前缀+…，只影响显示（引擎按索引提交，上屏仍完整）。
-                    let (display_text, _abbreviated) =
-                        abbreviate_text(&c.text, skin.metrics.abbreviate_length);
-                    let text_w = text_width(hdc, &display_text);
-                    // 候选来源角标（show_candidate_badge）：按文本特征分类，
-                    // 角标占一个额外槽位（用 sub_font 实测宽度 + 间隙）。
-                    let source_badge = if skin.metrics.show_candidate_badge {
-                        Some(candidate_source_label(classify_candidate_source(&c.text)))
-                    } else {
-                        None
-                    };
-                    let badge_w = if let Some(b) = source_badge {
-                        SelectObject(hdc, HGDIOBJ(sub_font.0));
-                        let w = text_width(hdc, b);
-                        SelectObject(hdc, HGDIOBJ(cand_font.0));
-                        w + scale(6, dpi)
-                    } else {
-                        0
-                    };
-                    // 副标（词库附注）；只在文本不重复时展示——同字符的
-                    // comment 是噪音。这里只截断长度，留待 paint 用小号字体。
-                    let comment = if c.comment.is_empty() || c.comment == c.text {
-                        String::new()
-                    } else {
-                        c.comment.chars().take(12).collect()
-                    };
-                    // 宽度预算给 comment：副标跟在主文本右侧，必须占住后续槽位。
-                    // 与 paint 头一致：用 sub_font 实测，再加一侧间隙。
-                    let comment_w = if comment.is_empty() {
-                        0
-                    } else {
-                        SelectObject(hdc, HGDIOBJ(sub_font.0));
-                        let w = text_width(hdc, &comment);
-                        SelectObject(hdc, HGDIOBJ(cand_font.0));
-                        w + scale(4, dpi)
-                    };
-                    let slot_w = label_w + label_gap + text_w + badge_w + comment_w + item_gap;
-                    if panel_mode == CandidatePanelMode::Multi {
-                        // 多行：换行条件 = 行内已有候选 且（放不下 或 已满列）。
-                        if in_row > 0 && (x + slot_w > row_budget || in_row >= MULTI_COLUMNS) {
-                            x = padding;
-                            row += 1;
-                            row_used = 0;
-                            in_row = 0;
-                        }
-                    } else if is_ai {
-                        // 单行 + AI 候选：不与 Rime 混排，恒从第二行起排；
-                        // 第二行放不下继续换行（AI 至多 3 个，不参与分页）。
-                        if row == 0 {
-                            x = padding;
-                            row = 1;
-                            row_used = 0;
-                            in_row = 0;
-                        } else if x + slot_w > row_budget && in_row > 0 {
-                            x = padding;
-                            row += 1;
-                            row_used = 0;
-                            in_row = 0;
-                        }
-                    } else if x + slot_w > row_budget {
-                        // 单行：Rime 候选放不下 → 跳过（剩余靠翻页访问）。
-                        // 不能 break：AI 候选在第二行仍需处理——break 会让
-                        // 排在合并列表尾部的 AI 永远无法到达（"ni hao ni hao"
-                        // 实测复现：第一行 5 个 Rime 就 break，AI 不显示）。
-                        continue;
-                    }
-                    items.push(Item {
-                        label,
-                        text: display_text,
-                        comment,
-                        x,
-                        row,
-                        label_w,
-                        text_w: text_w + comment_w,
-                        highlighted: i == ctx.highlighted,
-                        hovered: false,
-                        pure_text_w: text_w,
-                        source_badge,
-                        badge_w,
-                    });
-                    x += slot_w;
-                    row_used += slot_w;
-                    max_row_used = max_row_used.max(row_used);
-                    in_row += 1;
-                }
-
-                SelectObject(hdc, HGDIOBJ(preedit_font.0));
-                let preedit_w = text_width(hdc, &ctx.preedit);
-
-                SelectObject(hdc, old);
-                ReleaseDC(Some(hwnd), hdc);
-                (items, preedit_w)
-            };
-
-            // 行尾 = 最宽行内容宽度 + 左 padding。单行模式默认 1 行沿用末项
-            // 右缘；AI 候选（2026-08-20）换行到第二行后，末项可能是较短的
-            // AI 候选，必须取 max_row_used（循环内每行 row_used 的全局最大）。
-            let items_end = if panel_mode == CandidatePanelMode::Multi {
-                padding + max_row_used
-            } else if items.iter().any(|it| it.row > 0) {
-                padding + max_row_used
+            // 副标（词库附注）；只在文本不重复时展示——同字符的
+            // comment 是噪音。这里只截断长度，留待 paint 用小号字体。
+            let comment = if c.comment.is_empty() || c.comment == c.text {
+                String::new()
             } else {
-                items
-                    .last()
-                    .map(|it| it.x + it.label_w + label_gap + it.text_w + it.badge_w)
-                    .unwrap_or(padding)
+                c.comment.chars().take(12).collect()
             };
-            // 给模式徽标预留宽度，避免与 preedit 互相压占
-            let mode_badge_hint =
-                scale(BASE_FONT_HEIGHT, dpi) * 3 + scale(BASE_MODE_BADGE_GAP, dpi);
-            // 总宽 = max(候选行尾, preedit+徽标) + 右 padding + 滚动条，钳到 max_width
-            let width = ((items_end.max(padding + preedit_w + mode_badge_hint) + padding + sb_w)
-                .max(scale(BASE_MIN_WIDTH, dpi)))
-            .min(max_width);
-            let row_h = scale(skin.metrics.row_h_or(BASE_ROW_HEIGHT), dpi);
-            // 行数 = 最大行号 + 1（无候选保底 1 行）。单行模式默认 1 行；
-            // AI 候选（2026-08-20）换行到第二行时 rows 自然为 2。
-            let rows = items.iter().map(|it| it.row).max().unwrap_or(0) + 1;
-            let height = tab_h
-                + scale(skin.metrics.preedit_h_or(BASE_PREEDIT_HEIGHT), dpi)
-                + row_h * rows
-                + padding * 2;
+            // 宽度预算给 comment：副标跟在主文本右侧，必须占住后续槽位。
+            // 与 paint 头一致：用 sub_font 实测，再加一侧间隙。
+            let comment_w = if comment.is_empty() {
+                0
+            } else {
+                SelectObject(hdc, HGDIOBJ(sub_font.0));
+                let w = text_width(hdc, &comment);
+                SelectObject(hdc, HGDIOBJ(cand_font.0));
+                w + scale(4, dpi)
+            };
+            let slot_w = label_w + label_gap + text_w + badge_w + comment_w + item_gap;
+            if panel_mode == CandidatePanelMode::Multi {
+                // 多行：换行条件 = 行内已有候选 且（放不下 或 已满列）。
+                if in_row > 0 && (x + slot_w > row_budget || in_row >= MULTI_COLUMNS) {
+                    x = padding;
+                    row += 1;
+                    row_used = 0;
+                    in_row = 0;
+                }
+            } else if is_ai {
+                // 单行 + AI 候选：不与 Rime 混排，恒从第二行起排；
+                // 第二行放不下继续换行（AI 至多 3 个，不参与分页）。
+                if row == 0 {
+                    x = padding;
+                    row = 1;
+                    row_used = 0;
+                    in_row = 0;
+                } else if x + slot_w > row_budget && in_row > 0 {
+                    x = padding;
+                    row += 1;
+                    row_used = 0;
+                    in_row = 0;
+                }
+            } else if x + slot_w > row_budget {
+                // 单行：Rime 候选放不下 → 跳过（剩余靠翻页访问）。
+                // 不能 break：AI 候选在第二行仍需处理——break 会让
+                // 排在合并列表尾部的 AI 永远无法到达（"ni hao ni hao"
+                // 实测复现：第一行 5 个 Rime 就 break，AI 不显示）。
+                continue;
+            }
+            items.push(Item {
+                label,
+                text: display_text,
+                comment,
+                x,
+                row,
+                label_w,
+                text_w: text_w + comment_w,
+                highlighted: i == ctx.highlighted,
+                hovered: false,
+                pure_text_w: text_w,
+                source_badge,
+                badge_w,
+            });
+            x += slot_w;
+            row_used += slot_w;
+            max_row_used = max_row_used.max(row_used);
+            in_row += 1;
+        }
 
-            crate::debug_log(&format!(
+        SelectObject(hdc, HGDIOBJ(preedit_font.0));
+        let preedit_w = text_width(hdc, &ctx.preedit);
+
+        SelectObject(hdc, old);
+        ReleaseDC(Some(hwnd), hdc);
+        (items, preedit_w)
+    };
+
+    // 行尾 = 最宽行内容宽度 + 左 padding。单行模式默认 1 行沿用末项
+    // 右缘；AI 候选（2026-08-20）换行到第二行后，末项可能是较短的
+    // AI 候选，必须取 max_row_used（循环内每行 row_used 的全局最大）。
+    let multi_row = panel_mode == CandidatePanelMode::Multi || items.iter().any(|it| it.row > 0);
+    let items_end = if multi_row {
+        padding + max_row_used
+    } else {
+        items
+            .last()
+            .map(|it| it.x + it.label_w + label_gap + it.text_w + it.badge_w)
+            .unwrap_or(padding)
+    };
+    // 给模式徽标预留宽度，避免与 preedit 互相压占
+    let mode_badge_hint = scale(BASE_FONT_HEIGHT, dpi) * 3 + scale(BASE_MODE_BADGE_GAP, dpi);
+    // 总宽 = max(候选行尾, preedit+徽标) + 右 padding + 滚动条，钳到 max_width
+    let width = ((items_end.max(padding + preedit_w + mode_badge_hint) + padding + sb_w)
+        .max(scale(BASE_MIN_WIDTH, dpi)))
+    .min(max_width);
+    let row_h = scale(skin.metrics.row_h_or(BASE_ROW_HEIGHT), dpi);
+    // 行数 = 最大行号 + 1（无候选保底 1 行）。单行模式默认 1 行；
+    // AI 候选（2026-08-20）换行到第二行时 rows 自然为 2。
+    let rows = items.iter().map(|it| it.row).max().unwrap_or(0) + 1;
+    let height = tab_h
+        + scale(skin.metrics.preedit_h_or(BASE_PREEDIT_HEIGHT), dpi)
+        + row_h * rows
+        + padding * 2;
+
+    crate::debug_log(&format!(
                 "cand show: mode={:?} rows={} win_dpi={} sys_dpi={} used_dpi={} screen_w={} max_w={} w={} h={} preedit={:?} cands={}",
                 panel_mode, rows,
                 unsafe { GetDpiForWindow(hwnd) },
@@ -1029,18 +1030,18 @@ fn compute_show_layout(
                 ctx.candidates.len(),
             ));
 
-            PAINT_DATA.with_borrow_mut(|data| {
-                data.preedit = ctx.preedit.clone();
-                data.items = items;
-                data.dpi = dpi;
-                data.skin = *skin;
-                data.is_ascii = ctx.is_ascii;
-                data.is_full_shape = ctx.is_full_shape;
-                data.page = page;
-                data.show_tab_bar = show_tab_bar;
-                data.tab_active = tab_active;
-                data.tab_h = tab_h;
-            });
+    PAINT_DATA.with_borrow_mut(|data| {
+        data.preedit = ctx.preedit.clone();
+        data.items = items;
+        data.dpi = dpi;
+        data.skin = *skin;
+        data.is_ascii = ctx.is_ascii;
+        data.is_full_shape = ctx.is_full_shape;
+        data.page = page;
+        data.show_tab_bar = show_tab_bar;
+        data.tab_active = tab_active;
+        data.tab_h = tab_h;
+    });
 
     (width, height)
 }
@@ -1072,11 +1073,7 @@ fn merge_ai_candidates(ctx: &Context) -> (Vec<ime_ipc::Candidate>, Option<usize>
             comment: "🤖".to_owned(),
         });
     }
-    let ai_start = if start < out.len() {
-        Some(start)
-    } else {
-        None
-    };
+    let ai_start = if start < out.len() { Some(start) } else { None };
     (out, ai_start)
 }
 
@@ -1112,17 +1109,8 @@ pub(crate) fn refresh_with_ai(payload_ptr: isize) {
     let skin = skin::load_with(|| extra);
     let dpi = unsafe { GetDpiForWindow(hwnd).max(GetDpiForSystem()) }.max(96);
     let screen_w = logical_screen_dim(unsafe { GetSystemMetrics(SM_CXSCREEN) }, dpi);
-    let screen_h = logical_screen_dim(unsafe { GetSystemMetrics(SM_CYSCREEN) }, dpi);
-    let (width, height) = compute_show_layout(
-        hwnd,
-        &view_ctx,
-        &skin,
-        dpi,
-        panel_mode,
-        screen_w,
-        screen_h,
-        ai_start,
-    );
+    let (width, height) =
+        compute_show_layout(hwnd, &view_ctx, &skin, dpi, panel_mode, screen_w, ai_start);
     // 位置保持当前窗口位置，仅按新宽高重排
     let mut rect = RECT::default();
     unsafe {
@@ -1143,7 +1131,6 @@ pub(crate) fn refresh_with_ai(payload_ptr: isize) {
         view_ctx.preedit, ai_start, width, height
     ));
 }
-
 
 impl CandidateUi {
     pub fn new() -> Self {
@@ -1311,16 +1298,8 @@ impl CandidateUi {
         let content_changed = self.last_fp != Some(fp);
 
         let (width, height) = if content_changed {
-            let out = compute_show_layout(
-                hwnd,
-                &view_ctx,
-                &skin,
-                dpi,
-                panel_mode,
-                screen_w,
-                screen_h,
-                ai_start,
-            );
+            let out =
+                compute_show_layout(hwnd, &view_ctx, &skin, dpi, panel_mode, screen_w, ai_start);
             self.last_fp = Some(fp);
             self.last_width = out.0;
             self.last_height = out.1;
@@ -1406,6 +1385,12 @@ impl CandidateUi {
         }
         self.visible = false;
         crate::uia_provider::clear_candidate_text();
+        // S3：隐藏后必须清空 LAST_CTX。否则简拼词（comment=“简拼”）的提交
+        // 拦截会继续命中上一帧快照——用户再敲普通空格/数字键时会把上一个
+        // 简拼词再插一次并吃掉该键，表现为「空格打不出来」。
+        LAST_CTX.with(|c| *c.borrow_mut() = None);
+        AI_CANDIDATES.with(|c| c.borrow_mut().clear());
+        AI_START.with(|s| s.set(None));
     }
 
     /// 触发一次重绘：模式角标 / 长按大写提示等不发新候选、仅刷新外观的场景用。
@@ -1629,12 +1614,11 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
         let en_bar = PAINT_DATA.with_borrow(|d| d.show_tab_bar);
         if tab == TabKind::English && en_bar {
             let preedit = LAST_CTX.with(|c| c.borrow().as_ref().map(|c| c.preedit.clone()));
-            let text = preedit
-                .and_then(|p| crate::english_candidates::suggest(&p).get(index).cloned());
+            let text =
+                preedit.and_then(|p| crate::english_candidates::suggest(&p).get(index).cloned());
             if let Some(text) = text {
-                let done = AI_COMMIT.with(|slot| {
-                    slot.borrow().as_ref().map(|f| f(&text)).unwrap_or(false)
-                });
+                let done = AI_COMMIT
+                    .with(|slot| slot.borrow().as_ref().map(|f| f(&text)).unwrap_or(false));
                 if !done {
                     send_virtual_key(VK_AI_COMMIT_TRIGGER);
                 }
@@ -1661,9 +1645,8 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
                     })
                 });
                 if let Some(text) = text {
-                    let done = AI_COMMIT.with(|slot| {
-                        slot.borrow().as_ref().map(|f| f(&text)).unwrap_or(false)
-                    });
+                    let done = AI_COMMIT
+                        .with(|slot| slot.borrow().as_ref().map(|f| f(&text)).unwrap_or(false));
                     if !done {
                         // 直接提交失败（非 TSF 认可时机等）：回发触发键，
                         // 由 handle_key 的 pending_ai 兜底提交。
@@ -1692,9 +1675,8 @@ unsafe fn select_candidate_at(lparam: LPARAM) {
                     .map(|c| c.text.clone())
             });
             if let Some(text) = text {
-                let done = AI_COMMIT.with(|slot| {
-                    slot.borrow().as_ref().map(|f| f(&text)).unwrap_or(false)
-                });
+                let done = AI_COMMIT
+                    .with(|slot| slot.borrow().as_ref().map(|f| f(&text)).unwrap_or(false));
                 if !done {
                     send_virtual_key(VK_AI_COMMIT_TRIGGER);
                 }
@@ -1982,7 +1964,11 @@ unsafe fn send_virtual_key(vk: u8) {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(vk as u16),
                 wScan: scan,
-                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    Default::default()
+                },
                 ..Default::default()
             },
         },
@@ -1990,8 +1976,6 @@ unsafe fn send_virtual_key(vk: u8) {
     let inputs = [key(false), key(true)];
     SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
 }
-
-
 
 unsafe fn paint(hdc: HDC, rc: &RECT) {
     PAINT_DATA.with_borrow(|data| {
@@ -2068,15 +2052,30 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
             let rime_w = text_width(hdc, "拼音") + tab_pad * 2;
             let en_w = text_width(hdc, "英文") + tab_pad * 2;
             let rime_active = data.tab_active == TabKind::Rime;
-            draw_tab_label(hdc, "拼音", padding, padding, rime_w, data.tab_h, rime_active, &colors);
+            draw_tab_label(
+                hdc,
+                "拼音",
+                RECT {
+                    left: padding,
+                    top: padding,
+                    right: padding + rime_w,
+                    bottom: padding + data.tab_h,
+                },
+                rime_active,
+                dpi,
+                &colors,
+            );
             draw_tab_label(
                 hdc,
                 "英文",
-                padding + rime_w + gap,
-                padding,
-                en_w,
-                data.tab_h,
+                RECT {
+                    left: padding + rime_w + gap,
+                    top: padding,
+                    right: padding + rime_w + gap + en_w,
+                    bottom: padding + data.tab_h,
+                },
                 !rime_active,
+                dpi,
                 &colors,
             );
             SelectObject(hdc, old_tab);
@@ -2097,7 +2096,14 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
         let preedit_w = (rc.right - padding * 2 - mode_badge_w).max(scale(BASE_MIN_WIDTH, dpi));
         let breaks = syllable_breaks(&data.preedit);
         if breaks.is_empty() {
-            draw_line(hdc, &data.preedit, padding, padding + data.tab_h, preedit_w, preedit_h);
+            draw_line(
+                hdc,
+                &data.preedit,
+                padding,
+                padding + data.tab_h,
+                preedit_w,
+                preedit_h,
+            );
         } else {
             // 含音节分隔符：跳过分隔符本体、逐段交替色 + 1px 竖线占位。
             let preedit_font_h = font_height(BASE_PREEDIT_FONT_HEIGHT, dpi, font_scale);
@@ -2106,10 +2112,12 @@ unsafe fn paint(hdc: HDC, rc: &RECT) {
                 &data.preedit,
                 &breaks,
                 &colors,
-                padding,
-                preedit_h,
-                preedit_font_h,
-                data.tab_h,
+                PreeditMetrics {
+                    padding,
+                    preedit_h,
+                    preedit_font_h,
+                    tab_h: data.tab_h,
+                },
             );
         }
         // 角标本体：highlight 底色块 + 反色文字（skin.candidate.background 当反色，
@@ -2241,18 +2249,20 @@ pub fn syllable_segment_colors(colors: &crate::skin::CandidateColors) -> [u32; 3
 /// 形成 `A|B` 分段视觉。排版宽度与原文完全一致（各段 GetTextExtentPoint32W
 /// 实测顺序推进），对布局槽位与窗口宽度零影响。
 ///
-/// `hdc` 须已选入 preedit 字体；`padding`/`preedit_h`/`preedit_font_h` 由调用方
-/// 按 (dpi, font_scale) 展开后传入。
+/// `hdc` 须已选入 preedit 字体；`metrics` 由调用方按 (dpi, font_scale) 展开后传入。
 unsafe fn draw_preedit_segmented(
     hdc: HDC,
     preedit: &str,
     breaks: &[u16],
     colors: &crate::skin::CandidateColors,
-    padding: i32,
-    preedit_h: i32,
-    preedit_font_h: i32,
-    tab_h: i32,
+    metrics: PreeditMetrics,
 ) {
+    let PreeditMetrics {
+        padding,
+        preedit_h,
+        preedit_font_h,
+        tab_h,
+    } = metrics;
     let wide: Vec<u16> = preedit.encode_utf16().collect();
     let n = wide.len();
     let [even_c, odd_c, sep_c] = syllable_segment_colors(colors);
@@ -2338,28 +2348,28 @@ unsafe fn draw_line_utf16(hdc: HDC, wide: &[u16], left: i32, top: i32, right: i3
 unsafe fn draw_tab_label(
     hdc: HDC,
     text: &str,
-    left: i32,
-    top: i32,
-    width: i32,
-    height: i32,
+    box_rect: RECT,
     active: bool,
+    dpi: u32,
     colors: &crate::skin::CandidateColors,
 ) {
+    let RECT {
+        left,
+        top,
+        right,
+        bottom,
+    } = box_rect;
+    let height = bottom - top;
     if active {
         let hl = CreateSolidBrush(COLORREF(colors.highlight_background));
-        let rect = RECT {
-            left,
-            top,
-            right: left + width,
-            bottom: top + height,
-        };
-        FillRect(hdc, &rect, hl);
+        FillRect(hdc, &box_rect, hl);
         let _ = DeleteObject(HGDIOBJ(hl.0));
         SetTextColor(hdc, COLORREF(colors.background));
     } else {
         SetTextColor(hdc, COLORREF(colors.label));
     }
-    draw_line(hdc, text, left + scale(6, GetDpiForSystem()), top, left + width - scale(6, GetDpiForSystem()), height);
+    let inset = scale(6, dpi);
+    draw_line(hdc, text, left + inset, top, right - inset, height);
 }
 
 unsafe fn draw_line(hdc: HDC, text: &str, left: i32, top: i32, right: i32, height: i32) {

@@ -95,7 +95,6 @@ fn session_context_string(s: &Session) -> String {
     out
 }
 
-
 /// 主动部署指定方案（编译附加词典，如 radical_pinyin 反查词典）。
 /// 增量部署不编译附加 translator 的词典，需初始化后显式调用一次。
 #[no_mangle]
@@ -451,4 +450,3 @@ pub extern "system" fn Java_com_shurufa_ime_RimeBridge_nativeChangePage(
         default,
     )
 }
-

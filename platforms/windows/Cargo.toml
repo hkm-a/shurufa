@@ -10,7 +10,9 @@ name = "shurufa_tsf"
 crate-type = ["cdylib"]
 
 [dependencies]
-ime-bridge = { path = "../../core/ime-bridge" }
+# 注意：不要在此声明 ime-bridge。引擎已迁出本进程（由独立算法服务 shurufa-algo
+# 提供），TSF DLL 只作瘦客户端经 ime-ipc 走命名管道；直接依赖会把整个 librime
+# FFI crate 与其 build.rs（复制 rime.dll）拖回每个宿主进程的依赖图。
 ime-ipc = { path = "../../core/ime-ipc" }
 shurufa-options = { path = "../../core/options" }
 serde = { version = "1", features = ["derive"] }

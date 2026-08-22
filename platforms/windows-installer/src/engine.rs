@@ -955,6 +955,12 @@ fn read_install_location() -> Option<String> {
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let line = text.lines().find(|l| l.contains("InstallLocation"))?;
-    let value = line.split_whitespace().last()?;
+    // `reg query` 输出形如 `    InstallLocation    REG_SZ    C:\Program Files`。
+    // 不能用 split_whitespace().last()——默认安装目录含空格时只取到 `Files`，
+    // 卸载会静默空转却报「卸载完成」。以类型列 REG_SZ 为界，右侧整段都是值。
+    let value = line.split_once("REG_SZ")?.1.trim();
+    if value.is_empty() {
+        return None;
+    }
     Some(value.to_string())
 }

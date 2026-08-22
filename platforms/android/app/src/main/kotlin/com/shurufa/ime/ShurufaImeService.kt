@@ -2919,8 +2919,13 @@ class ShurufaImeService : InputMethodService() {
         val thumb: android.graphics.Bitmap?,
     )
 
-    /** A6 长按菜单：置顶/取消置顶、删除，文件/图片条目追加「发送为文件」。 */
-    private fun showHistoryEntryActions(entry: ClipStore.Entry, onlyImages: Boolean) {
+    /** A6 长按菜单：置顶/取消置顶、删除，文件/图片条目追加「发送为文件」。
+     * IME Service 无窗口 token，AlertDialog 会 BadTokenException，故用 PopupWindow。 */
+    private fun showHistoryEntryActions(
+        entry: ClipStore.Entry,
+        onlyImages: Boolean,
+        anchor: View,
+    ) {
         // 无 pin 字段回传：当前置顶状态不明，菜单同时给出「置顶」与「取消置顶」。
         val base = listOf(
             getString(R.string.history_menu_pin),
@@ -2945,27 +2950,53 @@ class ShurufaImeService : InputMethodService() {
                 base.toTypedArray()
             }
         }
-        android.app.AlertDialog.Builder(this)
-            .setTitle(entry.text.replace('\n', ' ').take(24))
-            .setItems(options) { dialog, which ->
-                when (which) {
-                    0 -> ClipStore.setPinned(entry.id, true)
-                    1 -> ClipStore.setPinned(entry.id, false)
-                    2 -> ClipStore.delete(entry.id)
-                    else -> if (which == speakIndex) {
-                        speakText(entry.text)
-                    } else if (which == sendIndex) {
-                        // 同步 v3：把本地落盘文件经 SyncBridge 分块下发
-                        val path = entry.text.lineSequence().firstOrNull()?.trim()
-                        if (!path.isNullOrEmpty()) {
-                            SyncBridge.sendFile(path)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(if (isDark()) 0xFF2A2F36.toInt() else 0xFFFFFFFF.toInt())
+            setPadding(dp(4f), dp(6f), dp(4f), dp(6f))
+            addView(TextView(this@ShurufaImeService).apply {
+                text = entry.text.replace('\n', ' ').take(24)
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(palette.panelText)
+                setPadding(dp(14f), dp(4f), dp(14f), dp(4f))
+            })
+        }
+        var popup: PopupWindow? = null
+        options.forEachIndexed { i, label ->
+            content.addView(TextView(this).apply {
+                this.text = label
+                textSize = 14f
+                setTextColor(if (i in 0..1) palette.accent else palette.panelText)
+                setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
+                setOnClickListener {
+                    popup?.dismiss()
+                    when (i) {
+                        0 -> ClipStore.setPinned(entry.id, true)
+                        1 -> ClipStore.setPinned(entry.id, false)
+                        2 -> ClipStore.delete(entry.id)
+                        else -> if (i == speakIndex) {
+                            speakText(entry.text)
+                        } else if (i == sendIndex) {
+                            // 同步 v3：把本地落盘文件经 SyncBridge 分块下发
+                            val path = entry.text.lineSequence().firstOrNull()?.trim()
+                            if (!path.isNullOrEmpty()) {
+                                SyncBridge.sendFile(path)
+                            }
                         }
                     }
+                    historyPanel?.let { populateHistory(it, onlyImages) }
                 }
-                dialog.dismiss()
-                historyPanel?.let { populateHistory(it, onlyImages) }
-            }
-            .show()
+            })
+        }
+        popup = PopupWindow(
+            content,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true,
+        )
+        popup.isOutsideTouchable = true
+        popup.showAsDropDown(anchor, 0, -anchor.height - dp(8f))
     }
 
     private fun renderHistoryList(
@@ -2994,7 +3025,7 @@ class ShurufaImeService : InputMethodService() {
                     // 微信输入法同款：点图先进预览键盘，再保存/发送
                     setOnClickListener { openImagePreview(entry.id) }
                     setOnLongClickListener {
-                        showHistoryEntryActions(entry, onlyImages)
+                        showHistoryEntryActions(entry, onlyImages, it)
                         true
                     }
                 }
@@ -3029,7 +3060,7 @@ class ShurufaImeService : InputMethodService() {
                         }
                     }
                     setOnLongClickListener {
-                        showHistoryEntryActions(entry, onlyImages)
+                        showHistoryEntryActions(entry, onlyImages, it)
                         true
                     }
                 }, LinearLayout.LayoutParams(
@@ -3049,7 +3080,7 @@ class ShurufaImeService : InputMethodService() {
                     toggleHistory()
                 }
                 setOnLongClickListener {
-                    showHistoryEntryActions(entry, onlyImages)
+                    showHistoryEntryActions(entry, onlyImages, it)
                     true
                 }
             }, LinearLayout.LayoutParams(

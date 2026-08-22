@@ -4998,7 +4998,6 @@ dependencies = [
 name = "shurufa-tsf"
 version = "0.1.0"
 dependencies = [
- "ime-bridge",
  "ime-ipc",
  "serde",
  "serde_json",

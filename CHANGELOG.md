@@ -4,6 +4,97 @@
 
 ## [Unreleased]
 
+### 工程与治理（2026-08-21）
+- **CI 恢复为可信信号**：此前 main 分支连续 14 次运行全红，README 却声称
+  「clippy 与 fmt 零告警、约 240 项测试全绿」。实测四项声明全部不成立
+  （clippy 6 处告警、fmt 41 处不合规、1 个测试失败、CI 全红）。本次修复：
+  - 新增 `rust-toolchain.toml` 钉死 Rust 1.97.0，避免浮动 stable 的新 lint
+    在与改动无关的时间点让 `-D warnings` 转红；
+  - 修掉全部 clippy 命中（3 处 `too_many_arguments`、1 处 `if_same_then_else`、
+    1 处未用变量、1 处死方法），并对全工作区应用 `cargo fmt`；
+  - `.cargo/config.toml` 含作者本机绝对 NDK 路径却已入库，任何其他环境的交叉
+    编译必然失败——改为 `.cargo/config.toml.example` 并 gitignore 实际文件；
+  - CI 的 Windows 构建顺序此前与 `build-installer.ps1` 不一致，安装器 `build.rs`
+    会因 payload 未生成而 panic——改为直接复用打包脚本，消除两套顺序；
+  - CI 的 Android 作业下载 `rime-…-Android-arm64-v8a.7z`，但 librime 上游从未
+    发布 Android 产物（该 URL 恒 404，curl 无 `-f` 时把错误页写进 .7z）。改为
+    只跑 Gradle lint 与 JVM 单元测试——CI 只承诺能真正验证的事。
+- **新增三条机器门禁**（`scripts/`）：
+  - `check-core-portable.ps1`：`core/` 下的 crate 不得无条件依赖平台专属 crate。
+    这是防止 `core/` 退化成文件夹的长期机制；当前记录 1 项基线欠债
+    （`ime-ipc` 混装了 IPC 传输与 IME 策略），基线只允许缩短。
+  - `check-docs.ps1`：文档内部链接可达、写死的「当前版本」等于 `version.json`、
+    CHANGELOG 有当前版本条目。
+  - `set-version.ps1 -Check` 扩展：新增「文本声明点」表，把 README 的状态徽章
+    与「当前版本」段纳入校验。此前 `-Check` 只覆盖 4 个 JSON 白名单，导致
+    `version.json`=1.8.0 / 徽章=0.8.0 / 正文=1.7.0 三方矛盾长期无人察觉。
+
+### 修复（2026-08-21）
+- **辅码检字（uU 部件反查）多部件码完全失效**：`recognizer/patterns/radical_lookup`
+  为 `^uU[a-z]+$` 不含撇号，而 `radical_pinyin.schema.yaml` 的 algebra 自 c12a576
+  起改为保留 `'` 作部件分隔符（词典编码即 `bai'shao`）。两者不匹配的后果是
+  **两种写法都打不出**：带撇号的 `uUbai'shao` 匹配不到 pattern、拿不到 tag，整串
+  落回普通拼音（实测出「白芍/白沙」）；去掉撇号的 `uUbaishao` 又与词典编码对不上。
+  修复：pattern 改为 `^uU[a-z']+$`。单部件码（`uUheng` → 一）本就正常。
+  集成测试同步补上「无撇号必须不命中」的回归护栏。
+- **英文候选词表含 120 个重复条目且 `suggest` 不去重**：输入 `wor` 返回四个
+  一模一样的 `work`，把 `world` 挤出候选槽。修复：词表去重（689 → 569 条），
+  并在 `suggest` 内用 HashSet 在过滤阶段去重（不能用 `Vec::dedup`——按长度排序
+  后同长的重复词之间可能夹着别的词）。新增两条测试锁定该行为。
+- **`set-version.ps1` 用 `-Encoding ascii` 写 `gradle.properties`**，已把该文件的
+  中文注释永久毁成问号，且每次 bump 重复破坏（同文件内就有正确的
+  `Write-Utf8NoBom`）。修复并恢复被毁的注释。
+- **候选窗 Tab 标签用系统 DPI 而非窗口 DPI**（`draw_tab_label` 内部调
+  `GetDpiForSystem()`），多显示器不同缩放时 Tab 内边距会算错。改为由调用方
+  传入窗口 DPI。
+- **候选窗 show 路径每次多两次无用的 `GetSystemMetrics` 系统调用**：
+  `compute_show_layout` 的 `_screen_h` 参数从未使用，两处调用点却仍在计算它。
+- **架构审视 S1：IPC 读超时后不重置连接，导致应答永久错位一格**：协议无请求
+  ID，超时后同一管道上会残留服务端迟到的一帧应答，下一次请求读到的就是上一键
+  的结果。修复：`roundtrip` 读失败/超时即丢弃连接，下次请求自动重连。
+- **架构审视 S2：卸载时用 `split_whitespace().last()` 解析注册表安装路径**：
+  默认目录 `C:\Program Files` 含空格时只取到 `Files`，卸载静默空转却报「卸载
+  完成」。修复：以 `REG_SZ` 类型列为界取右侧整段路径。
+- **架构审视 S3：候选窗隐藏后 LAST_CTX 未清空，空格/数字键误提交上一个简拼词**：
+  隐藏时同步清空 LAST_CTX 与 AI 候选快照，提交拦截不再命中上一帧。
+- **架构审视 S4：引擎不可用时兜底路径把 Backspace/Enter/方向键/标点全落成空格**：
+  `fallback_commit` 现在只直出字母/数字，其余按键返回交给宿主进程处理。
+- **架构审视 S5：出站广播仅 64 槽，大文件传输必因 `Lagged` 丢块中止**：广播容量
+  提升到 1024+128，足以容纳 64MB 文件 v3 的全部 Chunk（64KB×1024），并保留
+  文本/图片/控制消息余量。根治方案（每连接独立通道/流控）仍见路线图阶段 2。
+- **架构审视 S6：读帧被 Ping 抢占后丢弃半帧，大帧传输必断连**：`duplex` 原先在
+  同一个 `tokio::select!` 里 poll 读帧和 Ping tick，Ping 到点会取消正在进行的
+  `read_msg_with_format`，已消费的半帧数据从 TLS 流中丢失。现拆成独立读任务 +
+  主循环写侧：读任务只读帧，需要回写的应答经 `mpsc` 交回写侧，Ping 不再打断读帧。
+- **架构审视 S7：无简拼方案的自定义短语配置过期**：重新运行
+  `gen-nojianpin-schema.ps1`，`rime_ice_nojianpin.schema.yaml` 的
+  `custom_phrase` 与源方案对齐（tabledb + `词条<TAB>编码`），并同步补齐近期
+  源方案的 solar_terms/纠错/辅码变更。
+- **架构审视 S8：长按剪贴板历史条目用 AlertDialog 必崩 IME 进程**：IME Service
+  无窗口 token，改为与候选长按菜单同款的 PopupWindow。
+
+### 文档（2026-08-21）
+- **修正 `架构说明.md` 的四项失实承诺**：Compose 键盘（实为自绘 Canvas View）、
+  WiX 安装器（实为自研 Tauri 外壳）、uniffi 绑定（实为手写 JNI）、以及最关键的
+  一条——「weasel/trime 为 GPL-3，直接复用需 GPL 兼容开源」。**本仓自身即
+  GPL-3.0**，该许可障碍从不存在，而这条错误前提正是约 6000 行候选窗框架重写的
+  起点。新增 §8「架构约束（CI 强制）」与 §8.2「决策记录」规范。
+- **修正 `版本管理.md` 与实现相反的描述**：该文档把 `gradle.properties` 列为
+  「由 set-version.ps1 自动同步的派生点」，而实现是主动拦截该文件里的版本行
+  （Android 由 `build.gradle.kts` 构建期直读 `version.json`）。照文档操作会直接
+  锁死整条 CI。改为区分「结构化派生点 / 文本声明点 / 构建期直读」三类。
+- **`文档管理.md` 新增 §8 机器门禁与 §9 验收报告定位**：确立「写不进
+  `check-docs.ps1` 的文档承诺就不要写进文档」原则；15 份 `M*-验收报告.md`
+  统一标注为历史快照（保留可追溯，不代表当前状态）。
+- **README 修正**：状态徽章 v0.8.0 与正文 v1.7.0 → v1.8.0；产物名
+  `Shurufa-Setup-*.exe` → 实际的 `FOX-Setup-*.exe`；删除「构建机需要 NSIS」
+  （仓内已无 `.nsi`，安装器是自研 Tauri 外壳）；删除指向未入库文件
+  `.claude/verification-report.md` 的死链；工程现状改为陈述 CI 门禁构成。
+- 修复两处坏链接：`docs/M10-验收报告.md` 中多写一层 `docs/` 前缀；
+  `docs/开发计划-Android.md` 中用全角 `）` 闭合 markdown 链接。
+- 新增 [架构审视与选型替换报告](docs/架构审视与选型替换报告.md)：全仓 10 个子系统
+  测绘、99 条细节缺陷、约 12000 行可替换自研代码的分档清单与改造路线图。
+
 ### 新增（2026-08-21）
 - **候选服务 Tab（M7-5 P1+P2，Windows）**：候选窗顶部 Tab 行「拼音 | 英文」
   （仅英文候选非空时显示）；内置 ~500 高频英文词表前缀联想（≥2 位 ASCII

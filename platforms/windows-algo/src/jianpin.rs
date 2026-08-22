@@ -23,7 +23,8 @@ impl JianpinIndex {
 
     /// 加载索引文件：每行 `编码\t词\t权重`，同编码按权重降序。
     pub fn load(path: &Path) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("读简拼索引失败 {}: {e}", path.display()))?;
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("读简拼索引失败 {}: {e}", path.display()))?;
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         let mut max_code_len = 0usize;
         for line in text.lines() {
@@ -47,13 +48,13 @@ impl JianpinIndex {
         Ok(JianpinIndex { map, max_code_len })
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
-
     /// 纯辅音穿判定（无元音 a/e/i/o/u/v，与 AI 跳过逻辑同源）
     pub fn is_pure_consonant(code: &str) -> bool {
-        !code.is_empty() && code.len() <= 8 && code.bytes().all(|b| b.is_ascii_lowercase() && !b"aeiouv".contains(&b))
+        !code.is_empty()
+            && code.len() <= 8
+            && code
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() && !b"aeiouv".contains(&b))
     }
 
     /// 查简拼编码，返回前 max 个词。
@@ -61,7 +62,10 @@ impl JianpinIndex {
         if code.len() > self.max_code_len {
             return Vec::new();
         }
-        self.map.get(code).map(|v| v.iter().take(max).cloned().collect()).unwrap_or_default()
+        self.map
+            .get(code)
+            .map(|v| v.iter().take(max).cloned().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -86,7 +90,11 @@ mod tests {
     fn load_and_lookup() {
         let dir = std::env::temp_dir();
         let p = dir.join("jianpin_index_test.txt");
-        std::fs::write(&p, "lwyg\t来玩鱼羹\t99\nlwyg\t另一个\t158\nwsh\t晚上\t500\n").unwrap();
+        std::fs::write(
+            &p,
+            "lwyg\t来玩鱼羹\t99\nlwyg\t另一个\t158\nwsh\t晚上\t500\n",
+        )
+        .unwrap();
         let idx = JianpinIndex::load(&p).unwrap();
         let r = idx.lookup("lwyg", 9);
         assert_eq!(r.len(), 2);

@@ -277,22 +277,76 @@ impl D2dCore {
                 let mut rx = padding;
                 if rime_active {
                     target.FillRectangle(
-                        &D2D_RECT_F { left: rx, top: tab_y, right: rx + rime_w, bottom: tab_y + tab_h },
+                        &D2D_RECT_F {
+                            left: rx,
+                            top: tab_y,
+                            right: rx + rime_w,
+                            bottom: tab_y + tab_h,
+                        },
                         &br.highlight,
                     );
-                    draw_text(target, fmt_s, &br.background, "拼音", D2D_RECT_F { left: rx + tab_pad, top: tab_y, right: rx + rime_w - tab_pad, bottom: tab_y + tab_h });
+                    draw_text(
+                        target,
+                        fmt_s,
+                        &br.background,
+                        "拼音",
+                        D2D_RECT_F {
+                            left: rx + tab_pad,
+                            top: tab_y,
+                            right: rx + rime_w - tab_pad,
+                            bottom: tab_y + tab_h,
+                        },
+                    );
                 } else {
-                    draw_text(target, fmt_s, &br.label, "拼音", D2D_RECT_F { left: rx + tab_pad, top: tab_y, right: rx + rime_w - tab_pad, bottom: tab_y + tab_h });
+                    draw_text(
+                        target,
+                        fmt_s,
+                        &br.label,
+                        "拼音",
+                        D2D_RECT_F {
+                            left: rx + tab_pad,
+                            top: tab_y,
+                            right: rx + rime_w - tab_pad,
+                            bottom: tab_y + tab_h,
+                        },
+                    );
                 }
                 rx = padding + rime_w + gap;
                 if !rime_active {
                     target.FillRectangle(
-                        &D2D_RECT_F { left: rx, top: tab_y, right: rx + en_w, bottom: tab_y + tab_h },
+                        &D2D_RECT_F {
+                            left: rx,
+                            top: tab_y,
+                            right: rx + en_w,
+                            bottom: tab_y + tab_h,
+                        },
                         &br.highlight,
                     );
-                    draw_text(target, fmt_s, &br.background, "英文", D2D_RECT_F { left: rx + tab_pad, top: tab_y, right: rx + en_w - tab_pad, bottom: tab_y + tab_h });
+                    draw_text(
+                        target,
+                        fmt_s,
+                        &br.background,
+                        "英文",
+                        D2D_RECT_F {
+                            left: rx + tab_pad,
+                            top: tab_y,
+                            right: rx + en_w - tab_pad,
+                            bottom: tab_y + tab_h,
+                        },
+                    );
                 } else {
-                    draw_text(target, fmt_s, &br.label, "英文", D2D_RECT_F { left: rx + tab_pad, top: tab_y, right: rx + en_w - tab_pad, bottom: tab_y + tab_h });
+                    draw_text(
+                        target,
+                        fmt_s,
+                        &br.label,
+                        "英文",
+                        D2D_RECT_F {
+                            left: rx + tab_pad,
+                            top: tab_y,
+                            right: rx + en_w - tab_pad,
+                            bottom: tab_y + tab_h,
+                        },
+                    );
                 }
             }
 

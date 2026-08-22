@@ -5,7 +5,7 @@
 [![许可证](https://img.shields.io/badge/许可证-GPL--3.0-blue.svg)](LICENSE)
 [![平台](https://img.shields.io/badge/平台-Windows%20%7C%20Android-2ea44f.svg)](#平台支持)
 [![CI](https://github.com/hkm-a/shurufa/actions/workflows/ci.yml/badge.svg)](https://github.com/hkm-a/shurufa/actions/workflows/ci.yml)
-[![状态](https://img.shields.io/badge/状态-v0.8.0-2da44e.svg)](CHANGELOG.md)
+[![状态](https://img.shields.io/badge/状态-v1.8.0-2da44e.svg)](CHANGELOG.md)
 
 Shurufa 把中文输入和设备剪贴板放在同一条工作流里：输入法负责稳定输入，剪贴板负责设备间同步。截图、标注与录屏由 PixPin 等专业工具负责，Shurufa 不再重复提供这类桌面能力。
 
@@ -20,7 +20,7 @@ Shurufa 把中文输入和设备剪贴板放在同一条工作流里：输入法
 
 ## 平台支持
 
-- **Windows**：TSF 原生输入法、常驻剪贴板同步、设置页和带版本号的单文件安装器（`Shurufa-Setup-<版本>.exe`，附 SHA-256）。
+- **Windows**：TSF 原生输入法、常驻剪贴板同步、设置页和带版本号的单文件安装器（`FOX-Setup-<版本>.exe`，附 SHA-256）。
 - **Android**：系统输入法服务、后台剪贴板同步、候选栏、QWERTY/符号键盘、历史面板和云词库更新。
 - **同步中继**：可部署在自有服务器上，不依赖项目提供的公共服务，详见 [自托管同步中继](docs/自托管中继.md)。
 
@@ -28,7 +28,7 @@ Shurufa 把中文输入和设备剪贴板放在同一条工作流里：输入法
 
 ### 用户
 
-- **Windows**：从 [Release](../../releases) 下载 `Shurufa-Setup-<版本>.exe`，右键"以管理员身份运行"。详见 [Windows 安装指南](docs/Windows安装指南.md)。
+- **Windows**：从 [Release](../../releases) 下载 `FOX-Setup-<版本>.exe`，右键"以管理员身份运行"。详见 [Windows 安装指南](docs/Windows安装指南.md)。
 - **Android**：从 [Release](../../releases) 下载 APK 安装，然后在系统设置中启用 Shurufa。详见 [Android 安装与使用](docs/安卓安装与使用.md)。
 
 ### 开发者
@@ -39,7 +39,7 @@ Windows 一键构建并打包：
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 ```
 
-产物位于 `dist\Shurufa-Setup-<版本>.exe`，同目录附 `.sha256` 校验和。构建机需要 NSIS；已 Release 构建过可加 `-SkipBuild`；正式发布请配 `SHURUFA_SIGN_PFX`/`SHURUFA_SIGN_PASSWORD` 后加 `-Sign`。
+产物位于 `dist\FOX-Setup-<版本>.exe`，同目录附 `.sha256` 校验和。安装器是仓内自研的 Tauri 外壳（`platforms/windows-installer`），payload 由其 `build.rs` 嵌入，**不需要 NSIS**；已 Release 构建过可加 `-SkipBuild`；正式发布请配 `SHURUFA_SIGN_PFX`/`SHURUFA_SIGN_PASSWORD` 后加 `-Sign`。
 
 Android 构建（需 JDK 17、Android SDK 与 Rust Android target）：
 
@@ -47,12 +47,21 @@ Android 构建（需 JDK 17、Android SDK 与 Rust Android target）：
 .\scripts\build-android.cmd
 ```
 
+> Android 的 JNI 交叉编译需要预编译的 librime-android（`third_party/librime-android`）。
+> librime 上游**不发布** Android 产物，需按 fcitx5-android / trime 的 NDK 工具链自行编译，
+> 详见 [开发环境](docs/开发环境.md)。因此 CI 的 Android 作业只跑 Gradle lint 与 JVM 单元测试。
+
+交叉编译配置从 `.cargo/config.toml.example` 复制为 `.cargo/config.toml` 后按本机 NDK 路径修改（该文件已 gitignore，不要提交）。
+
 常用本地验证：
 
 ```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 .\scripts\set-version.ps1 -Check
-git diff --check
+.\scripts\check-docs.ps1
+.\scripts\check-core-portable.ps1
 ```
 
 ## 仓库结构
@@ -62,7 +71,7 @@ core/          Rust 跨平台核心、剪贴板、输入桥接和同步协议
 platforms/     Windows TSF/桌面端、Android 输入法、中继和设置页
 schemas/       Rime 输入方案、词库清单和跨端皮肤（双端单一事实源）
 docs/          中英文对照的产品/架构/验收/发布文档
-installer/     NSIS 安装器脚本与共享部署模块 Deploy-Shurufa.ps1
+installer/     共享部署模块 Deploy-Shurufa.ps1 与安装辅助脚本
 scripts/       构建、版本 bump、开发部署、端到端验收脚本
 version.json   版本号单一事实源（由 set-version.ps1 同步四处派生点）
 ```
@@ -72,15 +81,16 @@ version.json   版本号单一事实源（由 set-version.ps1 同步四处派生
 - 产品：[架构说明](docs/架构说明.md) · [迭代方向](docs/迭代方向.md) · [开发计划](docs/开发计划.md)
 - 用户：[Windows 安装指南](docs/Windows安装指南.md) · [安卓安装与使用](docs/安卓安装与使用.md) · [云词库](docs/云词库.md) · [自托管中继](docs/自托管中继.md)
 - 开发者：[开发环境](docs/开发环境.md) · [发布流程](docs/发布流程.md) · [版本管理](docs/版本管理.md) · [文档管理](docs/文档管理.md) · [CHANGELOG](CHANGELOG.md)
-- 验收：[M1](docs/M1-验收报告.md) · [M2](docs/M2-验收报告.md) · [M3](docs/M3-验收报告.md) · [M4 Windows](docs/M4-验收报告.md) · [M4 Android](docs/M4-安卓验收报告.md) · [M7](docs/M7-验收报告.md) · [M8](docs/M8-验收报告.md) · [M9](docs/M9-验收报告.md) · [M10](docs/M10-验收报告.md) · [M10 评估](docs/M10-评估报告.md) · [安卓附件测试](docs/安卓附件测试.md)
+- 工程现状：[架构审视与选型替换报告](docs/架构审视与选型替换报告.md)（全仓测绘 + 造轮子清单 + 改造路线图）
+- 验收（**历史快照，不代表当前状态**，见[文档管理](docs/文档管理.md) §9）：[M1](docs/M1-验收报告.md) · [M2](docs/M2-验收报告.md) · [M3](docs/M3-验收报告.md) · [M4 Windows](docs/M4-验收报告.md) · [M4 Android](docs/M4-安卓验收报告.md) · [M7](docs/M7-验收报告.md) · [M8](docs/M8-验收报告.md) · [M9](docs/M9-验收报告.md) · [M10](docs/M10-验收报告.md) · [M10 评估](docs/M10-评估报告.md) · [安卓附件测试](docs/安卓附件测试.md)
 
 ## 当前状态
 
-当前版本 **v1.7.0（versionCode 39，2026-08-19）**：PC 侧 M1–M11 路线图全部完成
+当前版本 **v1.8.0（versionCode 40）**：PC 侧 M1–M11 路线图全部完成
 （v1.2.0 读屏无障碍阶段二追加：候选窗 ITextProvider + UIA 运行时探针）；安卓侧
 按搜狗安卓时间线完成全部五阶段：M-A1 键盘形态（v1.3.0）、M-A2 表达与效率
 （v1.4.0）、M-A3 无障碍与生僻字（v1.5.0）、M-A4 AI 助手深化（v1.6.0）、
-M-A5 跨端生态与设置（v1.7.0 验收：工具栏自定义/设置极简/专业词/链接直达），
+M-A5 跨端生态与设置（v1.7.0），
 路线图见 [开发计划-Android](docs/开发计划-Android.md) 与 [开发计划](docs/开发计划.md)：
 
 - **输入**：librime 雾凇拼音 + 小鹤双拼、MRU 最近使用提频、音节分词视图、
@@ -95,12 +105,14 @@ M-A5 跨端生态与设置（v1.7.0 验收：工具栏自定义/设置极简/专
 - **安卓**：librime 内核（雾凇拼音 + 双拼/五笔/仓颉/9 键 T9 方案即时切换）、
   九键 T9 键盘、键盘快捷设置（高度/按键音/振动/单手）、剪贴板文本/图片/文件
   跨设备同步、AI 帮写、TalkBack 候选朗读。
-- **工程**：全工作区 cargo clippy 与 cargo fmt --check 零告警、约 240 项测试全绿、
-  版本单一事实源 1.3.0/35、CI 双平台（Windows/Android）流水线；
-   开发调试可启用 Tauri MCP Bridge（`--features mcp-bridge`，127.0.0.1:9223）供
-   mcp-server-tauri 连接，DSH 侧工具以 `mcp__tauri__*` 注册。
+- **工程**：CI 门禁为 `cargo fmt --check` + `cargo clippy -D warnings` +
+  `cargo test --workspace` + 版本一致性 + 文档一致性 + core/ 平台中立性；
+  Android 侧 CI 跑 Gradle lint 与 JVM 单元测试。
+  开发调试可启用 Tauri MCP Bridge（`--features mcp-bridge`，127.0.0.1:9223）供
+  mcp-server-tauri 连接，DSH 侧工具以 `mcp__tauri__*` 注册。
 
-详细验收证据与评分见 [验证报告](.claude/verification-report.md)，演进过程见 [CHANGELOG](CHANGELOG.md)。
+工程现状与改造路线见 [架构审视与选型替换报告](docs/架构审视与选型替换报告.md)，
+演进过程见 [CHANGELOG](CHANGELOG.md)。
 
 ## 许可证
 

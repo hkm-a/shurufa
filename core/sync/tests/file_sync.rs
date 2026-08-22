@@ -204,6 +204,71 @@ async fn 甲乙间一兆文件走通_v3_全链() {
     assert_eq!(got, content, "落盘内容不一致");
 }
 
+/// 5MB（80 块）文件走通全链：回归「广播容量只有 64 槽时，>4MB 文件传输
+/// 因 Lagged 丢块而 chunk_out_of_order 中止」的架构审视 S5。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn 超过四兆文件走通_v3_全链_广播不丢块() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let (a, mut in_a, b, mut in_b) = spawn_pair(&dir_a, &dir_b).await;
+    let _keep = (dir_a, dir_b);
+    let config_dir_b = _keep.1.path().to_path_buf();
+
+    let auto_accept: sync_core::FileConfirmFn = Arc::new(|_prompt: FileOfferPrompt| true);
+    b.set_file_confirm_handler(Some(auto_accept));
+    let recv_dir = config_dir_b.join("received");
+    b.set_file_recv_dir_override(Some(recv_dir.clone()));
+
+    pair(&a, &b).await;
+
+    let src_path = _keep.0.path().join("big.bin");
+    let content = make_bytes(5 * 1024 * 1024);
+    std::fs::write(&src_path, &content).unwrap();
+
+    let msg_id = a
+        .send_file_path(&src_path)
+        .expect("send_file_path 应成功返回 msg_id");
+
+    let done = wait_done(&mut in_b, Duration::from_secs(30), |inc| {
+        matches!(inc, Incoming::FileTransferDone { ok: true, .. })
+    })
+    .await;
+    assert!(
+        matches!(done, Some(Incoming::FileTransferDone { ok: true, .. })),
+        "乙端未在 30s 内收到 ok=true 的 FileTransferDone"
+    );
+
+    let state = wait_terminal(&a, &msg_id, Duration::from_secs(15)).await;
+    match state {
+        Some(FileSendState::Acked { received, .. }) => {
+            assert_eq!(received, content.len() as u64);
+        }
+        other => panic!("甲端终态应 Acked，实际 {other:?}"),
+    }
+
+    let done_a = wait_done(&mut in_a, Duration::from_secs(5), |inc| {
+        matches!(inc, Incoming::FileTransferDone { ok: true, .. })
+    })
+    .await;
+    assert!(matches!(
+        done_a,
+        Some(Incoming::FileTransferDone { ok: true, .. })
+    ));
+
+    let landed = recv_dir.join("big.bin");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if landed.is_file() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "乙端落盘文件超时：{landed:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let got = std::fs::read(&landed).unwrap();
+    assert_eq!(got.len(), content.len(), "落盘大小不一致");
+    assert_eq!(got, content, "落盘内容不一致");
+}
+
 /// 接收端主动 FileDecline：发送端 transfer_state 终态 Declined。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn 接收方拒绝时发送端进入_declined() {

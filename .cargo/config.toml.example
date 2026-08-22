@@ -1,3 +1,15 @@
+# Android 交叉编译配置**样板**。复制为 .cargo/config.toml 后按本机 NDK 路径修改。
+#
+# 为什么不入库：cargo 的 config 不支持环境变量展开，linker/CC/AR 只能写绝对
+# 路径。把某台机器的路径提交进版本库，会让其他机器与 CI 上的交叉编译必然
+# 失败，且 ANDROID_NDK_HOME 这类环境变量完全不参与（linker 是配置项不是
+# 环境变量），排障成本很高。
+#
+# 更省事的替代：装 cargo-ndk（fcitx5-android / trime 同款做法），它自动从
+# ANDROID_NDK_HOME 推导 linker/CC/AR，无需本文件：
+#     cargo install cargo-ndk
+#     cargo ndk -t arm64-v8a build --release -p shurufa-rimejni
+#
 # Android 交叉编译（NDK 28，minSdk 23）。
 # 路径写死本机 NDK 位置；换机器时改这里。
 [target.aarch64-linux-android]

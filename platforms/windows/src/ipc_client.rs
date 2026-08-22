@@ -128,6 +128,13 @@ impl ImeClient {
     /// **防 UI 阻塞**：读响应带超时（IPC_READ_TIMEOUT）。服务端若卡死/慢，
     /// 超时返回 None → 调用方走降级（按键直通），绝不让宿主 UI 线程无限
     /// 阻塞（曾造成"应用无响应 + 其他输入法失效"，见 2026-08-12）。
+    ///
+    /// **超时必须丢弃连接**：协议是「一请求一应答」且帧里没有请求 ID，
+    /// 无法把应答与请求配对。若超时后继续用同一条管道，服务端迟到写入的
+    /// 那一帧会被下一次请求读走——此后每一次按键拿到的都是**上一键**的
+    /// 候选与上屏文本，且 Response 变体不匹配的请求（toggle_ascii/get_option）
+    /// 全部静默返回 None，表现为「输入法突然整个乱掉」且直到宿主进程退出
+    /// 都不会自愈。丢弃连接让下一次请求重连，是这里唯一安全的处置。
     fn roundtrip(&mut self, req: &Request) -> Option<Response> {
         self.ensure()?;
         let data = encode_request(req).ok()?;
@@ -138,11 +145,19 @@ impl ImeClient {
                 return None;
             }
         }
-        let frame = self
+        let read = self
             .pipe
             .as_ref()?
-            .read_frame_timeout(std::time::Duration::from_millis(IPC_READ_TIMEOUT_MS))
-            .ok()?;
+            .read_frame_timeout(std::time::Duration::from_millis(IPC_READ_TIMEOUT_MS));
+        let frame = match read {
+            Ok(f) => f,
+            Err(_) => {
+                // 超时或读失败：连接上可能残留一帧未读应答，必须整条丢弃。
+                self.pipe = None;
+                self.note_failure();
+                return None;
+            }
+        };
         decode_response(&frame).ok()
     }
 

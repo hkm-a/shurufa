@@ -1,0 +1,15 @@
+# tools/research/ 一次性调研脚本的 Python 依赖。
+#
+# 这些脚本不进 CI、不承诺可维护（见 README.md）。此处声明依赖只是为了让
+# 「想再跑一次」的人不必逐个脚本试错——此前这些依赖完全没有声明。
+#
+#     python -m pip install -r tools/research/requirements.txt
+#
+# 注意：多数脚本还需要版本库之外的输入（本机 APK、dist/staging 下的截图等），
+# 装完依赖也未必能直接运行，这是预期行为。
+
+# APK 逆向（sogou-*.py、extract-apk-link.py、extract-strings.py）
+androguard
+
+# 日志输出（androguard 的传递依赖，部分脚本直接使用）
+loguru

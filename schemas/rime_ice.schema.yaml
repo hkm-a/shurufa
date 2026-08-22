@@ -296,9 +296,12 @@ recognizer:
     # （rime-ice 原版只收小写 [a-f0-9]，这里放宽避免 emoji 大写 F 打不出）。
     unicode: "^U[a-fA-F0-9]+"
     # 辅码检字：uU 前缀 + 部件码反查汉字（uUbai'shao → 的）。
-    # 模式不含 '（与 rime-ice 一致）：matcher 先给 uU 段打 tag，
-    # affix_segmentor 负责拆前缀并把 ' 之后的部件码并入 code 段。
-    radical_lookup: "^uU[a-z]+$"
+    # 模式必须含 '：radical_pinyin.schema.yaml 的 algebra 自 c12a576 起
+    # 不再有 xform/'//（改把 ' 纳入 alphabet 当部件分隔符），词典编码保留
+    # 撇号。若此处不收 '，uUbai'shao 匹配不到 pattern、拿不到 tag，会整串
+    # 落回普通拼音（实测出「白芍/白沙」）；而去掉撇号的 uUbaishao 又与词典
+    # 编码 bai'shao 对不上——两种写法都失效，多部件反查等于没有。
+    radical_lookup: "^uU[a-z']+$"
 
 # 辅码检字（P0 #2 剩余，rime-ice 部件拆字反查）：查 radical_pinyin 词典，
 # 前缀 uU 与 recognizer/patterns/radical_lookup 匹配（双字母避免影响打英文）。

@@ -1,0 +1,12 @@
+# Rust 工具链钉版。
+#
+# 为什么钉：CI 若用浮动 stable，新版本引入的 lint 会让 `clippy -D warnings`
+# 在与代码改动无关的时间点突然转红，而红着的 CI 等于没有 CI。钉版后升级
+# 变成一次显式提交，可单独验证、可回滚。
+#
+# 怎么升：改这里的 channel → 本地跑 `cargo clippy --workspace --all-targets
+# -- -D warnings` 与 `cargo fmt --all -- --check` → 修掉新 lint → 单独提交。
+# 建议跟随 rust 稳定版节奏每 2-3 个版本升一次，不要长期滞留。
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]

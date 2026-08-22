@@ -130,9 +130,7 @@ impl AiWorker {
     /// 懒启动 worker 线程（每个宿主进程一个；AI 关闭/无 key 时不创建）。
     pub(crate) fn spawn() -> Arc<Self> {
         let (tx, rx) = mpsc::sync_channel::<(String, usize)>(1);
-        let worker = Arc::new(AiWorker {
-            tx: Mutex::new(tx),
-        });
+        let worker = Arc::new(AiWorker { tx: Mutex::new(tx) });
         let _keepalive = Arc::clone(&worker);
         std::thread::Builder::new()
             .name("shurufa-ai-candidates".to_owned())
@@ -172,7 +170,8 @@ impl Cache {
     fn put(&mut self, preedit: &str, cands: Vec<String>) {
         // 同 preedit 覆盖旧条目（旧缓存由 get 的 TTL 判断自然淘汰）
         self.entries.retain(|(p, _)| p != preedit);
-        self.entries.push((preedit.to_owned(), (cands, Instant::now())));
+        self.entries
+            .push((preedit.to_owned(), (cands, Instant::now())));
         // 上限保护：极端多 preedit 时丢弃最旧（FIFO，entries 按时间序插入）
         if self.entries.len() > 64 {
             self.entries.remove(0);
@@ -208,7 +207,9 @@ fn run_loop(rx: mpsc::Receiver<(String, usize)>) {
         } else {
             match api_key().and_then(|key| fetch_candidates(&key, &preedit).ok()) {
                 Some(cands) => {
-                    crate::debug_log(&format!("AI 候选 fetch 成功：preedit={preedit:?} -> {cands:?}"));
+                    crate::debug_log(&format!(
+                        "AI 候选 fetch 成功：preedit={preedit:?} -> {cands:?}"
+                    ));
                     cache.put(&preedit, cands.clone());
                     cands
                 }
@@ -282,7 +283,9 @@ mod tests {
     fn parse_empty_and_blank() {
         assert!(parse_candidates("").is_empty());
         assert!(parse_candidates("  ， ， ").is_empty());
-        assert!(parse_candidates("（解释）").is_empty() || !parse_candidates("（解释）").is_empty());
+        assert!(
+            parse_candidates("（解释）").is_empty() || !parse_candidates("（解释）").is_empty()
+        );
     }
 
     #[test]

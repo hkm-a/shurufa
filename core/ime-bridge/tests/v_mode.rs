@@ -165,14 +165,17 @@ fn v_mode_all_triggers() {
 
 /// 辅码检字（P0 #2 剩余，rime-ice 部件拆字反查）：uU + 部件码反查汉字。
 /// `uUbai'shao` 应反查出「的」（radical_pinyin 词典，bai'shao = 白勺）。
+///
+/// 撇号是多部件码之间的**必需**分隔符：radical_pinyin.schema.yaml 的
+/// algebra 自 c12a576 起不再有 `xform/'//`（改为把 ' 纳入 alphabet 当部件
+/// 分隔符），因此无撇号的 `baishao` 不再匹配。Android 符号页为此专门补了
+/// 撇号键（2914139）。本测试此前断言的无撇号写法是该改动前的行为。
 #[test]
 fn radical_lookup_reverses_character() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (engine, _dir) = fresh_engine("radical");
     let session = engine.create_session().expect("创建会话失败");
-    // uU + 部件码反查：heng（横）→ 一；baishao（白勺）→ 的。
-    // 词典编码带 '（bai'shao），prism 构建把 ' 当音界符，baishao 无撇号
-    // 输入可匹配（实机验证）。逐键喂（大写 U 需 process_key）。
+    // 单部件码无需分隔符：heng（横）→ 一。逐键喂（大写 U 需 process_key）。
     for ch in "uUheng".chars() {
         assert!(session.process_key(ch as i32, 0), "键 {ch} 未被引擎接受");
     }
@@ -186,20 +189,30 @@ fn radical_lookup_reverses_character() {
             .map(|c| c.text.clone())
             .collect::<Vec<_>>()
     );
-    // 多部件码：uUbaishao → 的
+    // 多部件码必须带撇号分隔：uUbai'shao → 的
     let session = engine.create_session().expect("创建会话失败");
-    for ch in "uUbaishao".chars() {
+    for ch in "uUbai'shao".chars() {
         assert!(session.process_key(ch as i32, 0), "键 {ch} 未被引擎接受");
     }
     let cands = session.context().candidates;
     assert!(
         cands.iter().any(|c| c.text == "的"),
-        "uUbaishao 未反查出「的」，实际: {:?}",
+        "uUbai'shao 未反查出「的」，实际: {:?}",
         cands
             .iter()
             .take(9)
             .map(|c| c.text.clone())
             .collect::<Vec<_>>()
+    );
+    // 回归护栏：无撇号写法必须**不**命中，否则说明 algebra 又被加回
+    // `xform/'//`，部件分隔语义会随之丢失（Android 撇号键将变成无用键）。
+    let session = engine.create_session().expect("创建会话失败");
+    for ch in "uUbaishao".chars() {
+        assert!(session.process_key(ch as i32, 0), "键 {ch} 未被引擎接受");
+    }
+    assert!(
+        !session.context().candidates.iter().any(|c| c.text == "的"),
+        "无撇号的 uUbaishao 不应命中「的」——撇号分隔语义已丢失"
     );
     let _ = engine;
 }

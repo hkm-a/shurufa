@@ -128,9 +128,7 @@ fn decorate_process_key(
     // 查词库预生成的简拼索引（jianpin_index.txt）把词条注入候选。
     // librime 原生不支持多音节简拼词（简拼音节不参与词条匹配），
     // 单字简拼/完整拼音正常；搜狗/微信式简拼词靠这层前端索引补上。
-    if context.candidates.is_empty()
-        && jianpin::JianpinIndex::is_pure_consonant(raw_after)
-    {
+    if context.candidates.is_empty() && jianpin::JianpinIndex::is_pure_consonant(raw_after) {
         let words = jianpin_store().lookup(raw_after, 9);
         if !words.is_empty() {
             context.candidates = words

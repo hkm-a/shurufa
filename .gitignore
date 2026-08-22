@@ -44,3 +44,6 @@
 /dsh-session-fix/
 /dsh-web-ui/
 /dsh-desktop-src/
+
+# 本机 Android 交叉编译配置（含绝对 NDK 路径），从 .cargo/config.toml.example 复制
+/.cargo/config.toml

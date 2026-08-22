@@ -531,9 +531,9 @@ impl Inner {
     fn end_pending_composition(&mut self, context: &ITfContext) {
         if let Some(comp) = self.composition.take() {
             let client_id = self.client_id;
-            if let Err(e) = edit_session(client_id, context, |ec| unsafe {
-                comp.EndComposition(ec)
-            }) {
+            if let Err(e) =
+                edit_session(client_id, context, |ec| unsafe { comp.EndComposition(ec) })
+            {
                 crate::debug_log(&format!("结束残留组合失败：{e:?}"));
             }
         }
@@ -1120,12 +1120,16 @@ impl Inner {
     }
 
     /// 引擎服务不可用时，把当前按键作为原字符落入文档（中文兜底）。
-    /// 这样即使算法服务崩溃，用户也能继续输入中文而非被迫切回英文。
+    /// 这样即使算法服务崩溃，用户也能继续输入字母/数字而非被迫切回英文。
+    ///
+    /// 只兜底可安全直出的字符。Backspace/Enter/方向键/标点等不在这里
+    /// 映射成空格写入文档——它们应返回 false 交给宿主进程处理，否则
+    /// 会表现为「按方向键插空格、退格删不掉字、逗号句号全变空格」。
     fn fallback_commit(&mut self, context: &ITfContext, vk: u32, shift: bool) -> Result<()> {
         let ch: char = match vk {
             0x41..=0x5A => char::from_u32(vk + if shift { 0 } else { 0x20 }).unwrap_or('a'),
             0x30..=0x39 => char::from_u32(vk).unwrap_or('0'),
-            _ => ' ',
+            _ => return Ok(()),
         };
         let text = ch.to_string();
         let client_id = self.client_id;
