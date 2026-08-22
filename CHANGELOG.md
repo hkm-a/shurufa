@@ -62,6 +62,9 @@
 - **移除自研虚拟键盘（软键盘）**：`onscreen_kbd.rs` 861 行整体删除，同时移除
   `listener.rs` 里的 Ctrl+Shift+K 热键注册与 WM_HOTKEY 分支。Windows 自带
   `osk.exe`/`TabTip.exe`，不再维护第三套 GDI 面板。
+- **移除 `solar_terms.lua` 二十四节气近似公式**：该脚本自陈误差 ±1 天，与
+  `lunar.lua + lunar.db`（GB/T 33661-2017 标准）重复；删除后从两个 schema
+  移除 `lua_translator@*solar_terms`，原集成测试改为验证 `nl` 农历链路。
 
 ### 修复（2026-08-21）
 - **辅码检字（uU 部件反查）多部件码完全失效**：`recognizer/patterns/radical_lookup`
