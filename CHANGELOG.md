@@ -73,6 +73,12 @@
   `arboard`**：`write_clipboard_text_impl` 删除 Win32 内存句柄样板，
   直接 `Clipboard::set_text`。
 
+### 重构（2026-08-21，换库周第 7 批：官方 Tauri 插件 window-state）
+- **`shurufa-settings` 窗口位置持久化改用 `tauri-plugin-window-state`**：
+  删除 localStorage 里的 `shurufa-window-pos` 读写；首次运行仍用
+  `place_window_bottom_right` 落右下角（一次性标志位），之后由插件自动
+  保存/恢复位置。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除

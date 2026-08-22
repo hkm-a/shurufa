@@ -3523,23 +3523,12 @@ async function bootShell() {
     // 导致窗口停在 tauri.conf 的初始尺寸，与条内容长度不匹配）
     await applyMode("bar");
   } catch (_error) { /* 忽略 */ }
+  // 窗口位置持久化交给 tauri-plugin-window-state；这里只处理首次运行的
+  // 默认落点（右下角）。不再把位置写进 localStorage。
   try {
-    const saved = localStorage.getItem("shurufa-window-pos");
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      // 位置校验：Windows 隐藏窗口会把窗口移到 (-32000,-32000) 哨兵位，
-      // onMoved 会把它存进 localStorage → 下次启动 restore 被钳到屏幕左上角
-      // 死角（2026-08-14 实机复现）。NaN/超范围值同样丢弃，回退右下角。
-      const plausible = Number.isFinite(parsed.x) && Number.isFinite(parsed.y)
-        && parsed.x > -10000 && parsed.y > -10000
-        && parsed.x < 100000 && parsed.y < 100000;
-      if (plausible) {
-        await invoke("restore_window_position", { x: parsed.x, y: parsed.y });
-      } else {
-        await invoke("place_window_bottom_right");
-      }
-    } else {
+    if (!localStorage.getItem("shurufa-window-pos-initialized")) {
       await invoke("place_window_bottom_right");
+      localStorage.setItem("shurufa-window-pos-initialized", "1");
     }
   } catch (_error) {
     try {
@@ -3549,10 +3538,7 @@ async function bootShell() {
   try {
     const win = getCurrentWindow();
     win.onMoved(async () => {
-      try {
-        const pos = await win.outerPosition();
-        localStorage.setItem("shurufa-window-pos", JSON.stringify({ x: pos.x, y: pos.y }));
-      } catch (_e) { /* 忽略 */ }
+      // 窗口位置由 tauri-plugin-window-state 持久化，不再写 localStorage。
       // 拖拽中窗口被拖出工作区时拉回：原生拖动循环会吞掉 JS mouseup，
       // 拖拽结束的钳制必须挂在 onMoved 上（最后一次移动的 onMoved 会在
       // 循环结束后落地）。在位时后端 no-op，不影响正常拖动。

@@ -2420,6 +2420,8 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+        // 官方窗口状态插件：自动持久化/恢复窗口位置与尺寸，替代手写 localStorage。
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             // skipTaskbar 配置在窗口创建时（尚未显示/注册任务栏按钮）调用
             // tao 的 ITaskbarList::DeleteTab 大概率是 no-op；这里在窗口就绪后

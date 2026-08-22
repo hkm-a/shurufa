@@ -24,6 +24,7 @@ sync-core = { path = "../../core/sync" }
 meval = "0.2"
 tauri = { version = "2", features = [] }
 tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
 arboard = "3"
 # MCP Bridge（hypothesi/mcp-server-tauri）：开发调试用，feature 门控默认关闭
 tauri-plugin-mcp-bridge = { version = "0.11", optional = true }
