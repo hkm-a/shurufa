@@ -30,12 +30,20 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
 import android.view.inputmethod.EditorInfo
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.PopupWindow
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import coil.load
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
@@ -232,6 +240,8 @@ class ShurufaImeService : InputMethodService() {
     override fun onCreate() {
         super.onCreate()
         debugInstance = this
+        // 历史缩略图按需解码的作用域（RecyclerView+Coil 接入，onDestroy 取消）
+        historyScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         // 不在 onCreate 中启动剪贴板同步服务——IME 刚创建时就启动
         // 会触发系统（尤其 MIUI/HyperOS）的剪贴板访问面板，导致每次点开
         // 文本框时弹出剪贴板而非键盘。改为大幅延迟启动，等用户稳定使用后再捕获。
@@ -740,6 +750,12 @@ class ShurufaImeService : InputMethodService() {
     }
 
     // ---------- 剪贴板历史面板 ----------
+
+    /** 历史面板 RecyclerView 适配器与空态标签（跨次打开复用回收池）。 */
+    private var historyAdapter: HistoryAdapter? = null
+    private var historyEmptyLabel: TextView? = null
+    /** 历史缩略图取字节协程作用域（onDestroy 取消）。 */
+    private lateinit var historyScope: CoroutineScope
 
     private fun toggleHistory() {
         val panel = historyPanel ?: return
@@ -2870,8 +2886,6 @@ class ShurufaImeService : InputMethodService() {
             setPadding(dp(14f), dp(20f), dp(14f), dp(20f))
         }
         panel.addView(placeholder)
-        // 快照主线程读到的 MIME（currentSupportedImageMimeType 需要 currentInput*）
-        val mimeSnapshot = currentSupportedImageMimeType()
         ioExecutor.execute {
             val entries = try {
                 if (query.isBlank()) {
@@ -2882,34 +2896,13 @@ class ShurufaImeService : InputMethodService() {
             } catch (e: Throwable) {
                 emptyList()
             }
-            // 图片条目预解码缩略图，主线程只做 setImageBitmap，不再做 PNG 解码
-            val prepared = entries.map { entry ->
-                val thumb = if (entry.kind == "image") {
-                    try {
-                        ClipStore.imageData(entry.id)?.let { bytes ->
-                            decodeSampledBitmap(bytes, THUMBNAIL_TARGET)
-                        }
-                    } catch (e: Throwable) {
-                        null
-                    }
-                } else {
-                    null
-                }
-                PreparedHistory(entry, thumb)
-            }
+            // 缩略图不再预解码：RecyclerView 只创建可见行，图片经 Coil
+            // （ClipThumbLoader）在绑定行时按 THUMBNAIL_TARGET 采样解码 + 内存缓存
             mainHandler.post {
                 // 列表已更新（populateHistory 又被触发）则放弃本次结果
                 if (placeholder.parent !== panel) return@post
                 panel.removeView(placeholder)
-                if (prepared.isEmpty()) {
-                    panel.addView(TextView(this).apply {
-                        text = if (query.isBlank()) "（暂无历史）" else "（没有匹配「$query」的历史）"
-                        setTextColor(palette.preedit)
-                        setPadding(dp(14f), dp(20f), dp(14f), dp(20f))
-                    })
-                    return@post
-                }
-                renderHistoryList(panel, prepared, onlyImages, mimeSnapshot)
+                renderHistoryList(panel, entries, onlyImages, query)
             }
         }
     }
@@ -2941,12 +2934,6 @@ class ShurufaImeService : InputMethodService() {
             getString(R.string.history_stats_typing, todayChars, totalChars)
         }
     }
-
-    /** IO 线程预取后回主线程渲染：entry + 已解码缩略图。 */
-    private data class PreparedHistory(
-        val entry: ClipStore.Entry,
-        val thumb: android.graphics.Bitmap?,
-    )
 
     /** A6 长按菜单：置顶/取消置顶、删除，文件/图片条目追加「发送为文件」。
      * IME Service 无窗口 token，AlertDialog 会 BadTokenException，故用 PopupWindow。 */
@@ -3028,53 +3015,135 @@ class ShurufaImeService : InputMethodService() {
         popup.showAsDropDown(anchor, 0, -anchor.height - dp(8f))
     }
 
+    /**
+     * 历史列表渲染（RecyclerView 版）：滚动复用行视图，只创建可见行；
+     * 图片缩略图经 ClipThumbLoader 按需采样解码。空态显示占位文本。
+     */
     private fun renderHistoryList(
         panel: LinearLayout,
-        prepared: List<PreparedHistory>,
+        entries: List<ClipStore.Entry>,
         onlyImages: Boolean,
-        mimeSnapshot: String?,
+        query: String,
     ) {
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        for (item in prepared) {
-            val entry = item.entry
-            if (entry.kind == "image") {
-                android.util.Log.i(
-                    "shurufa",
-                    "图片历史条目状态 历史ID=${entry.id} 声明MIME=$mimeSnapshot",
-                )
-                val thumb = ImageView(this).apply {
-                    contentDescription = "图片附件：${entry.source}，点击预览后发送到当前输入框"
-                    if (item.thumb != null) setImageBitmap(item.thumb)
-                    adjustViewBounds = true
-                    maxHeight = dp(130f)
-                    scaleType = ImageView.ScaleType.FIT_START
-                    background = keyBackground(palette.key, palette.keyPressed)
-                    alpha = 1f
-                    setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+        val adapter = historyAdapter ?: HistoryAdapter().also { historyAdapter = it }
+        val list = adapter.attachedTo ?: RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@ShurufaImeService)
+        }.also { rv ->
+            rv.adapter = adapter
+            // 行距替代旧版 LinearLayout 的 setMargins
+            rv.addItemDecoration(object : RecyclerView.ItemDecoration() {
+                override fun getItemOffsets(
+                    outRect: android.graphics.Rect,
+                    view: View,
+                    parent: RecyclerView,
+                    state: RecyclerView.State,
+                ) {
+                    outRect.set(dp(4f), dp(3f), dp(4f), dp(3f))
+                }
+            })
+            adapter.attachedTo = rv
+            panel.addView(rv, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+            ))
+        }
+        if (entries.isEmpty()) {
+            val emptyText = if (query.isBlank()) "（暂无历史）" else "（没有匹配「$query」的历史）"
+            if (historyEmptyLabel == null) {
+                historyEmptyLabel = TextView(this).apply {
+                    text = emptyText
+                    setTextColor(palette.preedit)
+                    setPadding(dp(14f), dp(20f), dp(14f), dp(20f))
+                }.also { panel.addView(it) }
+            } else {
+                historyEmptyLabel?.text = emptyText
+            }
+            list.visibility = View.GONE
+        } else {
+            historyEmptyLabel?.let { panel.removeView(it) }
+            historyEmptyLabel = null
+            list.visibility = View.VISIBLE
+        }
+        adapter.submit(entries, onlyImages)
+    }
+
+    /**
+     * 历史面板适配器：三种行（文本/文件/图片），样式与旧版逐行一致。
+     * 文本与文件共用 TextView 行；图片行为 ImageView + Coil 缩略图。
+     */
+    private inner class HistoryAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+        private val items = mutableListOf<ClipStore.Entry>()
+        private var onlyImages = false
+        var attachedTo: RecyclerView? = null
+
+        fun submit(entries: List<ClipStore.Entry>, onlyImages: Boolean) {
+            this.onlyImages = onlyImages
+            items.clear()
+            items.addAll(entries)
+            notifyDataSetChanged()
+        }
+
+        override fun getItemCount(): Int = items.size
+
+        override fun getItemViewType(position: Int): Int = when (items[position].kind) {
+            "image" -> 1
+            "files" -> 2
+            else -> 0
+        }
+
+        private fun textRow(): TextView = TextView(this@ShurufaImeService).apply {
+            textSize = 16f
+            setTextColor(palette.keyText)
+            background = keyBackground(palette.key, palette.keyPressed)
+            setPadding(dp(14f), dp(13f), dp(14f), dp(13f))
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder =
+            when (viewType) {
+                1 -> object : RecyclerView.ViewHolder(
+                    ImageView(this@ShurufaImeService).apply {
+                        adjustViewBounds = true
+                        maxHeight = dp(130f)
+                        scaleType = ImageView.ScaleType.FIT_START
+                        background = keyBackground(palette.key, palette.keyPressed)
+                        setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+                    }
+                ) {}
+                2 -> object : RecyclerView.ViewHolder(textRow()) {}
+                else -> object : RecyclerView.ViewHolder(textRow()) {}
+            }
+
+        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+            val entry = items[position]
+            when (entry.kind) {
+                "image" -> {
+                    val iv = holder.itemView as ImageView
+                    iv.contentDescription = "图片附件：${entry.source}，点击预览后发送到当前输入框"
                     // 微信输入法同款：点图先进预览键盘，再保存/发送
-                    setOnClickListener { openImagePreview(entry.id) }
-                    setOnLongClickListener {
+                    iv.setOnClickListener { openImagePreview(entry.id) }
+                    iv.setOnLongClickListener {
                         showHistoryEntryActions(entry, onlyImages, it)
                         true
                     }
+                    iv.tag = entry.id
+                    iv.setImageDrawable(null)
+                    historyScope.launch {
+                        val bytes = ClipThumbLoader.bytes(entry.id)
+                        // 行可能已被回收复用：tag 变了就不绑定，防错位
+                        if (bytes != null && iv.tag == entry.id) {
+                            iv.load(bytes) {
+                                size(THUMBNAIL_TARGET)
+                                memoryCacheKey(ClipThumbLoader.KEY_PREFIX + entry.id)
+                                crossfade(false)
+                            }
+                        }
+                    }
                 }
-                list.addView(thumb, LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(dp(4f), dp(3f), dp(4f), dp(3f)) })
-                continue
-            }
-            if (entry.kind == "files") {
-                list.addView(TextView(this).apply {
+                "files" -> {
+                    val tv = holder.itemView as TextView
                     val fileName = entry.text.lineSequence().firstOrNull()?.let { File(it).name } ?: "文件"
-                    text = fileName
-                    contentDescription = "文件附件：$fileName"
-                    textSize = 16f
-                    setTextColor(palette.keyText)
-                    background = keyBackground(palette.key, palette.keyPressed)
-                    alpha = 1f
-                    setPadding(dp(14f), dp(13f), dp(14f), dp(13f))
-                    setOnClickListener {
+                    tv.text = fileName
+                    tv.contentDescription = "文件附件：$fileName"
+                    tv.setOnClickListener {
                         when (commitFile(entry.id)) {
                             SendResult.SENT -> toggleHistory()
                             SendResult.COPIED -> {
@@ -3088,41 +3157,25 @@ class ShurufaImeService : InputMethodService() {
                             SendResult.FAILED -> showAttachmentError("文件发送失败")
                         }
                     }
-                    setOnLongClickListener {
+                    tv.setOnLongClickListener {
                         showHistoryEntryActions(entry, onlyImages, it)
                         true
                     }
-                }, LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(dp(4f), dp(3f), dp(4f), dp(3f)) })
-                continue
+                }
+                else -> {
+                    val tv = holder.itemView as TextView
+                    tv.text = entry.text.replace('\n', ' ').take(48)
+                    tv.setOnClickListener {
+                        currentInputConnection?.commitText(entry.text, 1)
+                        toggleHistory()
+                    }
+                    tv.setOnLongClickListener {
+                        showHistoryEntryActions(entry, onlyImages, it)
+                        true
+                    }
+                }
             }
-            list.addView(TextView(this).apply {
-                text = entry.text.replace('\n', ' ').take(48)
-                textSize = 16f
-                setTextColor(palette.keyText)
-                background = keyBackground(palette.key, palette.keyPressed)
-                setPadding(dp(14f), dp(13f), dp(14f), dp(13f))
-                setOnClickListener {
-                    currentInputConnection?.commitText(entry.text, 1)
-                    toggleHistory()
-                }
-                setOnLongClickListener {
-                    showHistoryEntryActions(entry, onlyImages, it)
-                    true
-                }
-            }, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(dp(4f), dp(3f), dp(4f), dp(3f)) })
         }
-        panel.addView(ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-            )
-            addView(list)
-        })
     }
 
     /// 图片以附件形式提交给当前输入框：无条件尝试 Commit Content 原位插入，失败回退剪贴板。
@@ -4036,6 +4089,7 @@ class ShurufaImeService : InputMethodService() {
 
     /** 按目标边长下采样解码，避免全分辨率大图在主线程 OOM/卡顿。 */
     override fun onDestroy() {
+        if (::historyScope.isInitialized) historyScope.cancel()
         super.onDestroy()
         if (debugInstance === this) debugInstance = null
         voice?.cancel()

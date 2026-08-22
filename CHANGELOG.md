@@ -45,6 +45,21 @@
   `clipboard-store` / `sync-core` 执行 `cargo check --locked`，
   真正把“core/ 必须非 Windows 可编译”变成机器门禁。
 
+### 重构（2026-08-23，Android 历史面板迁 RecyclerView + Coil）
+- **`ShurufaImeService` 历史面板迁 RecyclerView**：行视图滚动复用（此前
+  100 条一次性 `addView` 进 ScrollView），行距改 ItemDecoration；适配器
+  三种行类型（文本/文件/图片）样式与旧版逐行一致，跨次打开复用回收池。
+- **图片缩略图改 Coil 按需解码**：IO 协程取 `ClipStore.imageData` 字节 →
+  `load(ByteArray)` 按 THUMBNAIL_TARGET 采样解码，`memoryCacheKey` 用条目
+  id 保跨滚动命中；行复用竞态以 tag 防错位。删除打开面板时一次性预解码
+  100 张 Bitmap 常驻内存的 `PreparedHistory`。
+- 新增 `ClipThumbLoader`（IO 取字节辅助）与历史作用域（onDestroy 取消）。
+- 模拟器实测：seed 120 条文本 + 2 条图片历史，列表渲染/双向滚动/缩略图
+  解码（红/蓝图块出现）全部正常，无崩溃。
+- **候选窗迁出宿主进程方案定稿**（`docs/候选窗迁出宿主进程-方案.md`）：
+  迁入 shurufa-ui + shurufa-cand 事件管道 + 五步灰度迁移；S1（协议层）
+  可先行合入，实施排期为阶段 6。
+
 ### 验收（2026-08-23，Android 模拟器冒烟）
 - 1.8.0/40 debug APK（含阶段4第4批四样依赖与 DataStore 版 KeyboardPrefs）
   在 emulator-5554 实测：安装/启动无崩溃；启用输入法后 `keyboard_prefs
