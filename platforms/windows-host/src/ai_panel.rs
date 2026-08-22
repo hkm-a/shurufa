@@ -692,73 +692,80 @@ fn call_agnes_stream<F>(
 where
     F: FnMut(&str, bool),
 {
-    use std::io::BufRead;
+    use eventsource_client::{Client, ClientBuilder, ReconnectOptionsBuilder, SSE};
+    use futures::StreamExt;
+
     let body = build_chat_body(user_prompt, system_prompt, true);
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-        .build();
-    let start = Instant::now();
-    let resp = agent
-        .post("https://apihub.agnes-ai.com/v1/chat/completions")
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .set("Content-Type", "application/json")
-        .set("Accept", "text/event-stream")
-        .send_bytes(&body)
-        .map_err(map_ureq_err)?;
-    let mut reader = std::io::BufReader::new(resp.into_reader());
-    let mut acc = String::new();
-    let mut first_chunk_at: Option<Duration> = None;
-    let mut finish = "done";
-    let mut raw = Vec::<u8>::new();
-    loop {
-        if start.elapsed() > Duration::from_secs(REQUEST_TIMEOUT_SECS) {
-            finish = "timeout";
-            break;
-        }
-        raw.clear();
-        match reader.read_until(b'\n', &mut raw) {
-            Ok(0) => break, // EOF：服务端正常收尾
-            Ok(_) => {}
-            Err(e) => {
-                finish = "io-error";
-                crate::log_line(&format!("AI 流读取失败：{e}"));
+    let url = "https://apihub.agnes-ai.com/v1/chat/completions";
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("创建 SSE 运行时失败：{e}"))?;
+    rt.block_on(async {
+        let transport = launchdarkly_sdk_transport::HyperTransport::new()
+            .map_err(|e| format!("创建 HTTP 传输失败：{e}"))?;
+        let client = ClientBuilder::for_url(url)
+            .map_err(|e| format!("创建 SSE 客户端失败：{e}"))?
+            .method("POST".to_string())
+            .header("Authorization", &format!("Bearer {api_key}"))
+            .map_err(|e| e.to_string())?
+            .header("Content-Type", "application/json")
+            .map_err(|e| e.to_string())?
+            .body(String::from_utf8(body).map_err(|e| format!("请求体编码失败：{e}"))?)
+            .reconnect(ReconnectOptionsBuilder::new(false).build())
+            .build_with_transport(transport);
+
+        let start = Instant::now();
+        let mut stream = client.stream();
+        let mut acc = String::new();
+        let mut first_chunk_at: Option<Duration> = None;
+        let mut finish = "done";
+        while let Some(item) = stream.next().await {
+            if start.elapsed() > Duration::from_secs(REQUEST_TIMEOUT_SECS) {
+                finish = "timeout";
                 break;
             }
-        }
-        // 一次 read_until 不一定停在 UTF-8 边界；不完整字符留给下一行一起判。
-        let line = String::from_utf8_lossy(&raw);
-        match parse_sse_line(line.trim_end(), &mut acc) {
-            SseEvent::Skip => {}
-            SseEvent::Done => {
-                finish = "done";
-                break;
-            }
-            SseEvent::Delta => {
-                if first_chunk_at.is_none() {
-                    first_chunk_at = Some(start.elapsed());
+            match item {
+                Ok(SSE::Event(evt)) => {
+                    if evt.data == "[DONE]" {
+                        finish = "done";
+                        break;
+                    }
+                    if let Some(delta) = extract_stream_delta(&evt.data) {
+                        acc.push_str(&delta);
+                        if first_chunk_at.is_none() {
+                            first_chunk_at = Some(start.elapsed());
+                        }
+                        on_chunk(&acc, false);
+                    }
                 }
-                on_chunk(&acc, false);
+                Ok(SSE::Comment(_)) | Ok(SSE::Connected(_)) => {}
+                Err(e) => {
+                    finish = "io-error";
+                    crate::log_line(&format!("AI SSE 流错误：{e}"));
+                    break;
+                }
             }
         }
-    }
-    let elapsed = start.elapsed();
-    crate::log_line(&format!(
-        "AI 流式结束：原因={finish}，首包 {}ms，总耗时 {}ms，草稿 {} 字符",
-        first_chunk_at.map(|d| d.as_millis() as u64).unwrap_or(0),
-        elapsed.as_millis(),
-        acc.chars().count()
-    ));
-    if acc.trim().is_empty() {
-        return Err(match finish {
-            "timeout" => "请求超时（45s 无响应）".into(),
-            _ => "Agnes 流式返回为空".into(),
-        });
-    }
-    if finish == "timeout" {
-        acc.push_str("（流中断，已截断）");
-    }
-    on_chunk(&acc, true);
-    Ok(acc)
+        let elapsed = start.elapsed();
+        crate::log_line(&format!(
+            "AI 流式结束：原因={finish}，首包 {}ms，总耗时 {}ms，草稿 {} 字符",
+            first_chunk_at.map(|d| d.as_millis() as u64).unwrap_or(0),
+            elapsed.as_millis(),
+            acc.chars().count()
+        ));
+        if acc.trim().is_empty() {
+            return Err(match finish {
+                "timeout" => "请求超时（45s 无响应）".into(),
+                _ => "Agnes 流式返回为空".into(),
+            });
+        }
+        if finish == "timeout" {
+            acc.push_str("（流中断，已截断）");
+        }
+        on_chunk(&acc, true);
+        Ok(acc)
+    })
 }
 
 fn build_chat_body(user_prompt: &str, system_prompt: &str, stream: bool) -> Vec<u8> {
@@ -843,6 +850,8 @@ fn extract_chat_content(text: &str) -> Result<String, String> {
 }
 
 /// SSE 行解析结果；纯函数，便于脱离网络做单元测试。
+/// 生产路径已改用 eventsource-client，这里仅保留给历史单测。
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SseEvent {
     /// 空行 / 非 data 行 / [DONE] 之外的段落分隔：跳过
@@ -856,6 +865,7 @@ pub(crate) enum SseEvent {
 /// 解析一行 SSE。入参应是去掉换行后的整行文本；若上一次的 read_until
 /// 落在多字节 UTF-8 中间，`String::from_utf8_lossy` 会补 U+FFFD，JSON
 /// 解析会失败 → 归入 Skip 静默跳过，等下一行把字符读全再入 acc。
+#[cfg(test)]
 pub(crate) fn parse_sse_line(line: &str, acc: &mut String) -> SseEvent {
     let line = line.trim_end();
     if line.is_empty() {

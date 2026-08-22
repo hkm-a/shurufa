@@ -116,6 +116,12 @@
   删除 `CIRCUIT_BREAKER_COOLDOWN_MS` 等常量，`note_failure` 推进
   `next_backoff()`，`note_success` 调用 `reset()`；冷却仍 2s 起步、上限 4s。
 
+### 重构（2026-08-21，换库周第 15 批：AI SSE 改用 eventsource-client）
+- **`windows-host` AI 帮写流式 SSE 改用 `eventsource-client`**：`call_agnes_stream`
+  不再用 ureq 手读 `read_until`/手写 `data:` 行解析，改用
+  `eventsource_client::Client` + `HyperTransport` 消费 SSE 流；
+  `parse_sse_line`/`SseEvent` 保留为 `#[cfg(test)]` 历史单测。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除
