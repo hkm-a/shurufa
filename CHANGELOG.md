@@ -45,6 +45,18 @@
   `clipboard-store` / `sync-core` 执行 `cargo check --locked`，
   真正把“core/ 必须非 Windows 可编译”变成机器门禁。
 
+### 工程与治理（2026-08-22，阶段 5：文档止血收尾）
+- **CHANGELOG↔tag 对账门禁**：check-docs.ps1 新增「每个 git tag vX.Y.Z 必须有
+  `## [X.Y.Z]` 条目」规则；上线即抓到 v0.4.2 已打 tag 但 CHANGELOG 漏记，
+  按 tag 说明补记条目（标注追记）。
+- **安装包产物名门禁**：md 中不得再出现旧产物名 `Shurufa-Setup`（CHANGELOG
+  历史叙述豁免）；`Windows安装指南` / `发布流程` / `开发环境` / `版本管理`
+  四份文档旧名全部改为 `FOX-Setup-*`。
+- **`发布流程.md` 失败回退段重写**：删除对旧 NSIS 时代的过时描述，改为与
+  `installer/shurufa.nsi` 实际行为一致的回退说明。
+- 其余阶段 5 项（架构说明四处承诺、README 版本统一、gradle.properties 语义、
+  验收报告降级为历史快照）已在阶段 0/1 完成，本次在架构报告补记执行状态。
+
 ### 重构（2026-08-22，阶段 4 第 6 批：shurufa-host 按故障域拆三二进制）
 - **`platforms/windows-host` 改为 lib + 三个 bin**：
   - `shurufa-clipd`（数据路径）：剪贴板监听入库、同步 daemon、supervisor、
@@ -1378,6 +1390,24 @@
 - 控制中心品牌与主题改造（FOX + 莫兰迪），logo 由 S 改为 F
 - 清理旧 NSIS 产物与脚本；`build-installer.ps1`/`set-version.ps1`/CI 全面改接 Tauri 安装器
 - 版本单一事实源 `version.json` 覆盖安装器页面版本串；pics/ 设计素材不入库
+
+## [0.4.2] - 2026-08-06
+
+> 追记（2026-08-22）：tag 已存在但 CHANGELOG 漏记，本次按 tag 说明补全，
+> 使 CHANGELOG↔tag 对账门禁成立。
+
+### 修复
+- 候选词滑动/展开、拼音光标定位、中文切换、桌面端 UI 响应式、Host 窗口
+  闪现、安卓剪贴板初始捕获延迟
+
+### 变更
+- 协议扩展 `cursor_pos` / `page_no` / `page_size` / `is_last_page`
+- Windows 候选窗恢复点击选词与滚轮翻页；Android 九宫格展开 + 横滑翻页
+- 拼音光标 Collapse + ShiftStart 精准定位
+- `VK_SHIFT` / `VK_CAPITAL` 不被输入法接管
+- 控制中心响应式布局（≤760px 单列适配）
+- Host `#![windows_subsystem = windows]` 消除终端窗口闪现
+- 补全 gradle wrapper 支持本地构建
 
 ## [0.4.1] - 2026-08-08
 

@@ -2,7 +2,7 @@
 
 ## 安装
 
-下载发行包中的 `Shurufa-Setup.exe`，右键选择“以管理员身份运行”。升级时安装器会先停止旧
+下载发行包中的 `FOX-Setup-<版本>.exe`，右键选择“以管理员身份运行”。升级时安装器会先停止旧
 守护进程、释放当前 TSF 注册和输入服务句柄，再原位覆盖安装目录中的程序文件、预构建词典并
 重新注册 TSF。TSF DLL 使用版本化文件名，因此不会覆盖仍被系统加载的旧 DLL。安装过程不创建、重命名或删除 `shurufa.previous` 等备用目录；用户数据和现有
 安装目录不会因升级失败被递归清理。若系统仍占用输入法 DLL，关闭占用程序后重新运行安装器即可。
@@ -16,7 +16,7 @@
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 ```
 
-产物位于 `dist\Shurufa-Setup.exe`。构建机需要已安装 NSIS；已经完成 Release 构建时，
+产物位于 `dist\FOX-Setup-<版本>.exe`。构建机需要已安装 NSIS 3.x；已经完成 Release 构建时，
 可传入 `-SkipBuild`。为避免改变当前系统的输入法注册状态，构建命令只生成安装包，不会
 执行安装。
 

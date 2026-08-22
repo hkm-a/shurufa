@@ -1,4 +1,4 @@
-# 文档一致性门禁。
+﻿# 文档一致性门禁。
 #
 # 为什么要它：本仓库的文档曾同时存在三个互相矛盾的「当前版本」、指向未入库
 # 文件的链接、以及承诺了与实现相反的行为（版本管理.md 曾把 gradle.properties
@@ -12,7 +12,12 @@
 #      这类被 gitignore 的路径：对 clone 下来的人就是死链）。
 #   2. 版本号声明——文档里写死的 vX.Y.Z「当前版本」必须等于 version.json。
 #      （结构化派生点由 set-version.ps1 -Check 负责，此处只管散落在正文里的。）
-#   3. CHANGELOG 对账——version.json 的当前版本必须已有 CHANGELOG 条目。
+#   3. CHANGELOG 对账——version.json 的当前版本必须已有 CHANGELOG 条目，
+#      且每个 git tag vX.Y.Z 都必须有对应的 ## [X.Y.Z] 条目（曾发生 tag 已打
+#      而 CHANGELOG 漏记，v0.4.2 实例）。
+#   4. 安装包产物名——md 里不得再出现旧产物名 Shurufa-Setup（实际产物自
+#      0.4.x 起为 FOX-Setup；曾因此类漂移让用户按文档找不到下载文件）。
+#      CHANGELOG.md 的历史叙述豁免。
 
 [CmdletBinding()]
 param()
@@ -72,12 +77,27 @@ foreach ($rel in $tracked) {
             $problems += "$rel 状态徽章为 v$($m.Groups[1].Value)，但 version.json 是 $currentVersion"
         }
     }
+
+    # ---- 4. 安装包产物名（CHANGELOG 的历史叙述豁免）----
+    if ($rel -ne 'CHANGELOG.md' -and $text -match 'Shurufa-Setup') {
+        $problems += "$rel 仍使用旧产物名 Shurufa-Setup（实际产物为 FOX-Setup）"
+    }
 }
 
 # ---- 3. CHANGELOG 对账 ----
 $changelog = Get-Content -LiteralPath (Join-Path $sourceRoot 'CHANGELOG.md') -Raw
 if ($changelog -notmatch "(?m)^## \[$([regex]::Escape($currentVersion))\]") {
     $problems += "CHANGELOG.md 缺少 ## [$currentVersion] 条目（version.json 已是该版本）"
+}
+# 每个 tag 必须已有条目：曾发生 tag 已打而 CHANGELOG 漏记（v0.4.2 实例）。
+Push-Location $sourceRoot
+try { $tags = & git tag } finally { Pop-Location }
+foreach ($tag in $tags) {
+    if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') { continue }
+    $version = $tag.Substring(1)
+    if ($changelog -notmatch "(?m)^## \[$([regex]::Escape($version))\]") {
+        $problems += "git tag $tag 在 CHANGELOG.md 没有 ## [$version] 条目"
+    }
 }
 
 if ($problems.Count -gt 0) {

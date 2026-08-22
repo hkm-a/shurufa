@@ -17,7 +17,7 @@ jobs:
       - name: 校验版本派生点与文本声明点一致
         shell: pwsh
         run: ./scripts/set-version.ps1 -Check
-      - name: 校验文档（内部链接 / 版本号声明 / CHANGELOG 对账）
+      - name: 校验文档（内部链接 / 版本号声明 / 产物名 / CHANGELOG↔tag 对账）
         shell: pwsh
         run: ./scripts/check-docs.ps1
       - name: 校验生成物与生成脚本一致
