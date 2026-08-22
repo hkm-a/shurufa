@@ -141,6 +141,8 @@
 - **新增 `schemas/shurufa_ext.dict.yaml`**：把 `rime_ice.dict.yaml` 内联的
   专业词/生僻字/拆字等本地词条移出，主词典改为 `import_tables` 挂载
   `shurufa_ext`；Android 构建同步拷贝该文件。
+- **`gen-rare-dict.py` / `gen-t9-dict.py` 去除硬编码仓库路径**：生僻字输出到
+  `shurufa_ext.dict.yaml`，T9 生成器支持命令行传入仓库根目录。
 
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`

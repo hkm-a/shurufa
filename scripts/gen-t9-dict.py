@@ -4,6 +4,7 @@
 
 数据源：schemas/cn_dicts/base.dict.yaml（雾凇拼音基础词库，含字/词 + 拼音 + 权重）
         + others.dict.yaml（杂项，量小）＋ rime_ice.dict.yaml 内联生僻字块。
+用法：python scripts/gen-t9-dict.py [仓库根目录]
 输出：schemas/shurufa_t9.dict.yaml —— 词条按"整词 T9 数字串"作为单码索引
       （2abc 3def 4ghi 5jkl 6mno 7pqrs 8tuv 9wxyz，ü/v 并入 u 组）。
 
@@ -12,10 +13,12 @@ shurufa→7487832→输入法、nihao→64426→你好 可打。
 """
 import collections
 import io
+import os
 import re
 import sys
 
-REPO = 'C:/Users/hkm/Documents/shurufa'
+# 仓库根目录可由命令行参数指定，避免硬编码本机路径。
+REPO = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 OUT = REPO + '/schemas/shurufa_t9.dict.yaml'
 SOURCE = [REPO + '/schemas/cn_dicts/base.dict.yaml', REPO + '/schemas/cn_dicts/others.dict.yaml']
 
