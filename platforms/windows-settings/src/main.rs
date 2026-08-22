@@ -16,6 +16,7 @@ use shurufa_options::{
     validate_input_scheme, GeneralSettings, ImeOptions, LogLevel, SpeechSettings,
 };
 use tauri::Manager;
+use tauri_plugin_autostart::ManagerExt;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -2236,24 +2237,6 @@ fn restore_window_position(window: tauri::Window, x: i32, y: i32) -> Result<(), 
 // 的临时 exe 被写进登录启动项。
 // ---------------------------------------------------------------------------
 
-const SETTINGS_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const SETTINGS_RUN_VALUE: &str = "FOXSettings";
-
-fn settings_run_command() -> String {
-    let exe = std::env::current_exe()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default();
-    format!("\"{exe}\"")
-}
-
-fn settings_autostart_enabled() -> bool {
-    windows_registry::CURRENT_USER
-        .open(SETTINGS_RUN_KEY)
-        .ok()
-        .and_then(|key| key.get_string(SETTINGS_RUN_VALUE).ok())
-        .is_some_and(|value| value == settings_run_command())
-}
-
 #[derive(Serialize)]
 struct AutostartInfo {
     enabled: bool,
@@ -2262,28 +2245,25 @@ struct AutostartInfo {
 }
 
 #[tauri::command]
-fn settings_autostart_info() -> AutostartInfo {
+fn settings_autostart_info(app: tauri::AppHandle) -> AutostartInfo {
     let exe = std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
     AutostartInfo {
-        enabled: settings_autostart_enabled(),
+        enabled: app.autolaunch().is_enabled().unwrap_or(false),
         installed: exe.to_lowercase().contains("programdata"),
     }
 }
 
 #[tauri::command]
-fn settings_autostart_set(enabled: bool) -> Result<(), String> {
+fn settings_autostart_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let manager = app.autolaunch();
     if enabled {
-        let key = windows_registry::CURRENT_USER
-            .create(SETTINGS_RUN_KEY)
-            .map_err(|error| format!("打开 Run 键失败：{error}"))?;
-        key.set_string(SETTINGS_RUN_VALUE, settings_run_command())
-            .map_err(|error| format!("写入 Run 键失败：{error}"))?;
-    } else if let Ok(key) = windows_registry::CURRENT_USER.open(SETTINGS_RUN_KEY) {
-        let _ = key.remove_value(SETTINGS_RUN_VALUE);
+        manager.enable().map_err(|e| e.to_string())?;
+    } else {
+        manager.disable().map_err(|e| e.to_string())?;
     }
-    if settings_autostart_enabled() != enabled {
+    if manager.is_enabled().unwrap_or(false) != enabled {
         return Err("自启动注册写回不一致".to_owned());
     }
     Ok(())
@@ -2422,6 +2402,12 @@ fn main() {
         }))
         // 官方窗口状态插件：自动持久化/恢复窗口位置与尺寸，替代手写 localStorage。
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 官方自启插件：替代手写 HKCU Run 的 FOXSettings 条目。
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("FOXSettings")
+                .build(),
+        )
         .setup(|app| {
             // skipTaskbar 配置在窗口创建时（尚未显示/注册任务栏按钮）调用
             // tao 的 ITaskbarList::DeleteTab 大概率是 no-op；这里在窗口就绪后

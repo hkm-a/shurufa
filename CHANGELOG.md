@@ -79,6 +79,11 @@
   `place_window_bottom_right` 落右下角（一次性标志位），之后由插件自动
   保存/恢复位置。
 
+### 重构（2026-08-21，换库周第 8 批：官方 Tauri 插件 autostart）
+- **`shurufa-settings` 悬浮条自启改用 `tauri-plugin-autostart`**：删除手写
+  HKCU Run `FOXSettings` 键读写，`settings_autostart_info` / `set` 改用
+  `AutoLaunchManager`；仍保留“已部署目录才允许自动开启”的 installed 判断。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除
