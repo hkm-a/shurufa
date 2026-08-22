@@ -42,7 +42,6 @@ class SkinPaletteTest {
         assertEquals(fallback, SkinPalette.fromJson("""{"version":2}""", dark = true, fallback))
         assertEquals(fallback, SkinPalette.fromJson("""{"version":1,"dark":{}}""", dark = true, fallback))
     }
-}
 
     @Test
     fun v2_metrics_and_shadow_are_parsed() {
@@ -85,3 +84,4 @@ class SkinPaletteTest {
         assertEquals(18, skin.shadowRadius)
         assertEquals(64, skin.shadowAlpha)
     }
+}

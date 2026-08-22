@@ -121,5 +121,12 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
+    // 阶段4第6项"四样"：RecyclerView（列表回收）/ Coil（图片加载）/
+    // kotlinx.coroutines（结构化并发）/ DataStore（偏好持久化，替代手写 SP 序列化）。
+    // Compose 迁移可缓；RecyclerView/Coil 的面板接入属后续迭代。
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
+    implementation("io.coil-kt:coil:2.7.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
     testImplementation("junit:junit:4.13.2")
 }

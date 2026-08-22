@@ -1,6 +1,17 @@
 package com.shurufa.ime
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /** 单手模式三态：关闭 / 键盘靠左 / 键盘靠右。 */
 enum class SingleHandMode { OFF, LEFT, RIGHT }
@@ -54,31 +65,68 @@ data class KeyboardPrefs(
             else -> SingleHandMode.OFF
         }
 
+        // 阶段4第6项：持久化迁到 DataStore（取代手写 SharedPreferences 读写）。
+        // 调用方仍是同步 load/save：load 用 runBlocking 读小文件（微秒级），
+        // save 沿用旧 apply() 的 fire-and-forget 语义，投递到自有 IO scope。
+        private val Context.keyboardDataStore by preferencesDataStore(name = "keyboard_prefs")
+        private val storeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        private val KEY_HEIGHT = intPreferencesKey("kb_height_percent")
+        private val KEY_KEY_SOUND = booleanPreferencesKey("kb_key_sound")
+        private val KEY_HAPTIC = booleanPreferencesKey("kb_haptic")
+        private val KEY_SINGLE_HAND = stringPreferencesKey("kb_single_hand")
+        private val KEY_CANDIDATE_SIZE = intPreferencesKey("kb_candidate_size")
+        private val KEY_CANDIDATE_COUNT = intPreferencesKey("kb_candidate_count")
+        private val KEY_SHOW_PUNCT_ROW = booleanPreferencesKey("kb_show_punct_row")
+        private val KEY_AI_CANDIDATES = booleanPreferencesKey("kb_ai_candidates")
+        private val KEY_MIGRATED = booleanPreferencesKey("migrated_from_sp")
+
         fun load(context: Context): KeyboardPrefs {
-            val sp = context.getSharedPreferences("shurufa", Context.MODE_PRIVATE)
+            val values = runBlocking { context.keyboardDataStore.data.first() }
+            if (values[KEY_MIGRATED] != true) {
+                // 首次读取：把旧 SharedPreferences 里的 kb_* 迁移过来（无值用默认）。
+                val sp = context.getSharedPreferences("shurufa", Context.MODE_PRIVATE)
+                val migrated = KeyboardPrefs(
+                    heightPercent = clampHeight(sp.getInt("kb_height_percent", DEFAULT_HEIGHT_PERCENT)),
+                    keySound = sp.getBoolean("kb_key_sound", true),
+                    haptic = sp.getBoolean("kb_haptic", true),
+                    singleHand = parseSingleHand(sp.getString("kb_single_hand", null)),
+                    candidateSizePercent = clampCandidateSize(sp.getInt("kb_candidate_size", DEFAULT_CANDIDATE_SIZE_PERCENT)),
+                    candidateCount = clampCandidateCount(sp.getInt("kb_candidate_count", DEFAULT_CANDIDATE_COUNT)),
+                    showPunctRow = sp.getBoolean("kb_show_punct_row", true),
+                    aiCandidates = sp.getBoolean("kb_ai_candidates", false),
+                )
+                save(context, migrated)
+                storeScope.launch {
+                    context.keyboardDataStore.edit { it[KEY_MIGRATED] = true }
+                }
+                return migrated
+            }
             return KeyboardPrefs(
-                heightPercent = clampHeight(sp.getInt("kb_height_percent", DEFAULT_HEIGHT_PERCENT)),
-                keySound = sp.getBoolean("kb_key_sound", true),
-                haptic = sp.getBoolean("kb_haptic", true),
-                singleHand = parseSingleHand(sp.getString("kb_single_hand", null)),
-                candidateSizePercent = clampCandidateSize(sp.getInt("kb_candidate_size", DEFAULT_CANDIDATE_SIZE_PERCENT)),
-                candidateCount = clampCandidateCount(sp.getInt("kb_candidate_count", DEFAULT_CANDIDATE_COUNT)),
-                showPunctRow = sp.getBoolean("kb_show_punct_row", true),
-                aiCandidates = sp.getBoolean("kb_ai_candidates", false),
+                heightPercent = clampHeight(values[KEY_HEIGHT] ?: DEFAULT_HEIGHT_PERCENT),
+                keySound = values[KEY_KEY_SOUND] ?: true,
+                haptic = values[KEY_HAPTIC] ?: true,
+                singleHand = parseSingleHand(values[KEY_SINGLE_HAND]),
+                candidateSizePercent = clampCandidateSize(values[KEY_CANDIDATE_SIZE] ?: DEFAULT_CANDIDATE_SIZE_PERCENT),
+                candidateCount = clampCandidateCount(values[KEY_CANDIDATE_COUNT] ?: DEFAULT_CANDIDATE_COUNT),
+                showPunctRow = values[KEY_SHOW_PUNCT_ROW] ?: true,
+                aiCandidates = values[KEY_AI_CANDIDATES] ?: false,
             )
         }
 
         fun save(context: Context, prefs: KeyboardPrefs) {
-            context.getSharedPreferences("shurufa", Context.MODE_PRIVATE).edit()
-                .putInt("kb_height_percent", clampHeight(prefs.heightPercent))
-                .putBoolean("kb_key_sound", prefs.keySound)
-                .putBoolean("kb_haptic", prefs.haptic)
-                .putString("kb_single_hand", prefs.singleHand.name)
-                .putInt("kb_candidate_size", clampCandidateSize(prefs.candidateSizePercent))
-                .putInt("kb_candidate_count", clampCandidateCount(prefs.candidateCount))
-                .putBoolean("kb_show_punct_row", prefs.showPunctRow)
-                .putBoolean("kb_ai_candidates", prefs.aiCandidates)
-                .apply()
+            storeScope.launch {
+                context.keyboardDataStore.edit {
+                    it[KEY_HEIGHT] = clampHeight(prefs.heightPercent)
+                    it[KEY_KEY_SOUND] = prefs.keySound
+                    it[KEY_HAPTIC] = prefs.haptic
+                    it[KEY_SINGLE_HAND] = prefs.singleHand.name
+                    it[KEY_CANDIDATE_SIZE] = clampCandidateSize(prefs.candidateSizePercent)
+                    it[KEY_CANDIDATE_COUNT] = clampCandidateCount(prefs.candidateCount)
+                    it[KEY_SHOW_PUNCT_ROW] = prefs.showPunctRow
+                    it[KEY_AI_CANDIDATES] = prefs.aiCandidates
+                }
+            }
         }
     }
 }
