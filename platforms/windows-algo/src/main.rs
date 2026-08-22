@@ -125,7 +125,12 @@ fn decorate_process_key(
     // 查词库预生成的简拼索引（jianpin_index.txt）把词条注入候选。
     // librime 原生不支持多音节简拼词（简拼音节不参与词条匹配），
     // 单字简拼/完整拼音正常；搜狗/微信式简拼词靠这层前端索引补上。
-    if context.candidates.is_empty() && JianpinIndex::is_pure_consonant(raw_after) {
+    // options.jianpin_enabled=false（简拼开关关）时停用注入——否则切到
+    // nojianpin 方案后多音节简拼词仍会出现，开关形同虚设。
+    if jianpin_injection_enabled()
+        && context.candidates.is_empty()
+        && JianpinIndex::is_pure_consonant(raw_after)
+    {
         let words = jianpin_store().lookup(raw_after, 9);
         if !words.is_empty() {
             context.candidates = words
@@ -183,19 +188,35 @@ fn decorate_process_key(
 /// 同时被 TSF (service.rs) 与 algo (此处) 消费；本函数本身留在 algo 是因为
 /// algo 是 wave 5 真实 redeploy 的宿主，TSF 只是日志转发。
 fn input_scheme_differs(a: &shurufa_options::ImeOptions, b: &shurufa_options::ImeOptions) -> bool {
-    a.input_scheme != b.input_scheme
+    a.input_scheme != b.input_scheme || a.jianpin_enabled != b.jianpin_enabled
 }
 
 /// 把 options.json 的 `input_scheme` 映射为 librime schema_id。
 /// 与 schemas/ 目录下 schema 的 schema_id 一一对应；未知值回退 pinyin
 /// （与 ImeOptions::default 的 input_scheme 一致）。
-fn schema_id_for(scheme: &str) -> &'static str {
+fn schema_id_for(scheme: &str, jianpin_enabled: bool) -> &'static str {
     match scheme {
         "double_pinyin" => "shurufa_double_pinyin",
         "wubi" => "shurufa_wubi",
         "cangjie" => "shurufa_cangjie",
+        // 简拼开关（M10）：关时按拼音语义处理的方案（含未知值回退）都切到
+        // 无 abbrev 变体，避免开关被未知 scheme 值静默架空
+        _ if !jianpin_enabled => "rime_ice_nojianpin",
         _ => "rime_ice",
     }
+}
+
+/// 前端简拼词注入开关（与 options.jianpin_enabled 同步，init/watcher 维护）。
+/// decorate_process_key 是 serve_connection 的函数指针，拿不到槽引用，
+/// 用进程级原子量转交。
+static JIANPIN_INJECTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn jianpin_injection_enabled() -> bool {
+    JIANPIN_INJECTION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn set_jianpin_injection(enabled: bool) {
+    JIANPIN_INJECTION.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// 输入方案热切换：2 秒轮询 options.json，方案变化时把最新 schema_id
@@ -214,14 +235,15 @@ fn watch_input_scheme(
             stale
         };
         if input_scheme_differs(&old, &current) {
-            let sid = schema_id_for(&current.input_scheme);
+            let sid = schema_id_for(&current.input_scheme, current.jianpin_enabled);
             {
                 let mut slot = current_scheme.lock().unwrap_or_else(|p| p.into_inner());
                 *slot = sid.to_owned();
             }
+            set_jianpin_injection(current.jianpin_enabled);
             log(&format!(
-                "input_scheme 变化：{} → {}（schema={}），新会话将热切换",
-                old.input_scheme, current.input_scheme, sid
+                "输入方案变化：{} → {}（简拼={}，schema={}），新会话将热切换",
+                old.input_scheme, current.input_scheme, current.jianpin_enabled, sid
             ));
         }
     });
@@ -303,11 +325,14 @@ fn run_service() -> ! {
     // 输入方案热切换：2 秒轮询 options.json，把最新 schema_id 写入共享槽；
     // 每个新会话创建后 select_schema（见 create_session_with_scheme）。
     let shared_opts = std::sync::Arc::new(std::sync::Mutex::new(shurufa_options::load()));
+    let (initial_scheme, initial_jianpin) = {
+        let opts = shared_opts.lock().unwrap_or_else(|p| p.into_inner());
+        (opts.input_scheme.clone(), opts.jianpin_enabled)
+    };
+    set_jianpin_injection(initial_jianpin);
     let current_scheme = std::sync::Arc::new(std::sync::Mutex::new(String::from(schema_id_for(
-        &shared_opts
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .input_scheme,
+        &initial_scheme,
+        initial_jianpin,
     ))));
     watch_input_scheme(shared_opts, current_scheme.clone());
     spawn_mru_saver();
@@ -448,3 +473,33 @@ fn attach_console_to_parent() {
 
 #[cfg(not(windows))]
 fn attach_console_to_parent() {}
+
+#[cfg(test)]
+mod tests {
+    use super::{input_scheme_differs, schema_id_for};
+    use shurufa_options::ImeOptions;
+
+    #[test]
+    fn 简拼开关决定拼音方案映射() {
+        assert_eq!(schema_id_for("pinyin", true), "rime_ice");
+        assert_eq!(schema_id_for("pinyin", false), "rime_ice_nojianpin");
+        // 非拼音方案不受简拼开关影响
+        assert_eq!(
+            schema_id_for("double_pinyin", false),
+            "shurufa_double_pinyin"
+        );
+        // 未知值回退全拼语义（含简拼开关）
+        assert_eq!(schema_id_for("unknown", false), "rime_ice_nojianpin");
+    }
+
+    #[test]
+    fn 简拼开关变化触发热切换判定() {
+        let base = ImeOptions::default();
+        let toggled = ImeOptions {
+            jianpin_enabled: false,
+            ..base.clone()
+        };
+        assert!(input_scheme_differs(&base, &toggled));
+        assert!(!input_scheme_differs(&base, &ImeOptions::default()));
+    }
+}

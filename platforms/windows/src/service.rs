@@ -30,7 +30,9 @@ use crate::keys;
 /// 纯判定：两份选项的 `input_scheme` 是否不同。
 /// 供 refresh_options 在每次重载后比对，并供单元测试直接断言。
 pub(crate) fn input_scheme_differs(a: &ImeOptions, b: &ImeOptions) -> bool {
-    a.input_scheme != b.input_scheme
+    // jianpin_enabled 一并比较：简拼开关切换同样需要 TSF 感知（日志）与
+    // algo 侧热切换（algo main.rs 的同名函数保持同一判定）。
+    a.input_scheme != b.input_scheme || a.jianpin_enabled != b.jianpin_enabled
 }
 
 /// 纯判定：Tab/Shift+Tab 在引擎组合活着且有音节分隔时转为 XK_Right/XK_Left。

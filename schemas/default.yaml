@@ -12,6 +12,11 @@ schema_list:
   - schema: shurufa_cangjie
   - schema: shurufa_t9
   - schema: stroke
+  # 简拼关闭变体（M10 简拼开关）：与 rime_ice 同源，构建期由
+  # gen-nojianpin-schema.py 去除 abbrev 规则生成；加入 schema_list 使
+  # maintenance/deployer 编译它，options.jianpin_enabled=false 时 algo
+  # select_schema 到此方案。
+  - schema: rime_ice_nojianpin
 
 switcher:
   caption: 〔方案選單〕

@@ -108,6 +108,18 @@ pub struct ImeOptions {
     /// 同源，永不落盘）。TSF 每键热读，改动约 2 秒内生效。
     #[serde(default = "default_ai_candidates")]
     pub ai_candidates: bool,
+    /// 简拼开关（M10 后续，2026-08-23 接入）：true（默认）保留 librime abbrev
+    /// 简拼与前端简拼词注入；false 时拼音方案切换为 rime_ice_nojianpin
+    /// （无 abbrev 规则，构建期生成）并停用前端注入——多音节简拼词不再
+    /// 出现，单字简拼/全拼不受影响。algo 侧 2 秒轮询生效（与
+    /// input_scheme 同一管道）。
+    #[serde(default = "default_true")]
+    pub jianpin_enabled: bool,
+}
+
+/// 布尔默认值：开（serde default 需具名函数）。
+pub fn default_true() -> bool {
+    true
 }
 
 /// 符号配对默认值：关闭（微信输入法默认同样关闭，避免与应用冲突）。
@@ -380,6 +392,7 @@ impl Default for ImeOptions {
             symbol_pairing: default_symbol_pairing(),
             scenario_dict: default_scenario_dict(),
             ai_candidates: default_ai_candidates(),
+            jianpin_enabled: default_true(),
         }
     }
 }

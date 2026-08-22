@@ -382,6 +382,8 @@ let speechSettings = null;
 // 输入方案页（wave 4 新增）：null=未加载；list=后端 list_input_schemes 返回的 4 项
 let schemeList = null;
 let schemeCurrent = "pinyin";
+// M10 简拼开关（options.jianpin_enabled；refreshSchemes 随 get_general_settings 读取）
+let jianpinEnabled = true;
 let schemeBanner = null;
 
 // ---------------------------------------------------------------------------
@@ -2113,6 +2115,20 @@ function schemePage() {
       <article class="setting-panel">
         <div class="panel-heading"><div class="row-icon blue"><i data-lucide="keyboard"></i></div><div><h3>输入方案</h3><p>默认全拼；切换到双拼后请用双拼码输入（两模式互不干扰）</p></div></div>
         ${rows}
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon teal"><i data-lucide="zap"></i></div>
+          <label class="setting-toggle" style="flex:1" for="jianpin-toggle">
+            <div>
+              <h3>简拼</h3>
+              <p>声母组合出多音节词（lw → 另外/论文/礼物）；关闭后仅保留全拼与单字简拼，约 2 秒内对新输入生效</p>
+            </div>
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="jianpin-toggle" data-jianpin-toggle ${jianpinEnabled ? "checked" : ""} />
+            <span></span>
+          </label>
+        </div>
       </article>
       <article class="hint-card"><i data-lucide="lightbulb"></i><p>全拼：输入完整拼音（nihao → 你好）。双拼（小鹤）：每字两键，如「我是说」= wouiuo、「你好」= nihc。切换后对新输入生效；五笔/仓颉码表待接入。</p></article>
     </section>`;
@@ -2124,8 +2140,10 @@ async function refreshSchemes() {
   try {
     const g = await invoke("get_general_settings");
     schemeCurrent = g.input_scheme || "pinyin";
+    jianpinEnabled = g.jianpin_enabled !== false;
   } catch (_error) {
     schemeCurrent = "pinyin";
+    jianpinEnabled = true;
   }
 }
 
@@ -2812,6 +2830,33 @@ function render() {
           schemeBanner = { message: String(error), error: true };
           schemeCurrent = previous;
           render();
+        });
+    };
+  });
+  // 简拼开关（M10）：change 即存 options.jianpin_enabled，algo watcher 热切换
+  app.querySelectorAll("input[data-jianpin-toggle]").forEach((input) => {
+    input.onchange = () => {
+      const next = input.checked;
+      invoke("set_jianpin_enabled", { enabled: next })
+        .then(() => {
+          jianpinEnabled = next;
+          schemeBanner = {
+            message: next
+              ? "简拼已开启（约 2 秒内对新输入生效）"
+              : "简拼已关闭：仅全拼与单字简拼（约 2 秒内对新输入生效）",
+            error: false
+          };
+          render();
+          window.setTimeout(() => {
+            if (schemeBanner && schemeBanner.message.indexOf("简拼已") === 0) {
+              schemeBanner = null;
+              if (activePage === "scheme") render();
+            }
+          }, 6000);
+        })
+        .catch((error) => {
+          input.checked = !input.checked;
+          showToast(String(error), true);
         });
     };
   });

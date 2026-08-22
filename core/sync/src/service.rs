@@ -18,9 +18,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Notify};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use crate::protocol::{
-    read_msg, read_msg_with_format, write_msg, write_msg_with_format, FrameFormat, Message,
-};
+use crate::protocol::{read_msg, write_msg, Message};
 use crate::relay::{accept_via_relay, connect_via_relay};
 use crate::{tls, DeviceIdentity, Peer, PeerStore};
 
@@ -1227,15 +1225,14 @@ async fn connect_peer_stream(
         },
     )
     .await?;
-    let (Message::Hello { name, features, .. }, format) = read_msg_with_format(&mut tls).await?
-    else {
+    let Message::Hello { name, features, .. } = read_msg(&mut tls).await? else {
         return Err("对端未按协议发送 Hello".into());
     };
     if let Some(addr) = direct_addr {
         let _ = shared.peers.update_addr(&fp, addr);
     }
     shared.clear_backoff(&fp);
-    duplex(shared, tls, fp, name, format, features).await
+    duplex(shared, tls, fp, name, features).await
 }
 
 /// 入站连接：已配对 → 数据通道；未配对 → 配对流程（需确认回调）。
@@ -1252,23 +1249,20 @@ async fn handle_inbound(
     let fp = peer_fingerprint(tls.get_ref().1)?;
 
     let mut tls = tls;
-    let (
-        Message::Hello {
-            name,
-            fingerprint,
-            listen_port,
-            features,
-            ..
-        },
-        format,
-    ) = read_msg_with_format(&mut tls).await?
+    let Message::Hello {
+        name,
+        fingerprint,
+        listen_port,
+        features,
+        ..
+    } = read_msg(&mut tls).await?
     else {
         return Err("对端未按协议发送 Hello".into());
     };
     if fingerprint != fp {
         return Err("Hello 指纹与证书不符".into());
     }
-    write_msg_with_format(
+    write_msg(
         &mut tls,
         &Message::Hello {
             name: shared.device_name.clone(),
@@ -1277,7 +1271,6 @@ async fn handle_inbound(
             features: crate::protocol::local_features(),
             protocol_version: crate::protocol::PROTOCOL_VERSION,
         },
-        format,
     )
     .await?;
 
@@ -1286,14 +1279,12 @@ async fn handle_inbound(
         if let Some(addr) = direct_addr.as_deref() {
             let _ = shared.peers.update_addr(&fp, addr);
         }
-        return duplex(shared, tls, fp, name, format, features).await;
+        return duplex(shared, tls, fp, name, features).await;
     }
 
     // 未配对：走配对确认
     let Some(confirm) = shared.accept_confirm.clone() else {
-        write_msg_with_format(&mut tls, &Message::PairReject, format)
-            .await
-            .ok();
+        write_msg(&mut tls, &Message::PairReject).await.ok();
         return Err(format!("拒绝未配对设备 {name}（未开启配对确认）"));
     };
     let code = crate::pairing_code(&shared.identity.fingerprint, &fp);
@@ -1305,13 +1296,11 @@ async fn handle_inbound(
         .await
         .map_err(|e| format!("确认回调失败: {e}"))?;
     if !accepted {
-        write_msg_with_format(&mut tls, &Message::PairReject, format)
-            .await
-            .ok();
+        write_msg(&mut tls, &Message::PairReject).await.ok();
         return Err(format!("用户拒绝与 {name} 配对"));
     }
-    write_msg_with_format(&mut tls, &Message::PairConfirm, format).await?;
-    match read_msg_with_format(&mut tls).await?.0 {
+    write_msg(&mut tls, &Message::PairConfirm).await?;
+    match read_msg(&mut tls).await? {
         Message::PairConfirm => {}
         _ => return Err("对端未确认配对".into()),
     }
@@ -1327,7 +1316,7 @@ async fn handle_inbound(
         ),
     })?;
     shared.log(&format!("已与 {name} 配对"));
-    duplex(shared, tls, fp, name, format, features).await
+    duplex(shared, tls, fp, name, features).await
 }
 
 /// 发起端配对：连接 → Hello → 确认码 → PairConfirm 交换 → 入表。
@@ -1422,7 +1411,6 @@ async fn duplex<S>(
     tls: S,
     fp: String,
     peer_name: String,
-    format: FrameFormat,
     peer_features: Vec<String>,
 ) -> Result<(), String>
 where
@@ -1453,7 +1441,7 @@ where
     // S6：读侧放进独立任务，写侧继续在 duplex 主循环处理。
     //
     // 此前同一个 tokio::select! 同时 poll 读帧和 Ping tick，Ping 一旦到点会
-    // 取消正在进行的 read_msg_with_format，已消费的半帧数据从 TLS 流中丢失，
+    // 取消正在进行的 read_msg，已消费的半帧数据从 TLS 流中丢失，
     // 下一轮从帧体中间解析长度 → “对端帧过大”断连。拆分后读任务不会被写侧
     // Ping 取消，大帧可以完整读完；读任务需要回写的应答经 reply_tx 交给本循环。
     let (read_half, write_half) = tokio::io::split(tls);
@@ -1500,7 +1488,7 @@ where
                             None
                         },
                     };
-                    if let Err(e) = write_msg_with_format(&mut write_half, &msg, format).await {
+                    if let Err(e) = write_msg(&mut write_half, &msg).await {
                         break Err(e);
                     }
                 }
@@ -1512,7 +1500,7 @@ where
                         msg_id: None,
                         origin_device_fp: None,
                     };
-                    if let Err(e) = write_msg_with_format(&mut write_half, &msg, format).await {
+                    if let Err(e) = write_msg(&mut write_half, &msg).await {
                         break Err(e);
                     }
                 }
@@ -1525,7 +1513,7 @@ where
                         msg_id: None,
                         origin_device_fp: None,
                     };
-                    if let Err(e) = write_msg_with_format(&mut write_half, &msg, format).await {
+                    if let Err(e) = write_msg(&mut write_half, &msg).await {
                         break Err(e);
                     }
                 }
@@ -1539,7 +1527,7 @@ where
                         query,
                         req_id: Some(req_id),
                     };
-                    if let Err(e) = write_msg_with_format(&mut write_half, &msg, format).await {
+                    if let Err(e) = write_msg(&mut write_half, &msg).await {
                         break Err(e);
                     }
                 }
@@ -1549,7 +1537,7 @@ where
                     if !peer_has_file_v1 {
                         continue;
                     }
-                    if let Err(e) = write_msg_with_format(&mut write_half, &msg, format).await {
+                    if let Err(e) = write_msg(&mut write_half, &msg).await {
                         break Err(e);
                     }
                 }
@@ -1559,7 +1547,7 @@ where
             },
             reply = reply_rx.recv() => match reply {
                 Some(msg) => {
-                    if let Err(e) = write_msg_with_format(&mut write_half, &msg, format).await {
+                    if let Err(e) = write_msg(&mut write_half, &msg).await {
                         break Err(e);
                     }
                 }
@@ -1567,7 +1555,7 @@ where
                 None => continue,
             },
             _ = ping.tick() => {
-                if let Err(e) = write_msg_with_format(&mut write_half, &Message::Ping, format).await {
+                if let Err(e) = write_msg(&mut write_half, &Message::Ping).await {
                     break Err(e);
                 }
             }
@@ -1611,18 +1599,14 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     loop {
-        let incoming =
-            tokio::time::timeout(READ_IDLE_TIMEOUT, read_msg_with_format(&mut read_half)).await;
+        let incoming = tokio::time::timeout(READ_IDLE_TIMEOUT, read_msg(&mut read_half)).await;
         match incoming {
-            Ok(Ok((
-                Message::ClipText {
-                    text,
-                    sent_at_ms,
-                    msg_id,
-                    origin_device_fp,
-                },
-                _,
-            ))) => {
+            Ok(Ok(Message::ClipText {
+                text,
+                sent_at_ms,
+                msg_id,
+                origin_device_fp,
+            })) => {
                 // 回声丢弃：本端指纹即对端 `origin_device_fp` 时，说明是
                 // 本端先前发出、经对端转发回来的副本，不再上屏也不入库。
                 if origin_device_fp.as_deref() == Some(shared.identity.fingerprint.as_str()) {
@@ -1656,7 +1640,7 @@ where
                         .await;
                 }
             }
-            Ok(Ok((Message::ClipImage { data, .. }, _))) => {
+            Ok(Ok(Message::ClipImage { data, .. })) => {
                 match base64::engine::general_purpose::STANDARD.decode(&data) {
                     Ok(png) if png.len() <= MAX_CLIP_IMAGE_BYTES => {
                         let _ = shared
@@ -1670,15 +1654,12 @@ where
                     _ => {}
                 }
             }
-            Ok(Ok((
-                Message::ClipFile {
-                    name,
-                    mime_type,
-                    data,
-                    ..
-                },
-                _,
-            ))) => match base64::engine::general_purpose::STANDARD.decode(&data) {
+            Ok(Ok(Message::ClipFile {
+                name,
+                mime_type,
+                data,
+                ..
+            })) => match base64::engine::general_purpose::STANDARD.decode(&data) {
                 Ok(data)
                     if !name.is_empty()
                         && name.len() <= 255
@@ -1698,17 +1679,14 @@ where
                 }
                 _ => {}
             },
-            Ok(Ok((
-                Message::FileOffer {
-                    msg_id,
-                    name,
-                    size,
-                    mime,
-                    sha256,
-                    chunk_bytes,
-                },
-                _,
-            ))) => {
+            Ok(Ok(Message::FileOffer {
+                msg_id,
+                name,
+                size,
+                mime,
+                sha256,
+                chunk_bytes,
+            })) => {
                 // 64MB 上限先测：超出立即拒。
                 if size > MAX_FILE_BYTES {
                     let reply = Message::FileDecline {
@@ -1833,7 +1811,7 @@ where
                     .await
                     .map_err(|e| format!("回写通道关闭: {e}"))?;
             }
-            Ok(Ok((Message::FileAccept { msg_id }, _))) => {
+            Ok(Ok(Message::FileAccept { msg_id })) => {
                 // 出站方向：对端同意，切 Streaming 并唤醒等待循环。
                 shared.set_transfer(
                     &msg_id,
@@ -1848,7 +1826,7 @@ where
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(msg_id, Instant::now());
             }
-            Ok(Ok((Message::FileDecline { msg_id, reason }, _))) => {
+            Ok(Ok(Message::FileDecline { msg_id, reason })) => {
                 shared.set_transfer(
                     &msg_id,
                     FileSendState::Declined {
@@ -1857,15 +1835,12 @@ where
                     },
                 );
             }
-            Ok(Ok((
-                Message::FileChunk {
-                    msg_id,
-                    offset,
-                    data,
-                    last,
-                },
-                _,
-            ))) => {
+            Ok(Ok(Message::FileChunk {
+                msg_id,
+                offset,
+                data,
+                last,
+            })) => {
                 let _ = last; // 是否最后一块由 FileDone 落地，块本身无需标记
                 let bytes = match base64::engine::general_purpose::STANDARD.decode(&data) {
                     Ok(b) => b,
@@ -1936,7 +1911,7 @@ where
                     }
                 }
             }
-            Ok(Ok((Message::FileDone { msg_id, sha256 }, _))) => {
+            Ok(Ok(Message::FileDone { msg_id, sha256 })) => {
                 let (path, expected, from_name, name, size) = {
                     let recv = shared.file_recv.lock().unwrap_or_else(|p| p.into_inner());
                     match recv.get(&msg_id) {
@@ -2027,15 +2002,12 @@ where
                     .await;
                 shared.log(&format!("已保存 {name}（来自 {from_name}）"));
             }
-            Ok(Ok((
-                Message::FileAck {
-                    msg_id,
-                    received_bytes,
-                    ok,
-                    error,
-                },
-                _,
-            ))) => {
+            Ok(Ok(Message::FileAck {
+                msg_id,
+                received_bytes,
+                ok,
+                error,
+            })) => {
                 let err_detail = error.unwrap_or_else(|| "unknown".into());
                 let next = if ok {
                     FileSendState::Acked {
@@ -2063,13 +2035,10 @@ where
                     })
                     .await;
             }
-            Ok(Ok((
-                Message::FileProgress {
-                    msg_id,
-                    received_bytes,
-                },
-                _,
-            ))) => {
+            Ok(Ok(Message::FileProgress {
+                msg_id,
+                received_bytes,
+            })) => {
                 // picker：先更新状态，再通知宿主。
                 if let Some(FileSendState::Streaming { .. }) = shared.transfer_state(&msg_id) {
                     shared.set_transfer(
@@ -2093,8 +2062,8 @@ where
                     })
                     .await;
             }
-            Ok(Ok((Message::Ping, _))) => {}
-            Ok(Ok((Message::SearchRequest { query, req_id }, _))) => {
+            Ok(Ok(Message::Ping)) => {}
+            Ok(Ok(Message::SearchRequest { query, req_id })) => {
                 // 仅在对端协商了 search-v1 时响应：老端不认识该消息，
                 // 不会发送；这里多一层判定是防止对端特性表与实际行为不一致。
                 if peer_has_search {
@@ -2122,7 +2091,7 @@ where
                         .map_err(|e| format!("回写通道关闭: {e}"))?;
                 }
             }
-            Ok(Ok((Message::SearchResponse { req_id, hits }, _))) => {
+            Ok(Ok(Message::SearchResponse { req_id, hits })) => {
                 // 命中数截断到 8 做防御：不信任对端自觉守约。
                 let hits = hits.into_iter().take(8).collect();
                 let _ = shared

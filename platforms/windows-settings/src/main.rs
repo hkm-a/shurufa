@@ -1389,6 +1389,10 @@ struct GeneralSettingsDto {
     /// options.json 读取，保存走独立 save_scenario_dict 命令（需重建词典）。
     #[serde(default = "default_scenario_dict_dto")]
     scenario_dict: String,
+    /// M10 简拼开关：序列化时从 options.json 读取；保存走独立
+    /// set_jianpin_enabled 命令（algo watcher 热切换，无需重建词典）。
+    #[serde(default = "default_true_dto")]
+    jianpin_enabled: bool,
 }
 
 fn default_candidate_position_dto() -> String {
@@ -1434,6 +1438,7 @@ impl From<GeneralSettings> for GeneralSettingsDto {
             ball_opacity: g.ball_opacity,
             selection_app_whitelist: g.selection_app_whitelist,
             scenario_dict: default_scenario_dict_dto(),
+            jianpin_enabled: default_true_dto(),
             // GeneralSettings 不含方案字段；读盘时由 get_general_settings 另行注入
             input_scheme: default_scheme_for_dto(),
             candidate_position: default_candidate_position_dto(),
@@ -1450,6 +1455,7 @@ fn get_general_settings() -> Result<GeneralSettingsDto, String> {
     dto.candidate_position = opts.candidate_position.clone();
     dto.candidate_panel_mode = opts.candidate_panel_mode.clone();
     dto.scenario_dict = opts.scenario_dict.clone();
+    dto.jianpin_enabled = opts.jianpin_enabled;
     Ok(dto)
 }
 
@@ -1494,6 +1500,7 @@ fn save_general_settings(s: GeneralSettingsDto) -> Result<(), String> {
         other => return Err(format!("未知候选面板模式：{other}")),
     };
     let _ = s.scenario_dict; // scenario_dict 由 save_scenario_dict 独立管理（需重建词典）
+    let _ = s.jianpin_enabled; // jianpin_enabled 由 set_jianpin_enabled 独立管理
     shurufa_options::modify(|current| ImeOptions {
         general: next.clone(),
         candidate_position: position,
@@ -1932,6 +1939,20 @@ async fn set_input_scheme(scheme: String) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 简拼开关（M10 后续，2026-08-23 接入）：写 options.json 的 jianpin_enabled。
+/// algo 侧 2 秒 watcher 检测到变化后，新会话 select_schema 到
+/// rime_ice / rime_ice_nojianpin，并同步停用/启用前端简拼词注入；
+/// 变体方案已随 schema_list 预编译，无需重建词典。
+#[tauri::command]
+fn set_jianpin_enabled(enabled: bool) -> Result<(), String> {
+    shurufa_options::modify(|current| ImeOptions {
+        jianpin_enabled: enabled,
+        ..current.clone()
+    })
+    .map(|_| ())
+    .map_err(|error| format!("保存简拼开关失败：{error}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -2486,6 +2507,7 @@ fn main() {
             apply_skin,
             list_input_schemes,
             set_input_scheme,
+            set_jianpin_enabled,
             read_custom_phrases,
             save_custom_phrases,
             list_userdbs,
@@ -2683,6 +2705,7 @@ mod tests {
             ball_opacity: 100,
             selection_app_whitelist: vec![],
             scenario_dict: "none".to_owned(),
+            jianpin_enabled: true,
         };
         let mapped = matches!(bad.log_level.as_str(), "info" | "debug" | "trace");
         assert!(!mapped, "未知级别应被 save 路径拒绝");
@@ -2721,6 +2744,7 @@ mod tests {
             ball_opacity: 80,
             selection_app_whitelist: vec!["WINWORD.EXE".to_owned()],
             scenario_dict: "none".to_owned(),
+            jianpin_enabled: true,
         };
         let value = serde_json::to_value(&dto).expect("DTO 序列化失败");
         assert_eq!(value["input_scheme"], serde_json::json!("wubi"));

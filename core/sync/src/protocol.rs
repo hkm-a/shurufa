@@ -8,12 +8,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// 单条消息上限：文本仅数十 KB，图片同步的 base64 PNG 可达数 MB，留足余量
 const MAX_FRAME: u32 = 16 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrameFormat {
-    LengthPrefixed,
-    RawJson,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
@@ -216,88 +210,23 @@ pub async fn write_msg<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> Resul
     Ok(())
 }
 
+/// 仅接受长度前缀帧。曾有一条兼容裸 JSON 流的回退路径（对 TLS 流逐字节
+/// read_exact 扫描大括号配平，最坏循环 1600 万次）——长度前缀帧自 v0.5.x
+/// 起已是唯一线格式，两端同仓同发，回退路径已删（架构审视报告 §7.1）。
 pub async fn read_msg<R: AsyncRead + Unpin>(r: &mut R) -> Result<Message, String> {
-    read_msg_with_format(r).await.map(|(message, _)| message)
-}
-
-pub async fn write_msg_with_format<W: AsyncWrite + Unpin>(
-    w: &mut W,
-    msg: &Message,
-    format: FrameFormat,
-) -> Result<(), String> {
-    let body = serde_json::to_vec(msg).expect("消息序列化不应失败");
-    if body.len() as u32 > MAX_FRAME {
-        return Err("消息超过帧上限".into());
-    }
-    if format == FrameFormat::LengthPrefixed {
-        w.write_all(&(body.len() as u32).to_le_bytes())
-            .await
-            .map_err(|e| format!("写长度失败: {e}"))?;
-    }
-    w.write_all(&body)
-        .await
-        .map_err(|e| format!("写消息失败: {e}"))?;
-    w.flush().await.map_err(|e| format!("刷新失败: {e}"))
-}
-
-pub async fn read_msg_with_format<R: AsyncRead + Unpin>(
-    r: &mut R,
-) -> Result<(Message, FrameFormat), String> {
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf)
         .await
         .map_err(|e| format!("读长度失败: {e}"))?;
     let len = u32::from_le_bytes(len_buf);
-    if len <= MAX_FRAME {
-        let mut body = vec![0u8; len as usize];
-        r.read_exact(&mut body)
-            .await
-            .map_err(|e| format!("读消息失败: {e}"))?;
-        return serde_json::from_slice(&body)
-            .map(|message| (message, FrameFormat::LengthPrefixed))
-            .map_err(|e| format!("消息格式错误: {e}"));
-    }
-    if len_buf[0] != b'{' {
+    if len > MAX_FRAME {
         return Err(format!("对端帧过大: {len}"));
     }
-    let mut body = len_buf.to_vec();
-    let mut depth = 0i32;
-    let mut quoted = false;
-    let mut escaped = false;
-    let mut scanned = 0usize;
-    loop {
-        for &byte in &body[scanned..] {
-            if quoted {
-                if escaped {
-                    escaped = false;
-                } else if byte == b'\\' {
-                    escaped = true;
-                } else if byte == b'"' {
-                    quoted = false;
-                }
-            } else if byte == b'"' {
-                quoted = true;
-            } else if byte == b'{' {
-                depth += 1;
-            } else if byte == b'}' {
-                depth -= 1;
-            }
-            if depth == 0 && !quoted {
-                return serde_json::from_slice(&body)
-                    .map(|message| (message, FrameFormat::RawJson))
-                    .map_err(|e| format!("旧协议消息格式错误: {e}"));
-            }
-        }
-        scanned = body.len();
-        if body.len() >= MAX_FRAME as usize {
-            return Err("旧协议消息超过帧上限".into());
-        }
-        let mut next = [0u8; 1];
-        r.read_exact(&mut next)
-            .await
-            .map_err(|e| format!("读旧协议消息失败: {e}"))?;
-        body.push(next[0]);
-    }
+    let mut body = vec![0u8; len as usize];
+    r.read_exact(&mut body)
+        .await
+        .map_err(|e| format!("读消息失败: {e}"))?;
+    serde_json::from_slice(&body).map_err(|e| format!("消息格式错误: {e}"))
 }
 
 #[cfg(test)]
@@ -319,23 +248,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 原始_json帧可被识别并保持格式() {
+    async fn 裸json流被拒绝() {
+        // 旧版裸 JSON 帧的首字节是 '{'，按小端 u32 解码必然超出帧上限——
+        // 回退路径已删，必须直接报错而不是逐字节扫描兼容。
         let (mut writer, mut reader) = tokio::io::duplex(4096);
-        let msg = Message::Hello {
-            name: "安卓".into(),
-            fingerprint: "a".repeat(64),
-            listen_port: 48632,
-            features: vec![],
-            protocol_version: 1,
-        };
-        let expected = serde_json::to_vec(&msg).unwrap();
-        let write = tokio::spawn(async move {
-            writer.write_all(&expected).await.unwrap();
-        });
-        let (actual, format) = read_msg_with_format(&mut reader).await.unwrap();
-        write.await.unwrap();
-        assert_eq!(actual, msg);
-        assert_eq!(format, FrameFormat::RawJson);
+        let mut raw = br#"{"type":"hello","name":"legacy""#.to_vec();
+        raw.push(b'}');
+        writer.write_all(&raw).await.unwrap();
+        let err = read_msg(&mut reader).await.unwrap_err();
+        assert!(err.contains("对端帧过大"), "实际错误：{err}");
     }
 
     #[tokio::test]

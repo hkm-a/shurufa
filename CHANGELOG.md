@@ -45,6 +45,28 @@
   `clipboard-store` / `sync-core` 执行 `cargo check --locked`，
   真正把“core/ 必须非 Windows 可编译”变成机器门禁。
 
+### 变更（2026-08-23，架构审视后续项收尾）
+- **简拼开关全链路接入（M10 收尾）**：
+  - `schemas/default.yaml` schema_list 注入 `rime_ice_nojianpin`（构建期
+    生成，maintenance/deployer 随 schema_list 预编译）；
+  - `options.jianpin_enabled`（默认开）新字段；
+  - algo：`schema_id_for` 感知开关（拼音关简拼 → 无 abbrev 变体，未知值
+    回退同样处理），`input_scheme_differs` 同时比较开关，前端简拼词注入
+    按开关门控（否则切到变体后多音节简拼词仍会出现，开关形同虚设）；
+  - 设置页「方案」页新增简拼开关（`set_jianpin_enabled` 命令 + checkbox，
+    algo 2 秒 watcher 热切换，无需重建词典）；新增 algo 单测。
+- **删除 core/sync 裸 JSON 兼容回退**（架构审视 §7.1 点名）：`read_msg`
+  只接受长度前缀帧；原路径对 TLS 流单字节 `read_exact` 扫描大括号配平，
+  最坏循环 1600 万次。`FrameFormat`/`*_with_format` 一并删除，配对流程
+  与 duplex 不再透传格式。新增「裸 JSON 流被拒绝」测试。
+- **iroh 迁移评估结论：不迁**（阶段 4 后履约评估，结论与触发条件记录于
+  架构审视报告 §7.1）：收益边际被高估、迁移需三端同发 + 全量重新配对、
+  现网无 NAT 打洞痛点驱动。
+- TSF `input_scheme_differs` 与 algo 同步扩展（含 jianpin_enabled）。
+- 验证：workspace clippy/fmt 干净；algo/options/settings/ime-bridge 测试
+  通过（含 jianpin_switch 集成测试）；TSF 两个交互测试因本机宿主服务
+  占用剪贴板环境性失败（与改动无关）。
+
 ### 工程与治理（2026-08-22，阶段 5：文档止血收尾）
 - **CHANGELOG↔tag 对账门禁**：check-docs.ps1 新增「每个 git tag vX.Y.Z 必须有
   `## [X.Y.Z]` 条目」规则；上线即抓到 v0.4.2 已打 tag 但 CHANGELOG 漏记，
