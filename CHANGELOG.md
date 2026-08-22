@@ -54,6 +54,12 @@
   clip-* / ai / chat / pair* / dict* / retention / 调试命令）改为声明式
   `Parser + Subcommand`，自动生成帮助、参数校验与 `--help`。
 
+### 删除（2026-08-21，换库周同期纯删除）
+- **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
+  约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除
+  `candidate_window.rs` 中的 DComp 选路/初始化/重绘/尺寸通知/皮肤刷新分支，
+  以及 Cargo 的 `Win32_Graphics_DirectComposition` feature。
+
 ### 修复（2026-08-21）
 - **辅码检字（uU 部件反查）多部件码完全失效**：`recognizer/patterns/radical_lookup`
   为 `^uU[a-z]+$` 不含撇号，而 `radical_pinyin.schema.yaml` 的 algebra 自 c12a576

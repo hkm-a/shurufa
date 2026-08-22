@@ -155,24 +155,21 @@ pub(crate) fn current_hwnd() -> Option<HWND> {
 }
 
 // ---------------------------------------------------------------------------
-// 渲染后端瀑布链：DComp → D2D → GDI
+// 渲染后端瀑布链：D2D → GDI
 // ---------------------------------------------------------------------------
 
 /// 候选窗渲染后端枚举。选路由 `backend_kind()` 懒解析：
-/// 1. probe DComp（D3D11 + IDXGIFactory2 + DCompositionCreateDevice 全通）→ DComp
-/// 2. D2D try_init 成功 → D2D
-/// 3. 否则 → Gdi（纯软件绘制，恒可用，绝无 panic）
+/// 1. D2D try_init 成功 → D2D
+/// 2. 否则 → Gdi（纯软件绘制，恒可用，绝无 panic）
 ///
 /// 与模块内 `Backend::{Pending,Ready,Failed}`
 /// 状态机互补：那个管"是否处于 ready"，这个管"走哪条路径"。
 /// 每帧 WM_PAINT 先取 kind；当帧渲染失败（返回 false）时当场降级到下一级重画，
-/// **不在状态机里永久打 Failed 标记**——TDR/驱动重置由 D2D/DComp 各自的
+/// **不在状态机里永久打 Failed 标记**——TDR/驱动重置由 D2D 的
 /// notify_resize + 惰性重建吸收，不至于把整会话钉死在低档位。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
-    /// DComp flip-model swapchain + premultiplied 圆角纹理（wave 4 新增）
-    DComp,
-    /// 既有 D2D 1.1 + DirectWrite（wave 1 落地）
+    /// D2D 1.1 + DirectWrite（wave 1 落地）
     D2D,
     /// 兜底 GDI（legacy；布局/测量零漂移）
     Gdi,
@@ -183,7 +180,7 @@ thread_local! {
     static BACKEND_KIND: std::cell::Cell<Option<BackendKind>> = const { std::cell::Cell::new(None) };
 }
 
-/// 选路（懒解析 + thread-local 缓存）。首次调用即按 `probe_dcomp_available` → `candidate_window_d2d::is_enabled` 定档。
+/// 选路（懒解析 + thread-local 缓存）。首次调用即按 `candidate_window_d2d::is_enabled` 定档。
 pub(crate) fn backend_kind() -> BackendKind {
     BACKEND_KIND.with(|c| {
         if let Some(k) = c.get() {
@@ -193,11 +190,9 @@ pub(crate) fn backend_kind() -> BackendKind {
         // 渲染后端（跳过探测）。
         let k = if std::env::var_os("SHURUFA_FORCE_GDI").is_some() {
             BackendKind::Gdi
-        } else if std::env::var_os("SHURUFA_FORCE_D2D").is_some() {
-            BackendKind::D2D
-        } else if crate::candidate_window_dcomp::probe_dcomp_available() {
-            BackendKind::DComp
-        } else if crate::candidate_window_d2d::is_enabled() {
+        } else if std::env::var_os("SHURUFA_FORCE_D2D").is_some()
+            || crate::candidate_window_d2d::is_enabled()
+        {
             BackendKind::D2D
         } else {
             BackendKind::Gdi
@@ -587,7 +582,7 @@ pub fn mode_badge_width(view: &PaintView) -> i32 {
 }
 
 /// 把 PaintData 快照归一为右上角徽标文案；None = 不该显示角标。
-/// 单独成函数让 GDI / D2D / DComp 三条渲染路径共用同一套规则书：
+/// 单独成函数让 GDI / D2D 两条渲染路径共用同一套规则书：
 /// - caps_visual 优先级最高（长按 Shift 触发），只显示 "⇪大写"。
 /// - 否则按引擎 ascii_mode 输出 "En" / "中"。
 ///
@@ -1141,7 +1136,6 @@ impl CandidateUi {
         let _ = skin::load_with(|| extra);
         // 预热 GPU 工厂（< 5ms）；失败则整段会话降级，不 panic
         crate::candidate_window_d2d::try_init();
-        crate::candidate_window_dcomp::try_init();
         CandidateUi {
             hwnd: None,
             shadow: ShadowShell::new(),
@@ -1412,7 +1406,6 @@ impl CandidateUi {
         }
         // 释放 GPU target/brushes（HWND 已死，引用随之失效）
         crate::candidate_window_d2d::shutdown();
-        crate::candidate_window_dcomp::shutdown();
     }
 }
 
@@ -1424,16 +1417,12 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         value if value == WM_PAINT => {
-            // 调度：瀑布链 DComp → D2D → GDI。当帧失败 (false) 立刻落下一级
-            // 重画，画面不丢；三条路径共用同一份 thread-local PaintData 布局槽位，
+            // 调度：瀑布链 D2D → GDI。当帧失败 (false) 立刻落下一级
+            // 重画，画面不丢；两条路径共用同一份 thread-local PaintData 布局槽位，
             // 视觉 1:1。档位缓存在 thread-local BACKEND_KIND，不在窗口过程里
             // 反复探测硬件。
             let view = make_paint_view();
             let drawn = match backend_kind() {
-                BackendKind::DComp => view
-                    .as_ref()
-                    .map(|v| crate::candidate_window_dcomp::paint(hwnd, &client_rect(hwnd), v))
-                    .unwrap_or(false),
                 BackendKind::D2D => view
                     .as_ref()
                     .map(|v| crate::candidate_window_d2d::paint(hwnd, &client_rect(hwnd), v))
@@ -1464,18 +1453,15 @@ unsafe extern "system" fn wnd_proc(
             // 本帧起 swapchain/target 尺寸失配：标记失效，下一帧按
             // GetClientRect 重建（GDI 无所谓，自动按 BeginPaint 走）
             crate::candidate_window_d2d::notify_resize();
-            crate::candidate_window_dcomp::notify_resize();
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         value if value == WM_DPICHANGED => {
             // DPI 失配：target 与字形都要重建/重测
             crate::candidate_window_d2d::notify_resize();
-            crate::candidate_window_dcomp::notify_resize();
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         value if value == WM_DESTROY => {
             crate::candidate_window_d2d::shutdown();
-            crate::candidate_window_dcomp::shutdown();
             crate::uia_provider::clear_candidate_text();
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -1524,7 +1510,6 @@ unsafe extern "system" fn wnd_proc(
                 unsafe {
                     skin::apply_appearance(hwnd, &skin);
                     crate::candidate_window_d2d::notify_skin_changed();
-                    crate::candidate_window_dcomp::notify_skin_changed();
                     let _ = InvalidateRect(Some(hwnd), None, true);
                 }
             }
@@ -2424,7 +2409,7 @@ mod tests {
     }
 
     /// mode_badge 文案：caps_visual 优先于 ascii 模式；常规态按 ascii 给 "En"/"中"。
-    /// 这是候选窗右上角模式角标的唯一规则书，GDI/D2D/DComp 三路共享。
+    /// 这是候选窗右上角模式角标的唯一规则书，GDI/D2D 两路共享。
     #[test]
     fn mode_badge_text_prefers_caps_visual_over_ascii() {
         assert_eq!(mode_badge_text(&paint_data(true, false)), Some("⇪大写"));
