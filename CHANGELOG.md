@@ -137,6 +137,11 @@
   `WAVEHDR` 缓冲管理，`AudioCapture` 改为 cpal `build_input_stream`
   回调累积 PCM；优先选择 16k 单声道 I16/F32 配置。
 
+### 重构（2026-08-21，阶段 3 第 1 步：本地词条移出 rime_ice.dict.yaml）
+- **新增 `schemas/shurufa_ext.dict.yaml`**：把 `rime_ice.dict.yaml` 内联的
+  专业词/生僻字/拆字等本地词条移出，主词典改为 `import_tables` 挂载
+  `shurufa_ext`；Android 构建同步拷贝该文件。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除
