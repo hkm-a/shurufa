@@ -54,6 +54,12 @@
   clip-* / ai / chat / pair* / dict* / retention / 调试命令）改为声明式
   `Parser + Subcommand`，自动生成帮助、参数校验与 `--help`。
 
+### 重构（2026-08-21，换库周第 4 批：tracing 日志）
+- **`shurufa-host` 手写文件日志改用 `tracing + tracing-subscriber`**：`log_line`
+  保留为兼容入口，内部改为 `tracing::info!`；subscriber 用 `Mutex<File>` 写
+  `%TEMP%\shurufa-host.log`（`SHURUFA_LOG_PATH` 可覆盖），删除手写时间戳与
+  每次 `OpenOptions`/`write_all`。`run`/`supervise` 启动时初始化日志。
+
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
   约 1060 行整体删除，候选窗渲染收敛为「D2D + GDI 兜底」两条路径；同步移除

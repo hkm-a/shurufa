@@ -22,30 +22,33 @@ use clap::{Parser, Subcommand};
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore, RetentionPolicy};
 use std::path::PathBuf;
 
-/// 文件日志：常驻进程以最小化/无窗口方式运行，控制台输出不可见，
-/// 排障信息统一落 %TEMP%\shurufa-host.log，失败静默。
-pub fn log_line(msg: &str) {
-    use std::io::Write;
+/// 初始化 tracing 文件日志：常驻进程以最小化/无窗口方式运行，控制台输出
+/// 不可见，排障信息统一落 %TEMP%\shurufa-host.log（可用 SHURUFA_LOG_PATH 覆盖）。
+/// 由 run / supervise 子命令在产生日志前调用。
+pub fn init_logging() {
     let path = std::env::var_os("SHURUFA_LOG_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("shurufa-host.log"));
-    if let Ok(mut f) = std::fs::OpenOptions::new()
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)
+        .open(&path)
     {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let _ = f.write_all(
-            format!(
-                "[{ts}] {msg}
-"
-            )
-            .as_bytes(),
-        );
+        // subscriber 持有 Mutex<File>，文件句柄随全局 subscriber 存活。
+        let writer = std::sync::Mutex::new(file);
+        let _ = tracing_subscriber::fmt()
+            .with_writer(writer)
+            .with_ansi(false)
+            .try_init();
     }
+}
+
+/// 日志入口：保持既有 `crate::log_line(...)` 调用点不变，实际写入交给 tracing。
+pub fn log_line(msg: &str) {
+    tracing::info!("{msg}");
 }
 
 /// shurufa 应用数据目录：%APPDATA%\shurufa（无 APPDATA 时回退临时目录）。
@@ -169,6 +172,7 @@ fn main() {
     match cli.command {
         Command::Run => {
             // 崩溃必须留痕：面板/监听均为回调驱动，控制台通常不可见
+            init_logging();
             hide_own_console();
             // 单实例强制：同一时刻只允许一个 worker。已有实例（如未走
             // supervisor 的手动 run）在跑时直接退出，避免抢端口/热键冲突。
@@ -205,6 +209,7 @@ fn main() {
         }
         Command::Supervise => {
             // 登录自启动进入 supervisor；独占控制台时立即隐藏，避免用户看到黑窗口。
+            init_logging();
             hide_own_console();
             supervis::supervise()
         }
