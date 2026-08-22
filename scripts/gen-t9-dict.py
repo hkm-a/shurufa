@@ -3,7 +3,7 @@
 """9 键 T9 拼音词典生成器（M-A1-2，搜狗安卓 1.40 九宫格 / 8.13 大九键）。
 
 数据源：schemas/cn_dicts/base.dict.yaml（雾凇拼音基础词库，含字/词 + 拼音 + 权重）
-        + others.dict.yaml（杂项，量小）＋ rime_ice.dict.yaml 内联生僻字块。
+        + others.dict.yaml（杂项，量小）＋ shurufa_ext.dict.yaml（本地扩展词条）。
 用法：python scripts/gen-t9-dict.py [仓库根目录]
 输出：schemas/shurufa_t9.dict.yaml —— 词条按"整词 T9 数字串"作为单码索引
       （2abc 3def 4ghi 5jkl 6mno 7pqrs 8tuv 9wxyz，ü/v 并入 u 组）。
@@ -20,7 +20,7 @@ import sys
 # 仓库根目录可由命令行参数指定，避免硬编码本机路径。
 REPO = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 OUT = REPO + '/schemas/shurufa_t9.dict.yaml'
-SOURCE = [REPO + '/schemas/cn_dicts/base.dict.yaml', REPO + '/schemas/cn_dicts/others.dict.yaml']
+SOURCE = [REPO + '/schemas/cn_dicts/base.dict.yaml', REPO + '/schemas/cn_dicts/others.dict.yaml', REPO + '/schemas/shurufa_ext.dict.yaml']
 
 T9 = {}
 for group, letters in enumerate(['abc', 'def', 'ghi', 'jkl', 'mno', 'pqrs', 'tuv', 'wxyz'], start=2):

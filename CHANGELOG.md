@@ -151,6 +151,8 @@
   `git diff --exit-code` 检查三份产物是否与脚本输出一致。
 - **记录 rime-ice 上游 commit SHA**：`rime-ice-2026.06.30.json` 新增
   `upstream_commit = 6810e8916d160498620a16fef2135956fecbd485`。
+- **`gen-t9-dict.py` 纳入 `shurufa_ext.dict.yaml`**：生僻字/拆字等本地扩展
+  词条进入 T9 词典，避免本地词条移出主词典后 T9 丢失这些字。
 
 ### 删除（2026-08-21，换库周同期纯删除）
 - **移除 DirectComposition 第三套候选窗渲染后端**：`candidate_window_dcomp.rs`
