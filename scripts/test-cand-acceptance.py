@@ -127,6 +127,7 @@ def main() -> int:
 
     ok = True
     ok &= run_script("scripts/test-cand-ui.py", args.exe)
+    ok &= run_script("scripts/test-cand-interact.py", args.exe)
     ok &= run_script("scripts/test-cand-faults.py", args.exe)
 
     print_manual_checklist(monitor_count)

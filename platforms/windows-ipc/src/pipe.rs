@@ -115,6 +115,13 @@ impl PipeServer {
         }
     }
 
+    /// 非阻塞探测是否有可读消息（消息模式下一帧一条）。
+    pub fn peek_available(&self) -> bool {
+        let mut available: u32 = 0;
+        let ok = unsafe { PeekNamedPipe(self.handle, None, 0, None, Some(&mut available), None) };
+        ok.is_ok() && available > 0
+    }
+
     /// 读一帧（消息模式一次 ReadFile 收一条完整消息）。
     pub fn read_frame(&self) -> IoResult<Vec<u8>> {
         let mut buf = vec![0u8; MAX_FRAME as usize];

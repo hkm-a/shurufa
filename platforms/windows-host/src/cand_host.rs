@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
@@ -85,10 +86,10 @@ impl std::ops::Deref for SyncPipe {
     }
 }
 
-/// client_id → 连接写端（连接线程登记/注销；主线程发命令时取用）。
-static CONNS: OnceLock<Mutex<HashMap<u32, Arc<SyncPipe>>>> = OnceLock::new();
+/// client_id → 命令发送端（连接线程登记/注销；主线程发命令时投递）。
+static CONNS: OnceLock<Mutex<HashMap<u32, Sender<CandCommand>>>> = OnceLock::new();
 
-fn conns() -> &'static Mutex<HashMap<u32, Arc<SyncPipe>>> {
+fn conns() -> &'static Mutex<HashMap<u32, Sender<CandCommand>>> {
     CONNS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -157,45 +158,67 @@ unsafe fn accept_loop() {
             continue;
         }
         let conn = Arc::new(SyncPipe(server));
-        let conn_for_read = conn.clone();
-        std::thread::spawn(move || serve_connection(conn_for_read));
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || serve_connection(conn, tx, rx));
     }
 }
 
 /// 单连接读循环：事件解码后投递主线程；连接关闭时注销写端。
-unsafe fn serve_connection(conn: Arc<SyncPipe>) {
+unsafe fn serve_connection(
+    conn: Arc<SyncPipe>,
+    tx: Sender<CandCommand>,
+    rx: Receiver<CandCommand>,
+) {
     let mut known_ids: Vec<u32> = Vec::new();
-    while let Ok(frame) = conn.read_frame() {
-        let Ok(event) = decode_cand_event(&frame) else {
-            continue;
-        };
-        let client_id = match &event {
-            CandEvent::Show { client_id, .. } | CandEvent::Hide { client_id } => *client_id,
-        };
-        if !known_ids.contains(&client_id) {
-            known_ids.push(client_id);
-            conns().lock().unwrap().insert(client_id, conn.clone());
-        }
-        let boxed = Box::into_raw(Box::new(event));
-        let ctl = CTL_HWND.load(Ordering::Relaxed);
-        if ctl == 0
-            || PostMessageW(
-                Some(HWND(ctl as *mut _)),
-                WM_APP_CAND_EVENT,
-                WPARAM(0),
-                LPARAM(boxed as isize),
-            )
-            .is_err()
-        {
-            drop(Box::from_raw(boxed));
-            break;
+    loop {
+        // 优先读客户端事件；没有输入时才处理待发命令，避免同一句柄上
+        // 同时阻塞 Read/Write（实测会导致 WriteFile 与 ReadFile 互相等待）。
+        if conn.peek_available() {
+            let frame = match conn.read_frame() {
+                Ok(f) => f,
+                Err(_) => break,
+            };
+            let Ok(event) = decode_cand_event(&frame) else {
+                continue;
+            };
+            let client_id = match &event {
+                CandEvent::Show { client_id, .. } | CandEvent::Hide { client_id } => *client_id,
+            };
+            if !known_ids.contains(&client_id) {
+                known_ids.push(client_id);
+                conns().lock().unwrap().insert(client_id, tx.clone());
+            }
+            let boxed = Box::into_raw(Box::new(event));
+            let ctl = CTL_HWND.load(Ordering::Relaxed);
+            if ctl == 0
+                || PostMessageW(
+                    Some(HWND(ctl as *mut _)),
+                    WM_APP_CAND_EVENT,
+                    WPARAM(0),
+                    LPARAM(boxed as isize),
+                )
+                .is_err()
+            {
+                drop(Box::from_raw(boxed));
+                break;
+            }
+        } else {
+            match rx.try_recv() {
+                Ok(cmd) => {
+                    if let Ok(frame) = encode_cand_command(&cmd) {
+                        let _ = conn.write_frame(&frame);
+                    }
+                }
+                Err(TryRecvError::Empty) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(TryRecvError::Disconnected) => break,
+            }
         }
     }
     let mut map = conns().lock().unwrap();
     for id in &known_ids {
-        if map.get(id).map(|c| Arc::ptr_eq(c, &conn)).unwrap_or(false) {
-            map.remove(id);
-        }
+        map.remove(id);
     }
     // 末次 Hide 投递，避免窗口悬留在屏幕上
     for id in &known_ids {
@@ -219,12 +242,10 @@ fn send_command(cmd: CandCommand) {
         | CandCommand::PageNext { client_id }
         | CandCommand::PagePrev { client_id } => *client_id,
     };
-    let Some(conn) = conns().lock().unwrap().get(&client_id).cloned() else {
+    let Some(tx) = conns().lock().unwrap().get(&client_id).cloned() else {
         return;
     };
-    if let Ok(frame) = encode_cand_command(&cmd) {
-        let _ = conn.write_frame(&frame);
-    }
+    let _ = tx.send(cmd);
 }
 
 // -----------------------------------------------------------------------

@@ -24,6 +24,9 @@
   CI 在 Windows 构建后自动执行。
 - **候选窗故障注入测试**：新增 `scripts/test-cand-faults.py`，覆盖多客户端
   并发候选窗、杀掉 `shurufa-ui` 后候选窗消失、重启后自动恢复；已接入 CI。
+- **候选窗交互自动化**：新增 `scripts/test-cand-interact.py`，自动点击候选
+  第 1 项并断言收到 `Select index=0`，再发滚轮上/下翻断言 `PagePrev/PageNext`；
+  已接入 CI 与验收预检。
 - **S5 前置：全屏回退内置**：TSF 检测前台窗口覆盖虚拟屏 ≥95% 时，即使
   `candidate_window=hosted` 也走内置绘制，避免全屏应用下候选窗被遮挡/闪烁；
   新增 `is_fullscreen_rect` 纯函数测试。
