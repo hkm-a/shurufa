@@ -64,6 +64,8 @@ struct CandView {
     width: i32,
     height: i32,
     caret: POINT,
+    show_tab: bool,
+    tab_label: String,
 }
 
 thread_local! {
@@ -271,12 +273,12 @@ struct RowLayout {
     item_spans: Vec<(i32, i32)>,
 }
 
-fn layout_row(preedit_w: i32, item_widths: &[i32], dpi: u32) -> RowLayout {
+fn layout_row(extra_left_w: i32, preedit_w: i32, item_widths: &[i32], dpi: u32) -> RowLayout {
     let pad = scale(BASE_PADDING, dpi);
     let gap = scale(BASE_GAP, dpi);
     let font_h = scale(BASE_FONT_HEIGHT, dpi);
     let height = font_h + pad * 2;
-    let mut x = pad + preedit_w + if preedit_w > 0 { gap } else { 0 };
+    let mut x = pad + extra_left_w + preedit_w + if extra_left_w + preedit_w > 0 { gap } else { 0 };
     let mut item_spans = Vec::with_capacity(item_widths.len());
     for &w in item_widths {
         item_spans.push((x, w));
@@ -363,9 +365,17 @@ unsafe fn handle_event(event: CandEvent) {
             let (x, y, _cx, _cy) = caret_rect;
             let items = view_items(&context);
             // 布局测量用屏幕 DC + 候选字体（与绘制同字体，宽度才一致）
+            let show_tab = !context.candidates.is_empty()
+                && context.candidates.iter().all(|c| c.text.is_ascii());
+            let tab_label = if show_tab { "EN" } else { "拼" };
             let hdc = GetDC(None);
             let font = cand_font(dpi);
             let old_font = SelectObject(hdc, font.into());
+            let tab_w = if show_tab {
+                text_width(hdc, &format!("[{tab_label}] ")) + scale(BASE_GAP, dpi)
+            } else {
+                0
+            };
             let preedit_w = text_width(hdc, &format!("{} ", context.preedit));
             let item_widths: Vec<i32> = items
                 .iter()
@@ -374,7 +384,7 @@ unsafe fn handle_event(event: CandEvent) {
             SelectObject(hdc, old_font);
             let _ = DeleteObject(font.into());
             ReleaseDC(None, hdc);
-            let layout = layout_row(preedit_w, &item_widths, dpi);
+            let layout = layout_row(tab_w, preedit_w, &item_widths, dpi);
             let view = CandView {
                 client_id,
                 dpi,
@@ -394,6 +404,8 @@ unsafe fn handle_event(event: CandEvent) {
                 width: layout.width,
                 height: layout.height,
                 caret: POINT { x, y },
+                show_tab,
+                tab_label: tab_label.to_owned(),
             };
             let uia_text = view
                 .items
@@ -439,6 +451,8 @@ fn dummy_view(client_id: u32) -> CandView {
         width: 0,
         height: 0,
         caret: POINT::default(),
+        show_tab: false,
+        tab_label: String::new(),
     }
 }
 
@@ -595,10 +609,18 @@ unsafe fn paint(hwnd: HWND, hdc: HDC) {
     SetBkMode(hdc, TRANSPARENT);
 
     let pad = scale(BASE_PADDING, view.dpi);
+    let mut left = pad;
+    // Tab 行（英文联想/拼音标识）
+    if view.show_tab {
+        SetTextColor(hdc, windows::Win32::Foundation::COLORREF(colors.label));
+        let tab = format!("[{}] ", view.tab_label);
+        draw_text_at(hdc, &tab, left, 0, view.height);
+        left += text_width(hdc, &tab) + scale(BASE_GAP, view.dpi);
+    }
     // preedit
     if !view.preedit.is_empty() {
         SetTextColor(hdc, windows::Win32::Foundation::COLORREF(colors.preedit));
-        draw_text_at(hdc, &format!("{} ", view.preedit), pad, 0, view.height);
+        draw_text_at(hdc, &format!("{} ", view.preedit), left, 0, view.height);
     }
     // 候选项：高亮底色 + 序号色 + 正文色
     for (i, item) in view.items.iter().enumerate() {
@@ -667,6 +689,8 @@ fn map_get_clone(
         width: v.width,
         height: v.height,
         caret: v.caret,
+        show_tab: v.show_tab,
+        tab_label: v.tab_label.clone(),
     });
     (found,)
 }
@@ -771,7 +795,7 @@ mod tests {
     #[test]
     fn 单行布局含序号与间距() {
         // 96 DPI：padding 8、gap 10；无 preedit，两项宽 30/50
-        let l = layout_row(0, &[30, 50], 96);
+        let l = layout_row(0, 0, &[30, 50], 96);
         assert_eq!(l.height, 18 + 16);
         assert_eq!(l.item_spans[0].0, 8);
         assert_eq!(l.item_spans[1].0, 8 + 30 + 10);
@@ -780,8 +804,8 @@ mod tests {
 
     #[test]
     fn 高_dpi_等比放大() {
-        let a = layout_row(0, &[30], 96);
-        let b = layout_row(0, &[60], 192);
+        let a = layout_row(0, 0, &[30], 96);
+        let b = layout_row(0, 0, &[60], 192);
         assert_eq!(b.height, a.height * 2);
         assert_eq!(b.width, (a.width as f64 * 2.0) as i32);
     }
