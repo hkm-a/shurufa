@@ -18,6 +18,9 @@
 - **修复 LengthDelimitedCodec 前缀端序回归**：换库周切 tokio-util 后长度
   前缀默认大端，与既有小端线格式不兼容；显式 `.little_endian()` 并加回归
   测试。
+- **候选窗 UI 冒烟测试**：新增 `scripts/test-cand-ui.py`（pywinauto），
+  `shurufa-ui --cand-selftest` 保持候选窗可见约 2 秒供外部断言；CI 在
+  Windows 构建后自动执行。
 - 方案文档状态更新为“S1/S2/S3 已实施，S4/S5 未开始”。
 
 ### 重构（2026-08-22，阶段 3 收尾：schemas 生成物出库）

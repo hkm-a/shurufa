@@ -694,6 +694,9 @@ pub fn selftest() -> i32 {
         let found = FindWindowW(w!("ShurufaCandWin"), None);
         let ok = found.is_ok();
         if ok {
+            // 保持候选窗可见约 2s，供外部 UI 自动化（pywinauto）附加断言。
+            eprintln!("[cand-selftest] 候选窗已显示，保持 2s 供外部检查…");
+            std::thread::sleep(std::time::Duration::from_millis(2000));
             let _ = DestroyWindow(found.unwrap());
             eprintln!("[cand-selftest] 候选窗创建/渲染/寻址全部通过");
             log_line("cand-selftest: 候选窗创建/渲染/寻址全部通过");

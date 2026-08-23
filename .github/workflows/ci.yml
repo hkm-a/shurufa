@@ -90,6 +90,11 @@ jobs:
       # 会直接 panic。此处直接复用打包脚本，避免两套顺序漂移。
       - name: 构建并打包 FOX 安装器
         run: ./scripts/build-installer.ps1
+      - name: 候选窗 UI 冒烟（pywinauto）
+        shell: pwsh
+        run: |
+          python -m pip install --quiet pywinauto
+          python scripts/test-cand-ui.py --exe target\release\shurufa-ui.exe
       - name: 上传安装包与校验和
         uses: actions/upload-artifact@v4
         with:
