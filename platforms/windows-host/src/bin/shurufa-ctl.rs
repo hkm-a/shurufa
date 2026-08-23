@@ -8,6 +8,49 @@ use clipboard_store::ClipboardStore;
 use shurufa_host::{open_store, print_entries};
 use update_core::{should_update, UpdateManifest};
 
+/// 下载文件到本地，边下边在 stderr 显示进度百分比；返回 SHA256（小写 hex）。
+fn download_with_progress(url: &str, out: &str) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    let resp = ureq::get(url)
+        .call()
+        .map_err(|e| format!("下载失败：{e}"))?;
+    let total = resp
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok());
+    let mut reader = resp.into_reader();
+    let mut file = std::fs::File::create(out).map_err(|e| format!("创建本地文件失败：{e}"))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    let mut done: u64 = 0;
+    loop {
+        let n = std::io::Read::read(&mut reader, &mut buf).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        done += n as u64;
+        if let Some(t) = total {
+            if t > 0 {
+                eprint!(
+                    "\r下载进度：{}%",
+                    (done.saturating_mul(100) / t).min(100)
+                );
+            }
+        }
+        hasher.update(&buf[..n]);
+        file.write_all(&buf[..n]).map_err(|e| format!("写入文件失败：{e}"))?;
+    }
+    if total.is_some() {
+        eprintln!();
+    }
+    file.flush().map_err(|e| format!("flush 失败：{e}"))?;
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>())
+}
+
 #[derive(Parser)]
 #[command(name = "shurufa-ctl", about = "Shurufa CLI：历史库/配对/词库管理")]
 struct Cli {
@@ -293,39 +336,19 @@ fn main() {
             std::process::exit(if update { 0 } else { 2 });
         }
         Command::UpdateApply { url, sha256, out } => {
-            use sha2::{Digest, Sha256};
-            use std::io::Write;
             let out = out.unwrap_or_else(|| {
                 let dir = std::env::temp_dir().join("shurufa-update");
                 std::fs::create_dir_all(&dir).expect("创建更新目录失败");
                 dir.join("update.exe").to_string_lossy().to_string()
             });
             println!("下载：{url}");
-            let resp = match ureq::get(&url).call() {
-                Ok(r) => r,
+            let actual = match download_with_progress(&url, &out) {
+                Ok(h) => h,
                 Err(e) => {
-                    eprintln!("下载失败：{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             };
-            let mut reader = resp.into_reader();
-            let mut file = std::fs::File::create(&out).expect("创建本地文件失败");
-            let mut hasher = Sha256::new();
-            let mut buf = [0u8; 8192];
-            loop {
-                let n = std::io::Read::read(&mut reader, &mut buf).unwrap_or(0);
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-                file.write_all(&buf[..n]).expect("写入文件失败");
-            }
-            file.flush().expect("flush 失败");
-            let actual = hasher
-                .finalize()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>();
             println!("已下载：{out}");
             println!("SHA256：{actual}");
             if let Some(expected) = sha256 {
@@ -394,39 +417,19 @@ fn main() {
                 println!("需要更新：{}", info.url);
                 std::process::exit(0);
             }
-            use sha2::{Digest, Sha256};
-            use std::io::Write;
             let out = out.unwrap_or_else(|| {
                 let dir = std::env::temp_dir().join("shurufa-update");
                 std::fs::create_dir_all(&dir).expect("创建更新目录失败");
                 dir.join("update.exe").to_string_lossy().to_string()
             });
             println!("下载：{}", info.url);
-            let resp = match ureq::get(&info.url).call() {
-                Ok(r) => r,
+            let actual = match download_with_progress(&info.url, &out) {
+                Ok(h) => h,
                 Err(e) => {
-                    eprintln!("下载失败：{e}");
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
             };
-            let mut reader = resp.into_reader();
-            let mut file = std::fs::File::create(&out).expect("创建本地文件失败");
-            let mut hasher = Sha256::new();
-            let mut buf = [0u8; 8192];
-            loop {
-                let n = std::io::Read::read(&mut reader, &mut buf).unwrap_or(0);
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-                file.write_all(&buf[..n]).expect("写入文件失败");
-            }
-            file.flush().expect("flush 失败");
-            let actual = hasher
-                .finalize()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>();
             println!("已下载：{out}");
             println!("SHA256：{actual}");
             if !info.sha256.is_empty() && !info.sha256.eq_ignore_ascii_case(&actual) {
