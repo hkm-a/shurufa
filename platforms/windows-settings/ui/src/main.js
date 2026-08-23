@@ -2918,7 +2918,9 @@ async function refreshUpdateStatus() {
       banner.innerHTML = "";
       return;
     }
-    banner.innerHTML = `<div class="hint-card" style="margin-bottom:12px;border-color:var(--coral,#f97316)"><i data-lucide="download-cloud"></i><p><strong>发现新版本</strong>（${escapeHtml(status.channel)}）<br>${escapeHtml(status.detail)}</p></div>`;
+    const target = status.target_version ? `目标版本 ${escapeHtml(status.target_version)}` : "";
+    const channel = status.channel ? `渠道 ${escapeHtml(status.channel)}` : "";
+    banner.innerHTML = `<div class="hint-card" style="margin-bottom:12px;border-color:var(--coral,#f97316)"><i data-lucide="download-cloud"></i><p><strong>发现新版本</strong>${channel ? `（${channel}）` : ""}<br>${target || escapeHtml(status.detail)}</p></div>`;
     if (window.createIcons) createIcons({ icons: controlCenterIcons });
   } catch (_error) {
     // 静默：没有后台状态时不影响设置页

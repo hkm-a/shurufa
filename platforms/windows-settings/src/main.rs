@@ -390,6 +390,7 @@ struct UpdateStatus {
     checked_at: String,
     channel: String,
     detail: String,
+    target_version: String,
 }
 
 /// 读取 shurufa-ui 写出的 update-available.json。
@@ -416,6 +417,11 @@ fn update_status() -> Result<Option<UpdateStatus>, String> {
             .to_owned(),
         detail: v
             .get("detail")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned(),
+        target_version: v
+            .get("target_version")
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_owned(),

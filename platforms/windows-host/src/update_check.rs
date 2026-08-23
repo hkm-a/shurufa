@@ -107,11 +107,17 @@ pub fn run_once() {
     if output.status.success() {
         let dir = app_data_dir();
         let _ = std::fs::create_dir_all(&dir);
+        let target_version = text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("目标版本："))
+            .map(|s| s.trim().to_owned())
+            .unwrap_or_default();
         let state = serde_json::json!({
             "available": true,
             "checked_at": chrono_now_rfc3339(),
             "channel": channel,
             "detail": text,
+            "target_version": target_version,
         });
         let _ = std::fs::write(dir.join("update-available.json"), serde_json::to_string_pretty(&state).unwrap_or_default());
         log_line(&format!("update_check: 发现更新\n{text}"));
