@@ -37,7 +37,7 @@ jobs:
         with:
           toolchain: '1.97.0'
       - name: core 各 crate 在 Linux target 上 cargo check
-        run: cargo check --locked -p shurufa-options -p ime-policy -p ime-ipc -p core-skin -p clipboard-store -p sync-core
+        run: cargo check --locked -p shurufa-options -p ime-policy -p ime-ipc -p core-skin -p clipboard-store -p sync-core -p update-core
 
   windows-build:
     runs-on: windows-latest
