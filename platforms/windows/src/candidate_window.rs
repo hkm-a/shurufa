@@ -6,11 +6,15 @@
 //! - 管道连接/写入失败时静默降级（不弹内置窗，输入本身不受影响）。
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetSystemMetrics, GetWindowRect, WM_APP, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    CreateWindowExW, DefWindowProcW, GetForegroundWindow, GetSystemMetrics, GetWindowRect,
+    PostMessageW, RegisterClassW, WM_APP, WNDCLASSW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
@@ -68,6 +72,11 @@ fn move_highlight_for_menu(index: usize) {
 // ---------------------------------------------------------------------------
 
 pub(crate) const WM_AI_CANDIDATES_READY: u32 = WM_APP + 81;
+/// AI 结果到达后触发 hosted 主动刷新的隐藏窗口消息。
+const WM_APP_AI_REFRESH: u32 = WM_APP + 82;
+const AI_REFRESH_CLASS: PCWSTR = w!("ShurufaAiRefreshHost");
+static AI_REFRESH_HWND: AtomicIsize = AtomicIsize::new(0);
+static CURRENT_UI: AtomicIsize = AtomicIsize::new(0);
 
 type AiCommitFn = Box<dyn Fn(&str) -> bool>;
 thread_local! {
@@ -191,6 +200,100 @@ fn is_foreground_fullscreen() -> bool {
     }
 }
 
+fn build_view_ctx(ctx: &Context) -> Context {
+    let mut view_ctx = ctx.clone();
+    if view_ctx.candidates.is_empty() {
+        let english = crate::english_candidates::suggest(&view_ctx.preedit);
+        if !english.is_empty() {
+            view_ctx.candidates = english
+                .into_iter()
+                .map(|t| Candidate {
+                    text: t,
+                    comment: String::new(),
+                })
+                .collect();
+        }
+    }
+    let ai = crate::ai_candidates::cached(&view_ctx.preedit);
+    if !ai.is_empty() {
+        view_ctx.candidates.extend(
+            ai.into_iter()
+                .map(|t| Candidate {
+                    text: t,
+                    comment: "\u{1F916}".to_owned(),
+                })
+                .take(crate::ai_candidates::MAX_CANDIDATES),
+        );
+    }
+    view_ctx.candidates.truncate(10);
+    view_ctx
+}
+
+pub(crate) fn notify_ai_ready() {
+    let hwnd = AI_REFRESH_HWND.load(Ordering::Relaxed);
+    if hwnd != 0 {
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(hwnd as *mut _)),
+                WM_APP_AI_REFRESH,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    }
+}
+
+unsafe fn refresh_ai_current() {
+    let ptr = CURRENT_UI.load(Ordering::Relaxed);
+    if ptr != 0 {
+        let ui = &mut *(ptr as *mut CandidateUi);
+        ui.refresh_ai();
+    }
+}
+
+unsafe extern "system" fn ai_refresh_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg == WM_APP_AI_REFRESH {
+        refresh_ai_current();
+        return LRESULT(0);
+    }
+    DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+fn create_ai_refresh_window() -> Option<HWND> {
+    unsafe {
+        let hinstance = GetModuleHandleW(PCWSTR::null()).ok()?;
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(ai_refresh_wnd_proc),
+            hInstance: hinstance.into(),
+            lpszClassName: AI_REFRESH_CLASS,
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        let hwnd = CreateWindowExW(
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
+            AI_REFRESH_CLASS,
+            w!(""),
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            Some(hinstance.into()),
+            None,
+        )
+        .ok()?;
+        AI_REFRESH_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
+        Some(hwnd)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CandidateUi：hosted-only。
 // ---------------------------------------------------------------------------
@@ -199,15 +302,26 @@ pub struct CandidateUi {
     cand_client: Option<CandClient>,
     client_id: u32,
     visible: bool,
+    last_caret: (i32, i32, i32, i32),
+    last_dpi: u32,
+    last_multi_line: bool,
+    last_position: String,
 }
 
 impl CandidateUi {
     pub fn new() -> Self {
-        CandidateUi {
+        let ui = CandidateUi {
             cand_client: None,
             client_id: std::process::id(),
             visible: false,
-        }
+            last_caret: (0, 0, 0, 0),
+            last_dpi: 96,
+            last_multi_line: false,
+            last_position: "follow".to_owned(),
+        };
+        CURRENT_UI.store(&ui as *const CandidateUi as *mut CandidateUi as isize, Ordering::Relaxed);
+        let _ = create_ai_refresh_window();
+        ui
     }
 
     /// S3/S5 兼容入口：现在恒为 hosted，忽略参数。
@@ -231,32 +345,7 @@ impl CandidateUi {
         }
 
         // 迁入 hosted：引擎无候选时补英文联想；AI 候选结果从共享缓存合并。
-        let mut view_ctx = ctx.clone();
-        if view_ctx.candidates.is_empty() {
-            let english = crate::english_candidates::suggest(&view_ctx.preedit);
-            if !english.is_empty() {
-                view_ctx.candidates = english
-                    .into_iter()
-                    .map(|t| Candidate {
-                        text: t,
-                        comment: String::new(),
-                    })
-                    .collect();
-            }
-        }
-        let ai = crate::ai_candidates::cached(&view_ctx.preedit);
-        if !ai.is_empty() {
-            view_ctx.candidates.extend(
-                ai.into_iter()
-                    .map(|t| Candidate {
-                        text: t,
-                        comment: "\u{1F916}".to_owned(),
-                    })
-                    .take(crate::ai_candidates::MAX_CANDIDATES),
-            );
-        }
-        // hosted 窗口按 1..9/0 编号，最多显示 10 项
-        view_ctx.candidates.truncate(10);
+        let view_ctx = build_view_ctx(ctx);
 
         if self.cand_client.is_none() {
             self.cand_client = CandClient::connect().ok();
@@ -278,6 +367,10 @@ impl CandidateUi {
                 .is_ok()
             {
                 self.visible = true;
+                self.last_caret = caret;
+                self.last_dpi = dpi;
+                self.last_multi_line = multi_line;
+                self.last_position = position.to_owned();
                 return;
             }
             // 写失败说明管道已失效：丢弃旧客户端，下帧重连。
@@ -296,6 +389,33 @@ impl CandidateUi {
         self.visible = false;
         crate::uia_provider::clear_candidate_text();
         LAST_CTX.with(|c| *c.borrow_mut() = None);
+    }
+
+    /// AI 结果到达后由隐藏窗口消息触发：用最新缓存重推一帧。
+    fn refresh_ai(&mut self) {
+        if !self.visible {
+            return;
+        }
+        let Some(ctx) = last_ctx_clone() else {
+            return;
+        };
+        let view_ctx = build_view_ctx(&ctx);
+        if let Some(client) = &self.cand_client {
+            if client
+                .show(
+                    self.client_id,
+                    &view_ctx,
+                    self.last_caret,
+                    self.last_dpi,
+                    self.last_multi_line,
+                    &self.last_position,
+                )
+                .is_ok()
+            {
+                return;
+            }
+            self.cand_client = None;
+        }
     }
 
     pub fn invalidate(&self) {

@@ -43,6 +43,8 @@ pub fn store_result(preedit: &str, cands: Vec<String>) {
             }
         }
     }
+    // 通知 TSF UI 线程：AI 结果已就绪，立即重推一帧 hosted 候选。
+    crate::candidate_window::notify_ai_ready();
 }
 
 /// 读取当前 preedit 的 AI 候选（TSF UI 线程 show() 调用）；TTL 10s。
