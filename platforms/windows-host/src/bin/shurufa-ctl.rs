@@ -86,6 +86,19 @@ enum Command {
         #[arg(long)]
         current_version: Option<String>,
     },
+    /// 下载安装包、校验 SHA256 并启动安装
+    #[command(name = "update-apply")]
+    UpdateApply {
+        /// 安装包下载地址
+        #[arg(long)]
+        url: String,
+        /// 期望 SHA256（小写 hex）；为空则跳过校验
+        #[arg(long)]
+        sha256: Option<String>,
+        /// 下载到本地路径；默认 %TEMP%\shurufa-update\update.exe
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// 立即执行留存清理
     Retention,
     #[cfg(debug_assertions)]
@@ -254,6 +267,53 @@ fn main() {
                 }
             }
             std::process::exit(if update { 0 } else { 2 });
+        }
+        Command::UpdateApply { url, sha256, out } => {
+            use sha2::{Digest, Sha256};
+            use std::io::Write;
+            let out = out.unwrap_or_else(|| {
+                let dir = std::env::temp_dir().join("shurufa-update");
+                std::fs::create_dir_all(&dir).expect("创建更新目录失败");
+                dir.join("update.exe").to_string_lossy().to_string()
+            });
+            println!("下载：{url}");
+            let resp = match ureq::get(&url).call() {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("下载失败：{e}");
+                    std::process::exit(1);
+                }
+            };
+            let mut reader = resp.into_reader();
+            let mut file = std::fs::File::create(&out).expect("创建本地文件失败");
+            let mut hasher = Sha256::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = std::io::Read::read(&mut reader, &mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                file.write_all(&buf[..n]).expect("写入文件失败");
+            }
+            file.flush().expect("flush 失败");
+            let actual = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            println!("已下载：{out}");
+            println!("SHA256：{actual}");
+            if let Some(expected) = sha256 {
+                if !expected.eq_ignore_ascii_case(&actual) {
+                    eprintln!("SHA256 不匹配：期望 {expected}");
+                    std::process::exit(1);
+                }
+                println!("SHA256 校验通过");
+            }
+            println!("启动安装器…");
+            let _ = std::process::Command::new(&out).spawn();
+            std::process::exit(0);
         }
         Command::Retention => shurufa_host::apply_retention_now(),
         #[cfg(debug_assertions)]
