@@ -3,7 +3,7 @@
 """候选窗单屏手动项“半自动引导”验收。
 
 自动项跑完后，用本脚本引导你逐项完成单屏可测的手动验收：
-- 它会告诉你“打开记事本、输入 nihao、按回车”，然后自动检查候选窗。
+- 它会告诉你“打开 Notepad4、输入 nihao、按回车”，然后自动检查候选窗。
 - 有些步骤需要你肉眼确认（如是否上屏正确），输入 y/n。
 
 用法：
@@ -63,7 +63,7 @@ def main() -> int:
     print("请按提示操作；每步完成后按 Enter。")
 
     # A1 hosted 显示
-    wait_enter("1. 请打开记事本，输入 nihao，应出现 hosted 候选窗")
+    wait_enter("1. 请打开 Notepad4，输入 nihao，应出现 hosted 候选窗")
     hosted = find_class(HOSTED_CLASS)
     ok = len(hosted) > 0 and any("你好" in window_title(h) for h in hosted)
     record("A1 hosted 候选窗显示且含「你好」", ok)
@@ -86,11 +86,11 @@ def main() -> int:
     record("A5 Esc 取消后候选窗隐藏", ask("按 Esc 后候选窗是否隐藏/消失？"))
 
     # B1 杀 ui 回退内置
-    print("\n下一步会自动杀掉 shurufa-ui.exe，然后你在记事本继续输入 nihao。")
+    print("\n下一步会自动杀掉 shurufa-ui.exe，然后你在 Notepad4 继续输入 nihao。")
     input("准备好了按 Enter...")
     subprocess.run(["taskkill", "/F", "/IM", "shurufa-ui.exe"], capture_output=True)
     time.sleep(0.5)
-    wait_enter("5. 现在请在记事本再输入 nihao，应回退为内置候选窗")
+    wait_enter("5. 现在请在 Notepad4 再输入 nihao，应回退为内置候选窗")
     builtin = find_class(BUILTIN_CLASS)
     record("B1 杀掉 ui 后回退内置候选窗", len(builtin) > 0)
 
@@ -102,12 +102,12 @@ def main() -> int:
     record("B2 重启 ui 后恢复 hosted 候选窗", len(hosted) > 0)
 
     # C1 两个编辑器
-    wait_enter("7. 请打开两个记事本，分别输入拼音，应出现两个 hosted 候选窗")
+    wait_enter("7. 请打开两个 Notepad4，分别输入拼音，应出现两个 hosted 候选窗")
     hosted = find_class(HOSTED_CLASS)
     record("C1 两个编辑器多客户端不串台", len(hosted) >= 2)
 
-    # E1 管理员记事本
-    wait_enter("8. 请用管理员身份打开记事本，输入 nihao")
+    # E1 管理员 Notepad4
+    wait_enter("8. 请用管理员身份打开 Notepad4，输入 nihao")
     hosted = find_class(HOSTED_CLASS)
     record("E1 管理员应用 hosted 可用", len(hosted) > 0)
 
