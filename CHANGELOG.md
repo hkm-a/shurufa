@@ -32,6 +32,8 @@
 - **管道断开清理自动化**：新增 `scripts/test-cand-disconnect.py`，客户端断开
   后旧候选窗隐藏、新客户端可恢复；修复 `peek_available` 返回 `Result` 以检测
   断管；已接入 CI 与验收预检。
+- **候选窗全量一键跑**：新增 `scripts/run-cand-all.py`，一条命令依次执行
+  Rust 单测、管道 e2e、UI 冒烟、交互、故障注入、稳定性、断开清理。
 - **S5 前置：全屏回退内置**：TSF 检测前台窗口覆盖虚拟屏 ≥95% 时，即使
   `candidate_window=hosted` 也走内置绘制，避免全屏应用下候选窗被遮挡/闪烁；
   新增 `is_fullscreen_rect` 纯函数测试。
