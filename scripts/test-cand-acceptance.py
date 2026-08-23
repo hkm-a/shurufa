@@ -129,6 +129,7 @@ def main() -> int:
     ok &= run_script("scripts/test-cand-ui.py", args.exe)
     ok &= run_script("scripts/test-cand-interact.py", args.exe)
     ok &= run_script("scripts/test-cand-faults.py", args.exe)
+    ok &= run_script("scripts/test-cand-stability.py", args.exe)
 
     print_manual_checklist(monitor_count)
     print("\n自动项结果:", "全部通过" if ok else "存在失败")
