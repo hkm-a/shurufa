@@ -7,9 +7,11 @@
 //!
 //! hosted 是灰度开关，默认 builtin；连接失败或管道断开时调用方回退内置绘制。
 
+use std::io;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use ime_ipc::{decode_cand_command, encode_cand_event, CandCommand, CandEvent, Context};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -78,26 +80,35 @@ impl CandClient {
 /// 命令读取线程：ui 点击/滚轮回发命令后，在本进程合成虚拟键。
 /// 失败静默：管道断开即退出，调用方下次 show 会重连/回退。
 fn read_commands(pipe: Arc<SyncPipeClient>) {
-    while let Ok(frame) = pipe.read_frame() {
-        let Ok(cmd) = decode_cand_command(&frame) else {
-            continue;
-        };
-        match cmd {
-            CandCommand::Select { index, .. } => unsafe {
-                // 与候选窗数字选词一致：1..9 选前 9 项，0 选第 10 项。
-                let vk = if index < 9 {
-                    0x31 + index as u16 // VK_1..VK_9
-                } else {
-                    0x30 // VK_0
+    // 注意：不能在这里用阻塞 ReadFile 长占管道读端；同一客户端句柄上
+    // 并发阻塞 Read + Write 会在少量帧后互相等待（实测 hosted 模式敲到
+    // 第 3 个字母就卡死）。改用 PeekNamedPipe 轮询，空闲时不占 ReadFile。
+    loop {
+        match pipe.read_frame_timeout(Duration::from_millis(200)) {
+            Ok(frame) => {
+                let Ok(cmd) = decode_cand_command(&frame) else {
+                    continue;
                 };
-                send_virtual_key(vk as u8);
-            },
-            CandCommand::PageNext { .. } => unsafe {
-                send_virtual_key(0x22); // VK_NEXT = PageDown
-            },
-            CandCommand::PagePrev { .. } => unsafe {
-                send_virtual_key(0x21); // VK_PRIOR = PageUp
-            },
+                match cmd {
+                    CandCommand::Select { index, .. } => unsafe {
+                        // 与候选窗数字选词一致：1..9 选前 9 项，0 选第 10 项。
+                        let vk = if index < 9 {
+                            0x31 + index as u16 // VK_1..VK_9
+                        } else {
+                            0x30 // VK_0
+                        };
+                        send_virtual_key(vk as u8);
+                    },
+                    CandCommand::PageNext { .. } => unsafe {
+                        send_virtual_key(0x22); // VK_NEXT = PageDown
+                    },
+                    CandCommand::PagePrev { .. } => unsafe {
+                        send_virtual_key(0x21); // VK_PRIOR = PageUp
+                    },
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => continue,
+            Err(_) => break,
         }
     }
 }

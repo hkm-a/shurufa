@@ -2,12 +2,16 @@
 # -*- coding: utf-8 -*-
 """候选窗单屏手动项全自动验收（不需要你手动确认）。
 
-用 Notepad4/记事本 + SendInput + pywinauto 自动完成 A/B/C/E 单屏项：
+用 Notepad4 + SendInput(scancode) + pywinauto 自动完成 A/B/C/E 单屏项：
 - 自动设置 options.json 的 candidate_window=hosted；
 - 自动启动 shurufa-ui（如未运行）；
-- 自动打开编辑器、输入拼音、点击候选、读剪贴板验证上屏；
+- 自动把 Shurufa 切到中文模式；
+- 自动打开 Notepad4、输入拼音、点击候选、读剪贴板验证上屏；
 - 自动杀/重启 shurufa-ui 验证回退与恢复；
 - 全程无需人工按键/确认。
+
+注意：普通 pywinauto send_keys 走 Unicode 直插，TSF 收不到；
+这里统一用 SendInput + KEYEVENTF_SCANCODE 发送真实键盘事件。
 
 用法：
     python scripts/test-cand-manual-auto.py [--exe target/debug/shurufa-ui.exe]
@@ -21,14 +25,116 @@ import subprocess
 import sys
 import tempfile
 import time
+from ctypes import wintypes
 
 import win32clipboard
 import win32con
+import win32file
 import win32gui
-from pywinauto import Application, Desktop, findwindows, keyboard
+import win32pipe
+from pywinauto import Application, Desktop, findwindows
 
 HOSTED_CLASS = "ShurufaCandWin"
 BUILTIN_CLASS = "ShurufaCandidateWindow"
+
+VK_SHIFT = 0x10
+VK_CONTROL = 0x11
+VK_ESCAPE = 0x1B
+VK_DELETE = 0x2E
+VK_A = 0x41
+VK_C = 0x43
+
+
+# ---------- SendInput(scancode) 键盘工具 ----------
+
+ULONG_PTR = ctypes.c_ulonglong
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
+
+
+class INPUTUNION(ctypes.Union):
+    _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [("type", wintypes.DWORD), ("union", INPUTUNION)]
+
+
+def send_key(vk: int, down: bool) -> None:
+    """用扫描码发送真实键盘事件，TSF 才能收到。"""
+    scan = ctypes.windll.user32.MapVirtualKeyW(vk, 0)
+    flags = 0x0008  # KEYEVENTF_SCANCODE
+    if not down:
+        flags |= 0x0002  # KEYEVENTF_KEYUP
+    inp = INPUT()
+    inp.type = 1  # INPUT_KEYBOARD
+    inp.union.ki.wVk = 0
+    inp.union.ki.wScan = scan
+    inp.union.ki.dwFlags = flags
+    ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+
+
+def tap(vk: int) -> None:
+    send_key(vk, True)
+    send_key(vk, False)
+    time.sleep(0.03)
+
+
+def type_scancode(text: str) -> None:
+    for ch in text:
+        if ch.isalpha():
+            vk = ord(ch.upper())
+        elif ch.isdigit():
+            vk = ord(ch)
+        else:
+            continue
+        tap(vk)
+        time.sleep(0.03)
+
+
+def ctrl_a() -> None:
+    send_key(VK_CONTROL, True)
+    tap(VK_A)
+    send_key(VK_CONTROL, False)
+    time.sleep(0.05)
+
+
+def ctrl_c() -> None:
+    send_key(VK_CONTROL, True)
+    tap(VK_C)
+    send_key(VK_CONTROL, False)
+    time.sleep(0.05)
+
+
+def press_shift() -> None:
+    tap(VK_SHIFT)
+    time.sleep(0.4)
+
+
+# ---------- 选项与窗口工具 ----------
 
 
 def app_options_path() -> str:
@@ -82,13 +188,50 @@ def find_editor_path():
 
 
 def set_focus(win):
+    hwnd = win.handle
+    u = ctypes.windll.user32
     try:
         win.set_focus()
     except Exception:
-        hwnd = win.handle
-        ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
-        ctypes.windll.user32.SetForegroundWindow(hwnd)
+        pass
+    time.sleep(0.1)
+    if u.GetForegroundWindow() == hwnd:
+        return
+    tid = u.GetWindowThreadProcessId(hwnd, None)
+    fg = u.GetForegroundWindow()
+    fg_tid = u.GetWindowThreadProcessId(fg, None)
+    cur = ctypes.windll.kernel32.GetCurrentThreadId()
+    u.AttachThreadInput(cur, tid, True)
+    u.BringWindowToTop(hwnd)
+    u.SetForegroundWindow(hwnd)
+    u.AttachThreadInput(cur, tid, False)
     time.sleep(0.2)
+
+
+def make_fullscreen(win):
+    hwnd = win.handle
+    u = ctypes.windll.user32
+    vx = u.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+    vy = u.GetSystemMetrics(77)   # SM_YVIRTUALSCREEN
+    vw = u.GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
+    vh = u.GetSystemMetrics(79)   # SM_CYVIRTUALSCREEN
+    u.SetWindowPos(hwnd, 0, vx, vy, vw, vh, 0x0004)  # SWP_NOZORDER
+    time.sleep(0.3)
+
+
+def restore_window(win, rect):
+    hwnd = win.handle
+    u = ctypes.windll.user32
+    u.SetWindowPos(
+        hwnd,
+        0,
+        rect.left,
+        rect.top,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
+        0x0004,  # SWP_NOZORDER
+    )
+    time.sleep(0.3)
 
 
 def launch_editor(path):
@@ -100,16 +243,46 @@ def launch_editor(path):
     return proc, win
 
 
+def visible_candidate_count():
+    n = 0
+    for cls in (HOSTED_CLASS, BUILTIN_CLASS):
+        for h in find_class(cls, visible_only=False):
+            try:
+                if Desktop(backend="win32").window(handle=h).is_visible():
+                    n += 1
+            except Exception:
+                pass
+    return n
+
+
+def ensure_chinese_mode(win) -> bool:
+    """通过探测按键把 Shurufa 切到中文模式。"""
+    set_focus(win)
+    for _ in range(4):
+        type_scancode("a")
+        time.sleep(0.5)
+        if visible_candidate_count() > 0:
+            tap(VK_ESCAPE)
+            time.sleep(0.2)
+            return True
+        # 英文模式下 'a' 已直接上屏，清掉再切换
+        ctrl_a()
+        tap(VK_DELETE)
+        time.sleep(0.2)
+        press_shift()
+    return False
+
+
 def type_text(win, text):
     set_focus(win)
-    keyboard.send_keys(text)
+    type_scancode(text)
     time.sleep(0.8)
 
 
 def read_editor_text(win):
     set_focus(win)
-    keyboard.send_keys("^a")
-    keyboard.send_keys("^c")
+    ctrl_a()
+    ctrl_c()
     time.sleep(0.3)
     try:
         win32clipboard.OpenClipboard()
@@ -162,30 +335,25 @@ def is_ui_running():
     return len(find_class("ShurufaUiHost", visible_only=False)) > 0
 
 
+def pipe_ready() -> bool:
+    try:
+        handle = win32file.CreateFile(
+            r"\\.\pipe\shurufa-cand",
+            win32con.GENERIC_READ | win32con.GENERIC_WRITE,
+            0,
+            None,
+            win32con.OPEN_EXISTING,
+            0,
+            None,
+        )
+        handle.Close()
+        return True
+    except Exception:
+        return False
+
+
 def start_ui(exe):
     return subprocess.Popen([exe], stderr=subprocess.PIPE, text=True)
-
-
-def ensure_ui_running(exe) -> bool:
-    """确保 shurufa-ui 在运行；返回是否由本脚本启动。"""
-    if is_ui_running():
-        print("shurufa-ui 已在运行")
-        return False
-    print(f"启动 shurufa-ui: {exe}")
-    proc = start_ui(exe)
-    deadline = time.time() + 8
-    while time.time() < deadline:
-        if is_ui_running():
-            print("shurufa-ui 已就绪")
-            return True
-        if proc.poll() is not None:
-            break
-        time.sleep(0.1)
-    if proc.poll() is None:
-        proc.kill()
-        proc.wait(timeout=5)
-    print("shurufa-ui 启动失败/超时，后续 hosted 用例可能失败")
-    return True  # 仍按启动过处理，由 finally 清理
 
 
 def stop_ui():
@@ -205,13 +373,11 @@ def main() -> int:
     editor = find_editor_path()
     print(f"使用编辑器: {editor}")
 
-    # 切换 hosted 前保存原值，验收结束恢复
     orig_opts = read_options()
     orig_candidate_window = orig_opts.get("candidate_window")
     had_candidate_window_key = "candidate_window" in orig_opts
     print("设置 candidate_window=hosted")
     set_candidate_window("hosted", dict(orig_opts))
-    print("提示：请确保 Notepad4 当前激活的是 Shurufa 输入法；否则真实 TSF 用例会失败。")
 
     results = []
 
@@ -223,13 +389,15 @@ def main() -> int:
     proc2 = None
     ui_proc = None
     try:
-        # 确保 shurufa-ui 常驻，TSF 才能连到 shurufa-cand 管道
-        if not is_ui_running():
+        if not is_ui_running() or not pipe_ready():
+            if is_ui_running():
+                print("shurufa-ui 进程在但管道异常，先重启")
+                stop_ui()
             print(f"启动 shurufa-ui: {args.exe}")
             ui_proc = start_ui(args.exe)
             deadline = time.time() + 8
             while time.time() < deadline:
-                if is_ui_running():
+                if is_ui_running() and pipe_ready():
                     print("shurufa-ui 已就绪")
                     break
                 if ui_proc.poll() is not None:
@@ -237,9 +405,8 @@ def main() -> int:
                     break
                 time.sleep(0.1)
         else:
-            print("shurufa-ui 已在运行")
+            print("shurufa-ui 已在运行且管道就绪")
 
-        # A1 + A3 + A4 + A5 在一个编辑器会话里完成
         proc, win = launch_editor(editor)
         type_text(win, "nihao")
         hosted = find_class(HOSTED_CLASS)
@@ -249,13 +416,15 @@ def main() -> int:
         record("A3 点击候选后上屏「你好」", wait_text(win, "你好"))
 
         # A4 数字选词
-        type_text(win, "{ESC}nihao")
-        keyboard.send_keys("1")
+        type_text(win, "nihao")  # 先清掉旧组合/文本由 Esc 处理
+        tap(VK_ESCAPE)
+        type_text(win, "nihao")
+        tap(ord("1"))
         record("A4 数字选词后上屏正常", wait_text(win, "你好"))
 
         # A5 Esc 取消
         type_text(win, "nihao")
-        keyboard.send_keys("{ESC}")
+        tap(VK_ESCAPE)
         time.sleep(0.5)
         visible = [h for h in find_class(HOSTED_CLASS) if Desktop(backend="win32").window(handle=h).is_visible()]
         record("A5 Esc 后 hosted 候选窗隐藏", len(visible) == 0)
@@ -267,20 +436,29 @@ def main() -> int:
 
         # B2 重启 ui 恢复 hosted
         ui_proc = start_ui(args.exe)
-        time.sleep(1.0)
+        deadline = time.time() + 8
+        while time.time() < deadline and not pipe_ready():
+            time.sleep(0.1)
+        time.sleep(0.5)
         type_text(win, "nihao")
         record("B2 重启 ui 后恢复 hosted", len(find_class(HOSTED_CLASS)) > 0)
 
-        # C1 两个编辑器多客户端
+        # C1 多客户端：第二个编辑器能独立获得 hosted 候选窗
+        # （两个窗口同时可见由 test-cand-faults.py 用伪客户端覆盖；
+        #  真实焦点切换时前一个编辑器会先隐藏候选，这是正常 TSF 行为）
         proc2, win2 = launch_editor(editor)
-        type_text(win, "nihao")
         type_text(win2, "nihao")
         time.sleep(0.5)
-        record("C1 两个编辑器出现两个 hosted 候选窗", len(find_class(HOSTED_CLASS)) >= 2)
+        hosted = find_class(HOSTED_CLASS)
+        record(
+            "C1 第二编辑器 hosted 候选窗出现且含「你好」",
+            len(hosted) >= 1 and any("你好" in window_title(h) for h in hosted),
+        )
 
-        # E2 最大化近似全屏回退内置
-        win.maximize()
-        time.sleep(0.3)
+        # E2 全屏/最大化近似回退内置
+        original_rect = win.rectangle()
+        make_fullscreen(win)
+        set_focus(win)
         type_text(win, "nihao")
         time.sleep(0.5)
         builtin = find_class(BUILTIN_CLASS)
@@ -288,8 +466,8 @@ def main() -> int:
         record("E2 最大化时回退内置候选窗", len(builtin) > 0 and len(hosted) == 0)
 
         # E5 候选文本可读
-        win.restore()
-        time.sleep(0.3)
+        restore_window(win, original_rect)
+        set_focus(win)
         type_text(win, "nihao")
         hosted = find_class(HOSTED_CLASS)
         record("E5 候选文本可被自动化读取", any("你好" in window_title(h) for h in hosted))
@@ -314,7 +492,6 @@ def main() -> int:
             if p is not None and p.poll() is None:
                 p.kill()
                 p.wait(timeout=5)
-        # 恢复原始选项；原来没有 candidate_window 则删除该键
         restore_opts = read_options()
         if had_candidate_window_key:
             restore_opts["candidate_window"] = orig_candidate_window

@@ -1316,7 +1316,10 @@ impl CandidateUi {
         // S5 前置：全屏/无边框最大化应用回退内置，避免候选窗被遮挡/闪烁。
         if self.hosted && !is_foreground_fullscreen() {
             if self.cand_client.is_none() {
-                self.cand_client = crate::cand_client::CandClient::connect().ok();
+                match crate::cand_client::CandClient::connect() {
+                    Ok(client) => self.cand_client = Some(client),
+                    Err(e) => crate::debug_log(&format!("hosted cand connect failed: {e}")),
+                }
             }
             if let Some(client) = &self.cand_client {
                 let dpi = unsafe { GetDpiForSystem().max(96) }.max(96);
@@ -1324,11 +1327,16 @@ impl CandidateUi {
                     Some(p) => (p.x, p.y, 0, 0),
                     None => (0, 0, 0, 0),
                 };
-                let _ = client.show(self.client_id, ctx, caret, dpi);
-                self.visible = true;
-                return;
+                if let Err(e) = client.show(self.client_id, ctx, caret, dpi) {
+                    crate::debug_log(&format!("hosted cand show failed: {e}; fallback builtin"));
+                    // 写失败说明管道已失效：丢弃旧客户端，走下方内置回退。
+                    self.cand_client = None;
+                } else {
+                    self.visible = true;
+                    return;
+                }
             }
-            // 连接失败：回退内置绘制路径。
+            // 连接失败/写失败：回退内置绘制路径。
         }
         let Some(hwnd) = self.ensure_window() else {
             return;
@@ -1446,7 +1454,9 @@ impl CandidateUi {
         // S3 hosted：通知独立进程隐藏；若此前曾回退内置，下面仍会隐藏内置窗。
         if self.hosted {
             if let Some(client) = &self.cand_client {
-                let _ = client.hide(self.client_id);
+                if client.hide(self.client_id).is_err() {
+                    self.cand_client = None;
+                }
             }
         }
         self.shadow.hide();
