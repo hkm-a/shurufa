@@ -5,7 +5,7 @@
 //! - 下行：读 `CandCommand`（Select/PageNext/PagePrev），用 SendInput 合成
 //!   虚拟键，重走 TSF 正常按键路径（数字选词/翻页拦截全部生效）。
 //!
-//! hosted 是灰度开关，默认 builtin；连接失败或管道断开时调用方回退内置绘制。
+//! S5 起 hosted 为默认路径；连接失败或管道断开时调用方回退内置绘制。
 
 use std::io;
 use std::ops::Deref;

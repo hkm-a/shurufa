@@ -85,9 +85,9 @@ pub struct ImeOptions {
     /// 约 2 秒内生效。多行布局随 M7 逐步落地，选项层先行。
     #[serde(default = "default_candidate_panel_mode")]
     pub candidate_panel_mode: String,
-    /// 候选窗渲染路径（S3，2026-08-23）：builtin（默认，TSF 进程内绘制）/
+    /// 候选窗渲染路径（S3，2026-08-23）：builtin（TSF 进程内绘制）/
     /// hosted（候选 UI 迁入 shurufa-ui 独立进程，经 shurufa-cand 管道）。
-    /// hosted 为灰度开关，默认 builtin；管道故障时 TSF 侧自动回退内置。
+    /// S5 起默认 hosted；管道故障/全屏时 TSF 侧自动回退内置。
     #[serde(default = "default_candidate_window")]
     pub candidate_window: String,
     /// 按应用选项（weasel app_options 同款，2026-08-17 引入）：进程名
@@ -178,9 +178,9 @@ pub fn validate_candidate_panel_mode(s: &str) -> bool {
     matches!(s, "single" | "multi")
 }
 
-/// 候选窗渲染路径默认值：内置绘制（灰度开关默认不启用 hosted）。
+/// 候选窗渲染路径默认值：S5 起默认 hosted；内置绘制仅作 fallback。
 pub fn default_candidate_window() -> String {
-    "builtin".to_owned()
+    "hosted".to_owned()
 }
 
 /// 候选窗渲染路径合法值："builtin"（TSF 进程内绘制）| "hosted"（独立进程）。
