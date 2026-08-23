@@ -1813,6 +1813,36 @@ function generalPage() {
       </article>
 
       <article class="setting-panel">
+        <div class="panel-heading"><div class="row-icon teal"><i data-lucide="download-cloud"></i></div><div><h3>更新</h3><p>从 update.json 检查并应用灰度更新</p></div></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="link"></i></div>
+          <div>
+            <h3>update.json 地址</h3>
+            <input type="text" id="update-url" value="https://example.com/update.json" placeholder="https://example.com/update.json" />
+            <p class="field-note">由发布管道生成，含 stable / canary 渠道与灰度比例</p>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="git-branch"></i></div>
+          <div><h3>渠道</h3><p>stable / canary / beta</p></div>
+          <div class="row-side"><select id="update-channel"><option value="stable">stable</option><option value="canary">canary</option><option value="beta">beta</option></select></div>
+        </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="refresh-cw"></i></div>
+          <div>
+            <h3>检查更新</h3>
+            <p id="update-result">尚未检查</p>
+          </div>
+          <div class="row-side">
+            <button class="outline-action" data-action="check-update"><i data-lucide="search"></i>检查</button>
+            <button class="outline-action" data-action="apply-update"><i data-lucide="download"></i>应用</button>
+          </div>
+        </div>
+      </article>
+
+      <article class="setting-panel">
         <div class="panel-heading"><div class="row-icon coral"><i data-lucide="palette"></i></div><div><h3>皮肤</h3><p>皮肤目录由 SSOT 决定，此字段保留给后续版本</p></div></div>
         <div class="setting-row">
           <div class="row-icon dim"><i data-lucide="folder-open"></i></div>
@@ -3061,8 +3091,33 @@ async function handleAction(button) {
       "clear-history": ["clear_unpinned_history", undefined, "已清空未置顶历史"],
       "refresh-history": [undefined, undefined, "历史已刷新"],
       "retry-sync-activity": ["retry_sync_activity", { id }, "重试已提交，host 数秒内执行", 3200],
+      "check-update": [undefined, undefined, undefined],
+      "apply-update": [undefined, undefined, undefined],
       refresh: [undefined, undefined, "后台状态已刷新"]
     };
+    if (action === 'check-update' || action === 'apply-update') {
+      const url = (document.querySelector('#update-url')?.value || '').trim();
+      const channel = document.querySelector('#update-channel')?.value || 'stable';
+      const resultEl = document.querySelector('#update-result');
+      if (!url) { showToast('请先填写 update.json 地址', true); return; }
+      try {
+        if (action === 'check-update') {
+          const text = await invoke('check_update', { url, channel });
+          if (resultEl) resultEl.textContent = text;
+          showToast('检查完成');
+        } else {
+          const text = await invoke('apply_update', { url, channel, silent: true });
+          if (resultEl) resultEl.textContent = text;
+          showToast('已启动更新');
+        }
+      } catch (error) {
+        showToast(String(error), true);
+        if (resultEl) resultEl.textContent = String(error);
+      } finally {
+        button.disabled = false;
+      }
+      return;
+    }
     if (action === 'pair-start') {
       const ip = (document.querySelector('#pair-ip')?.value || '').trim();
       if (!ip) { showToast('请输入对方设备 IP', true); return; }

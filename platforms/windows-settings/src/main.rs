@@ -318,6 +318,70 @@ fn retry_sync_activity(id: u64) -> Result<String, String> {
     Ok("重试已提交，host 数秒内执行".to_owned())
 }
 
+
+fn ctl_path() -> Result<std::path::PathBuf, String> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("shurufa-ctl.exe")))
+        .filter(|p| p.exists())
+        .ok_or_else(|| "未找到 shurufa-ctl.exe（控制中心应部署在 ProgramData\\shurufa）".to_owned())
+}
+
+/// 检查更新：调用 shurufa-ctl update --check-only，返回其 stdout。
+#[tauri::command]
+fn check_update(url: String, channel: Option<String>) -> Result<String, String> {
+    let ctl = ctl_path()?;
+    let mut cmd = Command::new(ctl);
+    cmd.args(["update", "--url", &url, "--check-only"]);
+    if let Some(ch) = channel {
+        if !ch.is_empty() {
+            cmd.args(["--channel", &ch]);
+        }
+    }
+    let output = cmd.output().map_err(|e| format!("执行 shurufa-ctl 失败：{e}"))?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if output.status.success() {
+        Ok(text)
+    } else if output.status.code() == Some(2) {
+        Ok(format!("{text}\n当前无需更新"))
+    } else {
+        Err(format!(
+            "检查更新失败（exit={:?}）：{}\n{}",
+            output.status.code(),
+            text,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+/// 应用更新：调用 shurufa-ctl update（下载+校验+启动安装器）。
+#[tauri::command]
+fn apply_update(url: String, channel: Option<String>, silent: bool) -> Result<String, String> {
+    let ctl = ctl_path()?;
+    let mut cmd = Command::new(ctl);
+    cmd.args(["update", "--url", &url]);
+    if let Some(ch) = channel {
+        if !ch.is_empty() {
+            cmd.args(["--channel", &ch]);
+        }
+    }
+    if silent {
+        cmd.arg("--silent");
+    }
+    let output = cmd.output().map_err(|e| format!("执行 shurufa-ctl 失败：{e}"))?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(format!(
+            "应用更新失败（exit={:?}）：{}\n{}",
+            output.status.code(),
+            text,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // M10 交互式配对向导：settings ↔ host 通过 pair-prompt.json /
 // pair-confirm.json / pair-result.json 文件交互（host pair-ui 发起端）。
@@ -2462,6 +2526,8 @@ fn main() {
             remove_peer,
             sync_activity,
             retry_sync_activity,
+            check_update,
+            apply_update,
             pair_ui_start,
             pair_ui_state,
             pair_ui_confirm,
