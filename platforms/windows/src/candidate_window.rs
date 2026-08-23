@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
-use ime_ipc::Context;
+use ime_ipc::{Candidate, Context};
 
 use crate::cand_client::CandClient;
 
@@ -205,6 +205,34 @@ impl CandidateUi {
             return;
         }
 
+        // 迁入 hosted：引擎无候选时补英文联想；AI 候选结果从共享缓存合并。
+        let mut view_ctx = ctx.clone();
+        if view_ctx.candidates.is_empty() {
+            let english = crate::english_candidates::suggest(&view_ctx.preedit);
+            if !english.is_empty() {
+                view_ctx.candidates = english
+                    .into_iter()
+                    .map(|t| Candidate {
+                        text: t,
+                        comment: String::new(),
+                    })
+                    .collect();
+            }
+        }
+        let ai = crate::ai_candidates::cached(&view_ctx.preedit);
+        if !ai.is_empty() {
+            view_ctx.candidates.extend(
+                ai.into_iter()
+                    .map(|t| Candidate {
+                        text: t,
+                        comment: "\u{1F916}".to_owned(),
+                    })
+                    .take(crate::ai_candidates::MAX_CANDIDATES),
+            );
+        }
+        // hosted 窗口按 1..9/0 编号，最多显示 10 项
+        view_ctx.candidates.truncate(10);
+
         if self.cand_client.is_none() {
             self.cand_client = CandClient::connect().ok();
         }
@@ -214,7 +242,7 @@ impl CandidateUi {
                 Some(p) => (p.x, p.y, 0, 0),
                 None => (0, 0, 0, 0),
             };
-            if client.show(self.client_id, ctx, caret, dpi).is_ok() {
+            if client.show(self.client_id, &view_ctx, caret, dpi).is_ok() {
                 self.visible = true;
                 return;
             }

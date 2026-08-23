@@ -12,15 +12,10 @@
 //! 在 800ms 停顿窗口内取最后一条 → 调 agnès（8s 超时）→ 结果经
 //! PostMessage 回到候选窗 UI 线程（WM_AI_CANDIDATES_READY）刷新布局。
 
-use std::ffi::c_void;
+use std::collections::HashMap;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
-
-use crate::candidate_window::WM_AI_CANDIDATES_READY;
 
 pub const MAX_CANDIDATES: usize = 3;
 pub const TIMEOUT_MS: u64 = 8_000;
@@ -28,6 +23,38 @@ pub const CACHE_TTL_MS: u64 = 10_000;
 pub const DEBOUNCE_MS: u64 = 800;
 /// 候选行保留给引擎候选的数量；AI 候选排在其后（合计不超过 9）。
 pub const RIME_KEEP: usize = 6;
+
+/// AI 结果跨线程缓存：worker 线程写入，TSF UI 线程 show() 时读取合并。
+static AI_CACHE: OnceLock<Mutex<HashMap<String, (Vec<String>, Instant)>>> = OnceLock::new();
+
+fn ai_cache() -> &'static Mutex<HashMap<String, (Vec<String>, Instant)>> {
+    AI_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 写入 AI 候选结果（worker 线程调用）。
+pub fn store_result(preedit: &str, cands: Vec<String>) {
+    if let Ok(mut map) = ai_cache().lock() {
+        map.insert(preedit.to_owned(), (cands, Instant::now()));
+        if map.len() > 64 {
+            // 简单 FIFO 上限保护：移除最早一条（HashMap 无序，按插入序不可靠；
+            // 实际量小，仅防极端泄漏）
+            if let Some(k) = map.keys().next().cloned() {
+                map.remove(&k);
+            }
+        }
+    }
+}
+
+/// 读取当前 preedit 的 AI 候选（TSF UI 线程 show() 调用）；TTL 10s。
+pub fn cached(preedit: &str) -> Vec<String> {
+    let Ok(map) = ai_cache().lock() else {
+        return Vec::new();
+    };
+    map.get(preedit)
+        .filter(|(_, at)| at.elapsed() < Duration::from_millis(CACHE_TTL_MS))
+        .map(|(cands, _)| cands.clone())
+        .unwrap_or_default()
+}
 
 /// AI 候选是否应跳过：纯辅音串（拼音简拼缩写如 "lwyg"）或过短（<2）时
 /// 跳过——用户输入简拼想要的是词库候选，不劳 AI 预测；无元音也排除了
@@ -197,11 +224,7 @@ fn run_loop(rx: mpsc::Receiver<(String, usize)>) {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
-        let (preedit, hwnd) = last;
-        if hwnd == 0 {
-            crate::debug_log("AI 候选：hwnd=0（候选窗未创建），跳过");
-            continue;
-        }
+        let (preedit, _hwnd) = last;
         let cands = if let Some(hit) = cache.get(&preedit) {
             hit
         } else {
@@ -219,28 +242,8 @@ fn run_loop(rx: mpsc::Receiver<(String, usize)>) {
                 }
             }
         };
-        // 结果带回候选窗 UI 线程（同一宿主进程，指针传递安全）
-        let payload: Box<Vec<(String, String)>> = Box::new(
-            cands
-                .into_iter()
-                .map(|t| (preedit.clone(), t))
-                .collect::<Vec<_>>(),
-        );
-        let ptr = Box::into_raw(payload) as isize;
-        let ok = unsafe {
-            PostMessageW(
-                Some(HWND(hwnd as *mut c_void)),
-                WM_AI_CANDIDATES_READY,
-                WPARAM(0),
-                LPARAM(ptr),
-            )
-        };
-        if ok.is_err() {
-            // 候选窗已销毁：释放 payload 防泄漏
-            unsafe {
-                let _ = Box::from_raw(ptr as *mut Vec<(String, String)>);
-            }
-        }
+        // hosted 模式：结果写入共享缓存，下一帧 show() 合并推送。
+        store_result(&preedit, cands);
     }
 }
 

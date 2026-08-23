@@ -321,12 +321,19 @@ def click_first_candidate():
     if not hosted:
         return False
     hwnd = hosted[0]
+    # 等窗口标题出现「你好」再点，避免布局尚未刷新
+    deadline = time.time() + 3.0
+    while time.time() < deadline and "你好" not in window_title(hwnd):
+        time.sleep(0.05)
     rect = win32gui.GetWindowRect(hwnd)
-    x = 30
-    y = (rect[3] - rect[1]) // 2
-    lparam = (y << 16) | x
-    ctypes.windll.user32.PostMessageW(hwnd, 0x0201, 1, lparam)
-    ctypes.windll.user32.PostMessageW(hwnd, 0x0202, 0, lparam)
+    # 用真实鼠标点击 hosted 首项（首项在 preedit 之后，取窗口内 x≈90）
+    screen_x = rect[0] + 90
+    screen_y = (rect[1] + rect[3]) // 2
+    user32 = ctypes.windll.user32
+    user32.SetCursorPos(screen_x, screen_y)
+    time.sleep(0.1)
+    user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
+    user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
     time.sleep(1.0)
     return True
 
@@ -408,6 +415,7 @@ def main() -> int:
             print("shurufa-ui 已在运行且管道就绪")
 
         proc, win = launch_editor(editor)
+        ensure_chinese_mode(win)
         type_text(win, "nihao")
         hosted = find_class(HOSTED_CLASS)
         record("A1 hosted 候选窗出现且含「你好」", len(hosted) > 0 and any("你好" in window_title(h) for h in hosted))
@@ -450,6 +458,7 @@ def main() -> int:
         # （两个窗口同时可见由 test-cand-faults.py 用伪客户端覆盖；
         #  真实焦点切换时前一个编辑器会先隐藏候选，这是正常 TSF 行为）
         proc2, win2 = launch_editor(editor)
+        ensure_chinese_mode(win2)
         type_text(win2, "nihao")
         time.sleep(0.5)
         hosted = find_class(HOSTED_CLASS)
