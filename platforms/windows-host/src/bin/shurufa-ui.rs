@@ -24,6 +24,8 @@ pub const WM_APP_SPEECH_TOGGLE: u32 = WM_APP + 44;
 /// 热键门控轮询定时器 id：每 2 秒按 options.json 重读
 /// enable_ai_hotkey / enable_polish_hotkey，变化即重注册（见 ai_panel.rs）。
 const HOTKEY_GATE_TIMER_ID: usize = 1;
+/// 后台更新检查定时器 id：每 6 小时一次（首次在启动后 10s）。
+const UPDATE_CHECK_TIMER_ID: usize = 2;
 
 /// 面板进程单实例锁名。
 const UI_MUTEX: &str = "Global\\shurufa-ui";
@@ -109,6 +111,8 @@ fn run() -> windows::core::Result<()> {
         // 门控定时器挂在消息窗口上
         if let Ok(hwnd) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(class_name, None) {
             let _ = SetTimer(Some(hwnd), HOTKEY_GATE_TIMER_ID, 2000, None);
+            // 后台更新检查：首次 10s 后，之后每 6 小时一次
+            let _ = SetTimer(Some(hwnd), UPDATE_CHECK_TIMER_ID, 10_000, None);
         }
 
         let store = open_store();
@@ -162,6 +166,12 @@ unsafe extern "system" fn wnd_proc(
     if msg == WM_TIMER && wparam.0 == HOTKEY_GATE_TIMER_ID {
         // 热键门控热更新：设置中心开关即改即存，变化才重注册
         shurufa_host::ai_panel::refresh_hotkey_gates();
+        return LRESULT(0);
+    }
+    if msg == WM_TIMER && wparam.0 == UPDATE_CHECK_TIMER_ID {
+        // 第一次触发后把间隔改为 6 小时，避免每次启动都 10s 检查
+        let _ = SetTimer(Some(hwnd), UPDATE_CHECK_TIMER_ID, 6 * 60 * 60 * 1000, None);
+        shurufa_host::update_check::run_once();
         return LRESULT(0);
     }
     DefWindowProcW(hwnd, msg, wparam, lparam)

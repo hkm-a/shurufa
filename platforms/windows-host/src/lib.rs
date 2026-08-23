@@ -18,6 +18,7 @@ pub mod supervis;
 pub mod sync;
 #[cfg(debug_assertions)]
 pub mod tsf_probe;
+pub mod update_check;
 
 use clipboard_store::{ClipEntry, ClipKind, ClipboardStore, RetentionPolicy};
 use std::path::PathBuf;
