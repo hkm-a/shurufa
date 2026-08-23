@@ -22,6 +22,8 @@
   `shurufa-ui --cand-selftest` 保持候选窗可见约 2 秒供外部断言；候选文本
   写入窗口标题 + 新增 `cand_uia` UIA Provider，pywinauto 可做语义级断言；
   CI 在 Windows 构建后自动执行。
+- **候选窗故障注入测试**：新增 `scripts/test-cand-faults.py`，覆盖多客户端
+  并发候选窗、杀掉 `shurufa-ui` 后候选窗消失、重启后自动恢复；已接入 CI。
 - 方案文档状态更新为“S1/S2/S3 已实施，S4/S5 未开始”。
 
 ### 重构（2026-08-22，阶段 3 收尾：schemas 生成物出库）
