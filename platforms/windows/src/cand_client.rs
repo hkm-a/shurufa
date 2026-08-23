@@ -60,6 +60,7 @@ impl CandClient {
         caret_rect: (i32, i32, i32, i32),
         dpi: u32,
         multi_line: bool,
+        position: &str,
     ) -> Result<(), String> {
         let event = CandEvent::Show {
             client_id,
@@ -67,6 +68,7 @@ impl CandClient {
             caret_rect,
             dpi,
             multi_line,
+            position: position.to_owned(),
         };
         let frame = encode_cand_event(&event)?;
         self.pipe.write_frame(&frame).map_err(|e| e.to_string())
@@ -107,6 +109,9 @@ fn read_commands(pipe: Arc<SyncPipeClient>) {
                     CandCommand::PagePrev { .. } => unsafe {
                         send_virtual_key(0x21); // VK_PRIOR = PageUp
                     },
+                    CandCommand::MenuAction { index, action, .. } => {
+                        crate::candidate_window::dispatch_menu_action(&action, index);
+                    }
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::TimedOut => continue,

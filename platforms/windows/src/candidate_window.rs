@@ -37,6 +37,31 @@ fn engine_simulate(keys: &str) -> bool {
     ENGINE_SIMULATE.with(|slot| slot.borrow().as_ref().map(|f| f(keys)).unwrap_or(false))
 }
 
+/// 右键菜单动作分发：由 hosted 通过 CandCommand::MenuAction 回传。
+pub fn dispatch_menu_action(action: &str, index: usize) {
+    match action {
+        "Drop" => {
+            move_highlight_for_menu(index);
+            engine_simulate("{Control+d}");
+        }
+        "Demote" => {
+            move_highlight_for_menu(index);
+            engine_simulate("{Control+j}");
+        }
+        "Hide" => {
+            move_highlight_for_menu(index);
+            engine_simulate("{Control+x}");
+        }
+        _ => {}
+    }
+}
+
+fn move_highlight_for_menu(index: usize) {
+    for _ in 0..index {
+        engine_simulate("{Down}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AI 候选消息常量与提交钩子（builtin 渲染已删除；常量保留供 ai_candidates
 // 编译，实际 hosted 下 AI 候选展示由 shurufa-ui 后续版本接管）。
@@ -243,8 +268,13 @@ impl CandidateUi {
                 None => (0, 0, 0, 0),
             };
             let multi_line = _panel_mode == CandidatePanelMode::Multi;
+            let position = match _position {
+                PositionMode::FixedBottomRight => "bottom_right",
+                PositionMode::FixedBottomLeft => "bottom_left",
+                PositionMode::Follow => "follow",
+            };
             if client
-                .show(self.client_id, &view_ctx, caret, dpi, multi_line)
+                .show(self.client_id, &view_ctx, caret, dpi, multi_line, position)
                 .is_ok()
             {
                 self.visible = true;

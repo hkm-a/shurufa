@@ -138,6 +138,9 @@ pub enum CandEvent {
         /// 多行候选面板（M7）。缺省 false 兼容旧客户端。
         #[serde(default)]
         multi_line: bool,
+        /// 位置模式：follow / bottom_left / bottom_right。缺省 follow。
+        #[serde(default)]
+        position: String,
     },
     /// 隐藏（组合结束/会话失焦）。
     Hide { client_id: u32 },
@@ -157,6 +160,13 @@ pub enum CandCommand {
     },
     PagePrev {
         client_id: u32,
+    },
+    /// 右键菜单动作：Drop（删除）/ Demote（降频）/ Hide（隐藏）。
+    /// 由 TSF 侧模拟对应引擎键序。
+    MenuAction {
+        client_id: u32,
+        index: usize,
+        action: String,
     },
 }
 
@@ -283,6 +293,7 @@ mod tests {
             caret_rect: (100, 200, 8, 16),
             dpi: 144,
             multi_line: false,
+                position: "follow".to_owned(),
         };
         let bytes = encode_cand_event(&event).unwrap();
         let (frame, _) = decode_frame(&bytes).unwrap();
@@ -293,6 +304,7 @@ mod tests {
                 caret_rect,
                 dpi,
                 multi_line,
+                position,
             } => {
                 assert_eq!(client_id, 4242);
                 assert_eq!(context.preedit, "nihao");
@@ -300,6 +312,7 @@ mod tests {
                 assert_eq!(caret_rect, (100, 200, 8, 16));
                 assert_eq!(dpi, 144);
                 assert!(!multi_line);
+                assert_eq!(position, "follow");
             }
             other => panic!("unexpected: {other:?}"),
         }

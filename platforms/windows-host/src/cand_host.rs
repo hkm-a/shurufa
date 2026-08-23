@@ -19,17 +19,19 @@ use std::sync::{Arc, Mutex, OnceLock};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
-    GetTextExtentPoint32W, InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
-    DT_LEFT, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HBRUSH, HDC, HFONT, TRANSPARENT,
+    BeginPaint, ClientToScreen, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
+    FillRect, GetDC, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, SelectObject, SetBkMode,
+    SetTextColor, DT_LEFT, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HBRUSH, HDC, HFONT, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GetSystemMetrics, PeekMessageW,
-    PostMessageW, RegisterClassW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, MSG,
-    PM_REMOVE, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
+    DestroyWindow, FindWindowW, GetSystemMetrics, PeekMessageW, PostMessageW, RegisterClassW,
+    SetWindowPos, SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage, MSG, PM_REMOVE,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
     SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_GETOBJECT, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_APP, WM_GETOBJECT, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, MF_SEPARATOR, MF_STRING,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON,
 };
 
 use ime_ipc::{decode_cand_event, encode_cand_command, CandCommand, CandEvent, Context};
@@ -67,6 +69,7 @@ struct CandView {
     show_tab: bool,
     tab_label: String,
     multi_line: bool,
+    position: String,
 }
 
 thread_local! {
@@ -249,7 +252,8 @@ fn send_command(cmd: CandCommand) {
     let client_id = match &cmd {
         CandCommand::Select { client_id, .. }
         | CandCommand::PageNext { client_id }
-        | CandCommand::PagePrev { client_id } => *client_id,
+        | CandCommand::PagePrev { client_id }
+        | CandCommand::MenuAction { client_id, .. } => *client_id,
     };
     let Some(tx) = conns().lock().unwrap().get(&client_id).cloned() else {
         return;
@@ -398,6 +402,7 @@ unsafe fn handle_event(event: CandEvent) {
             caret_rect,
             dpi,
             multi_line,
+            position,
         } => {
             let (x, y, _cx, _cy) = caret_rect;
             let items = view_items(&context);
@@ -448,6 +453,7 @@ unsafe fn handle_event(event: CandEvent) {
                 show_tab,
                 tab_label: tab_label.to_owned(),
                 multi_line,
+                position,
             };
             let uia_text = view
                 .items
@@ -501,6 +507,7 @@ fn dummy_view(client_id: u32) -> CandView {
         show_tab: false,
         tab_label: String::new(),
         multi_line: false,
+        position: String::new(),
     }
 }
 
@@ -548,11 +555,19 @@ unsafe fn position_and_show(client_id: u32) {
         let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         let gap = scale(4, view.dpi);
-        let mut x = view.caret.x;
-        let mut y = view.caret.y + view.height / 2 + gap;
-        if y + view.height > vy + vh {
-            y = view.caret.y - view.height - gap;
-        }
+        let margin = scale(8, view.dpi);
+        let (mut x, y) = match view.position.as_str() {
+            "bottom_left" => (vx + margin, vy + vh - view.height - margin),
+            "bottom_right" => (vx + vw - view.width - margin, vy + vh - view.height - margin),
+            _ => {
+                let x = view.caret.x;
+                let mut y = view.caret.y + view.height / 2 + gap;
+                if y + view.height > vy + vh {
+                    y = view.caret.y - view.height - gap;
+                }
+                (x, y)
+            }
+        };
         if x + view.width > vx + vw {
             x = vx + vw - view.width;
         }
@@ -611,6 +626,12 @@ unsafe extern "system" fn cand_wnd_proc(
             }
             LRESULT(0)
         }
+        WM_RBUTTONDOWN => {
+            let x = (lparam.0 & 0xffff) as i16 as i32;
+            let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+            show_context_menu(hwnd, x, y);
+            LRESULT(0)
+        }
         WM_MOUSEWHEEL => {
             let delta = (wparam.0 >> 16) as i16;
             if let Some(client_id) =
@@ -647,6 +668,68 @@ unsafe fn hit_test(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
             .iter()
             .position(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
     })
+}
+
+fn menu_wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+unsafe fn show_context_menu(hwnd: HWND, x: i32, y: i32) {
+    let Some(index) = hit_test(hwnd, x, y) else {
+        return;
+    };
+    let Some((client_id, _text)) = CLIENTS.with(|c| {
+        let map = c.borrow();
+        let (id, (_, view)) = map.get_key_value_by_hwnd(hwnd)?;
+        let text = view.items.get(index).map(|it| it.text.clone()).unwrap_or_default();
+        Some((*id, text))
+    }) else {
+        return;
+    };
+    let Ok(menu) = CreatePopupMenu() else {
+        return;
+    };
+    let s_drop = menu_wide("从候选删除");
+    let s_demote = menu_wide("降低词频");
+    let s_hide = menu_wide("隐藏该词");
+    let s_settings = menu_wide("打开设置中心");
+    let _ = AppendMenuW(menu, MF_STRING, 1, PCWSTR::from_raw(s_drop.as_ptr()));
+    let _ = AppendMenuW(menu, MF_STRING, 2, PCWSTR::from_raw(s_demote.as_ptr()));
+    let _ = AppendMenuW(menu, MF_STRING, 3, PCWSTR::from_raw(s_hide.as_ptr()));
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    let _ = AppendMenuW(menu, MF_STRING, 4, PCWSTR::from_raw(s_settings.as_ptr()));
+    let mut pt = POINT { x, y };
+    let _ = ClientToScreen(hwnd, &mut pt);
+    let cmd = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        pt.x,
+        pt.y,
+        None,
+        hwnd,
+        None,
+    );
+    let _ = DestroyMenu(menu);
+    let action = match cmd.0 {
+        1 => "Drop",
+        2 => "Demote",
+        3 => "Hide",
+        4 => {
+            // 打开设置中心：与 shurufa-ui 同目录的 Shurufa.exe
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    let _ = std::process::Command::new(dir.join("Shurufa.exe")).spawn();
+                }
+            }
+            return;
+        }
+        _ => return,
+    };
+    send_command(CandCommand::MenuAction {
+        client_id,
+        index,
+        action: action.to_owned(),
+    });
 }
 
 unsafe fn paint(hwnd: HWND, hdc: HDC) {
@@ -752,6 +835,7 @@ fn map_get_clone(
         show_tab: v.show_tab,
         tab_label: v.tab_label.clone(),
         multi_line: v.multi_line,
+        position: v.position.clone(),
     });
     (found,)
 }
@@ -790,6 +874,7 @@ pub fn selftest() -> i32 {
             let event = CandEvent::Show {
                 client_id: 99,
                 multi_line: false,
+                position: "follow".to_owned(),
                 context: Context {
                     preedit: "nihao".into(),
                     candidates: vec![
