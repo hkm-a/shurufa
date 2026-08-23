@@ -7,6 +7,7 @@
 pub mod ai_panel;
 pub mod asr;
 pub mod audio_capture;
+pub mod cand_host;
 pub mod dict_update;
 pub mod listener;
 pub mod panel;

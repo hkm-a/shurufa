@@ -25,6 +25,8 @@ use windows::Win32::System::Pipes::{
 };
 
 pub const PIPE_NAME: &str = r"\\.\pipe\shurufa-algo";
+/// 候选窗事件管道（TSF → shurufa-ui，阶段 6 候选窗迁出宿主进程）。
+pub const CAND_PIPE_NAME: &str = r"\\.\pipe\shurufa-cand";
 
 /// 每帧最大字节（候选最多 8 页 × 10 条，文本 UTF-8 足够）。
 const MAX_FRAME: u32 = ime_ipc::MAX_FRAME_BYTES as u32;
@@ -53,6 +55,11 @@ const PIPE_SDDL: &str = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)S:(ML;;NW;;;ME)";
 impl PipeServer {
     /// 新建管道实例并允许客户端连接（FILE_FLAG_FIRST_PIPE_INSTANCE 仅首个实例）。
     pub fn create() -> IoResult<Self> {
+        Self::create_named(PIPE_NAME)
+    }
+
+    /// 指定管道名新建实例（algo 管道与候选窗管道共用同一传输实现与 SDDL）。
+    pub fn create_named(name: &str) -> IoResult<Self> {
         unsafe {
             let mut sd: *mut c_void = std::ptr::null_mut();
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -73,7 +80,7 @@ impl PipeServer {
             // 客户端（匿名/网络 SID）受 ACL 拦截；远程桌面重定向是典型的常见远
             // 端访问路径，足以挡住。
             let handle = CreateNamedPipeW(
-                &HSTRING::from(PIPE_NAME),
+                &HSTRING::from(name),
                 FILE_FLAGS_AND_ATTRIBUTES(PIPE_ACCESS_DUPLEX.0),
                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                 PIPE_UNLIMITED_INSTANCES,
@@ -150,9 +157,14 @@ unsafe impl Send for PipeClient {}
 
 impl PipeClient {
     pub fn connect() -> IoResult<Self> {
+        Self::connect_named(PIPE_NAME)
+    }
+
+    /// 指定管道名连接（候选窗事件管道客户端走这里）。
+    pub fn connect_named(name: &str) -> IoResult<Self> {
         unsafe {
             let handle = CreateFileW(
-                &HSTRING::from(PIPE_NAME),
+                &HSTRING::from(name),
                 GENERIC_READ.0 | GENERIC_WRITE.0,
                 windows::Win32::Storage::FileSystem::FILE_SHARE_MODE(0),
                 None,

@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 重构（2026-08-23，候选窗迁出宿主进程 S1/S2）
+- **S1 协议层**：`core/ime-ipc` 新增 `CandEvent` / `CandCommand` DTO 与帧
+  编解码测试；`platforms/windows-ipc` 支持 `create_named` / `connect_named`
+  命名管道，新增 `shurufa-cand` 事件管道 e2e 测试。
+- **S2 ui 侧宿主**：`shurufa-ui` 新增 `cand_host`——多 client 候选窗池、
+  无焦点顶层窗、皮肤复用 `windows-skin`、点击/滚轮回发 `CandCommand`；
+  `--cand-selftest` 可本地/CI 自检（起服务→推 Show→断言窗口创建）。
+- **修复 LengthDelimitedCodec 前缀端序回归**：换库周切 tokio-util 后长度
+  前缀默认大端，与既有小端线格式不兼容；显式 `.little_endian()` 并加回归
+  测试。
+- 方案文档状态更新为“S1/S2 已实施，S3 TSF 双路径灰度未开始”。
+
 ### 重构（2026-08-22，阶段 3 收尾：schemas 生成物出库）
 - **三份构建期生成物出库**：`shurufa_t9.dict.yaml`（约 15 MB）、
   `jianpin_index.txt`（约 13.8 MB）、`rime_ice_nojianpin.schema.yaml` 不再提交

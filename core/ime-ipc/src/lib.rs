@@ -33,14 +33,14 @@ pub enum Request {
 }
 
 /// 候选条目（与 ime_bridge::Candidate 对应，仅用于序列化）。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Candidate {
     pub text: String,
     pub comment: String,
 }
 
 /// 上下文快照（与 ime_bridge::Context 对应）。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Context {
     pub preedit: String,
     pub candidates: Vec<Candidate>,
@@ -90,17 +90,22 @@ pub enum Response {
     NoSession,
 }
 
-/// 请求在管道上的线格式：`[u32 长度][JSON]`。
-pub fn encode_request(req: &Request) -> Result<Vec<u8>, String> {
+/// JSON 体 → `[u32 小端长度][JSON]` 帧（各 typed 编码器共用）。
+/// 线格式沿用换库周前手写实现的**小端**前缀：tokio-util 默认大端，2026-08-23
+/// 实测发现换库周直接切 LengthDelimitedCodec 后前缀变大端，而 windows-ipc 的
+/// validate_encoded_frame 仍按小端校验——换库周后构建的 TSF 首次管道写即被拒
+/// （管道 e2e 被 #[ignore] 掩盖）。显式 .little_endian() 恢复与既有安装兼容。
+fn encode_json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
     use bytes::Bytes;
     use tokio_util::codec::{Encoder, LengthDelimitedCodec};
 
-    let body = serde_json::to_vec(req).map_err(|e| e.to_string())?;
+    let body = serde_json::to_vec(value).map_err(|e| e.to_string())?;
     if body.len() > MAX_FRAME_BYTES - 4 {
-        return Err("请求过大".into());
+        return Err("消息过大".into());
     }
     let mut out = bytes::BytesMut::with_capacity(4 + body.len());
     LengthDelimitedCodec::builder()
+        .little_endian()
         .max_frame_length(MAX_FRAME_BYTES)
         .new_codec()
         .encode(Bytes::copy_from_slice(&body), &mut out)
@@ -108,22 +113,64 @@ pub fn encode_request(req: &Request) -> Result<Vec<u8>, String> {
     Ok(out.to_vec())
 }
 
+/// 请求在管道上的线格式：`[u32 长度][JSON]`。
+pub fn encode_request(req: &Request) -> Result<Vec<u8>, String> {
+    encode_json(req)
+}
+
 /// 应答在管道上的线格式：`[u32 长度][JSON]`。
 pub fn encode_response(resp: &Response) -> Result<Vec<u8>, String> {
-    use bytes::Bytes;
-    use tokio_util::codec::{Encoder, LengthDelimitedCodec};
+    encode_json(resp)
+}
 
-    let body = serde_json::to_vec(resp).map_err(|e| e.to_string())?;
-    if body.len() > MAX_FRAME_BYTES - 4 {
-        return Err("应答过大".into());
-    }
-    let mut out = bytes::BytesMut::with_capacity(4 + body.len());
-    LengthDelimitedCodec::builder()
-        .max_frame_length(MAX_FRAME_BYTES)
-        .new_codec()
-        .encode(Bytes::copy_from_slice(&body), &mut out)
-        .map_err(|e| e.to_string())?;
-    Ok(out.to_vec())
+/// 候选窗事件（TSF → shurufa-ui，`\\.\pipe\shurufa-cand`）：
+/// 候选 UI 迁出宿主进程（阶段 6 / 方案见 docs/候选窗迁出宿主进程-方案.md）。
+/// ui 侧零会话状态：每帧全量推送，ui 崩溃重启后下一次按键自然恢复。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CandEvent {
+    /// 显示/刷新候选。`caret_rect` 为光标屏幕物理像素矩形 (x, y, cx, cy)；
+    /// `dpi` 为宿主窗口 DPI，ui 侧换算布局尺寸用。
+    Show {
+        client_id: u32,
+        context: Context,
+        caret_rect: (i32, i32, i32, i32),
+        dpi: u32,
+    },
+    /// 隐藏（组合结束/会话失焦）。
+    Hide { client_id: u32 },
+}
+
+/// 候选窗命令（ui → TSF，同一连接回发）：Select/Page 用虚拟键合成，
+/// 重走 TSF 正常按键路径（数字选词/翻页拦截全部生效）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CandCommand {
+    /// 点击/数字选择第 index 个候选（0 起，第 10 个为 9→0 键映射由 TSF 侧完成）。
+    Select {
+        client_id: u32,
+        index: usize,
+    },
+    PageNext {
+        client_id: u32,
+    },
+    PagePrev {
+        client_id: u32,
+    },
+}
+
+pub fn encode_cand_event(event: &CandEvent) -> Result<Vec<u8>, String> {
+    encode_json(event)
+}
+
+pub fn encode_cand_command(command: &CandCommand) -> Result<Vec<u8>, String> {
+    encode_json(command)
+}
+
+pub fn decode_cand_event(data: &[u8]) -> Result<CandEvent, String> {
+    serde_json::from_slice(data).map_err(|e| e.to_string())
+}
+
+pub fn decode_cand_command(data: &[u8]) -> Result<CandCommand, String> {
+    serde_json::from_slice(data).map_err(|e| e.to_string())
 }
 
 /// 从缓冲区解析一帧：返回 `(帧数据, 剩余)`。数据不足返回 `None`。
@@ -132,6 +179,7 @@ pub fn decode_frame(buf: &[u8]) -> Option<(Vec<u8>, &[u8])> {
 
     let mut src = bytes::BytesMut::from(buf);
     let mut codec = LengthDelimitedCodec::builder()
+        .little_endian()
         .max_frame_length(MAX_FRAME_BYTES)
         .new_codec();
     match codec.decode(&mut src) {
@@ -210,6 +258,71 @@ mod tests {
     }
 
     #[test]
+    fn cand_event_command_roundtrip() {
+        let event = CandEvent::Show {
+            client_id: 4242,
+            context: Context {
+                preedit: "nihao".into(),
+                candidates: vec![
+                    Candidate {
+                        text: "你好".into(),
+                        comment: String::new(),
+                    },
+                    Candidate {
+                        text: "拟好".into(),
+                        comment: String::new(),
+                    },
+                ],
+                highlighted: 0,
+                page_size: 9,
+                ..Context::default()
+            },
+            caret_rect: (100, 200, 8, 16),
+            dpi: 144,
+        };
+        let bytes = encode_cand_event(&event).unwrap();
+        let (frame, _) = decode_frame(&bytes).unwrap();
+        match decode_cand_event(&frame).unwrap() {
+            CandEvent::Show {
+                client_id,
+                context,
+                caret_rect,
+                dpi,
+            } => {
+                assert_eq!(client_id, 4242);
+                assert_eq!(context.preedit, "nihao");
+                assert_eq!(context.candidates.len(), 2);
+                assert_eq!(caret_rect, (100, 200, 8, 16));
+                assert_eq!(dpi, 144);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let cmd = CandCommand::Select {
+            client_id: 4242,
+            index: 7,
+        };
+        let bytes = encode_cand_command(&cmd).unwrap();
+        let (frame, _) = decode_frame(&bytes).unwrap();
+        assert_eq!(decode_cand_command(&frame).unwrap(), cmd);
+        let hide = CandEvent::Hide { client_id: 7 };
+        let bytes = encode_cand_event(&hide).unwrap();
+        let (frame, _) = decode_frame(&bytes).unwrap();
+        assert_eq!(decode_cand_event(&frame).unwrap(), hide);
+    }
+
+    /// 回归（2026-08-23）：换库周切 LengthDelimitedCodec 后前缀变默认大端，
+    /// 与 windows-ipc 的小端校验冲突——TSF 首次管道写即被拒。锁定小端线格式。
+    #[test]
+    fn length_prefix_is_little_endian() {
+        let bytes = encode_request(&Request::Context).unwrap();
+        let body_len = (bytes.len() - 4) as u32;
+        assert_eq!(&bytes[..4], &body_len.to_le_bytes());
+        let bytes = encode_cand_command(&CandCommand::PagePrev { client_id: 1 }).unwrap();
+        let body_len = (bytes.len() - 4) as u32;
+        assert_eq!(&bytes[..4], &body_len.to_le_bytes());
+    }
+
+    #[test]
     fn partial_frame_waits() {
         let bytes = encode_request(&Request::Context).unwrap();
         // 只给前 2 字节，应判定数据不足
@@ -221,7 +334,7 @@ mod tests {
     #[test]
     fn rejects_messages_larger_than_pipe_capacity() {
         let result = encode_request(&Request::Simulate("x".repeat(MAX_FRAME_BYTES)));
-        assert!(matches!(result, Err(ref message) if message == "请求过大"));
+        assert!(matches!(result, Err(ref message) if message == "消息过大"));
     }
 
     impl Request {

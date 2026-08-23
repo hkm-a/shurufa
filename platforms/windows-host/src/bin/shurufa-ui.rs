@@ -29,6 +29,10 @@ const HOTKEY_GATE_TIMER_ID: usize = 1;
 const UI_MUTEX: &str = "Global\\shurufa-ui";
 
 fn main() {
+    // 候选窗宿主自检：--cand-selftest 起服务→模拟客户端→断言窗口创建。
+    if std::env::args().any(|a| a == "--cand-selftest") {
+        std::process::exit(shurufa_host::cand_host::selftest());
+    }
     init_logging();
     shurufa_host::hide_own_console();
     match supervis::acquire_singleton(UI_MUTEX) {
@@ -90,6 +94,10 @@ fn run() -> windows::core::Result<()> {
         let ai_hotkey = shurufa_host::ai_panel::register_hotkey();
         println!("AI 帮写热键：{ai_hotkey}");
         log_line(&format!("AI 帮写热键：{ai_hotkey}"));
+        // 候选窗宿主（阶段 6 S2）：多客户端候选窗渲染 + 命令回发。
+        if !shurufa_host::cand_host::start() {
+            log_line("cand_host 启动失败：hosted 模式候选窗将回退内置渲染");
+        }
         let speech_hotkey = shurufa_host::speech::register_hotkey();
         println!("语音转写热键：{speech_hotkey}");
         log_line(&format!("语音转写热键：{speech_hotkey}"));
