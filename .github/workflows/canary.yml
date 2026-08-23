@@ -45,7 +45,7 @@ jobs:
         run: npm --prefix platforms/windows-settings ci
       - name: 构建 Canary 安装器
         shell: pwsh
-        run: ./scripts/build-installer.ps1 -VersionOverride "${{ steps.version.outputs.canary_version }}"
+        run: ./scripts/build-installer.ps1 -VersionOverride "${{ steps.version.outputs.canary_version }}" -Channel canary
       - name: 上传/更新 Canary Release
         uses: softprops/action-gh-release@v2
         with:

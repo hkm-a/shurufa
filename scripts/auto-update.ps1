@@ -10,13 +10,26 @@
 
 param(
   [Parameter(Mandatory = $true)][string]$ManifestUrl,
-  [string]$Channel = 'stable',
+  [string]$Channel = '',
   [string]$CtlPath = '',
   [switch]$Apply,
   [switch]$Silent
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $Channel) {
+  $channelFile = Join-Path $env:ProgramData 'shurufa\channel.json'
+  if (Test-Path $channelFile) {
+    try {
+      $Channel = (Get-Content $channelFile -Raw | ConvertFrom-Json).channel
+    } catch {
+      $Channel = 'stable'
+    }
+  } else {
+    $Channel = 'stable'
+  }
+  Write-Host "自动读取 channel：$Channel"
+}
 if (-not $CtlPath) {
   $candidates = @(
     (Join-Path $env:ProgramData 'shurufa\shurufa-ctl.exe'),

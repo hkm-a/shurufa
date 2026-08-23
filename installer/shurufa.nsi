@@ -12,6 +12,10 @@
   !define FOX_VERSION "0.0.0"
 !endif
 
+!ifndef CHANNEL
+  !define CHANNEL "stable"
+!endif
+
 Unicode true
 ManifestDPIAware true
 RequestExecutionLevel admin
@@ -122,6 +126,14 @@ FunctionEnd
 Section "FOX输入法（核心）" SecCore
   SectionIn RO
   SetOutPath "$INSTDIR"
+
+  ; 写入发布通道配置（stable / canary / beta），供自动更新脚本读取
+  SetShellVarContext all
+  CreateDirectory "$APPDATA\shurufa"
+  FileOpen $0 "$APPDATA\shurufa\channel.json" w
+  FileWrite $0 '{"channel":"${CHANNEL}"}'
+  FileClose $0
+  SetShellVarContext current
 
   DetailPrint "步骤 1/10 停旧进程与反注册旧 TSF"
   StrCpy $0 "Shurufa.exe"

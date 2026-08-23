@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$SkipBuild,
-    [string]$VersionOverride
+    [string]$VersionOverride,
+    [string]$Channel = 'stable'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,7 +50,7 @@ if (-not (Test-Path -LiteralPath $makensis)) {
     throw "未找到 makensis.exe，请安装 NSIS 3.x（https://nsis.sourceforge.io）"
 }
 New-Item -ItemType Directory -Path (Join-Path $sourceRoot 'dist') -Force | Out-Null
-Invoke-Native $makensis @("-DFOX_VERSION=$version", (Join-Path $sourceRoot 'installer\shurufa.nsi'))
+Invoke-Native $makensis @("-DFOX_VERSION=$version", "-DCHANNEL=$Channel", (Join-Path $sourceRoot 'installer\shurufa.nsi'))
 
 $dist = Join-Path $sourceRoot "dist\FOX-Setup-$version.exe"
 if (-not (Test-Path -LiteralPath $dist -PathType Leaf)) {
