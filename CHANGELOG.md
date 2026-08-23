@@ -35,7 +35,8 @@
 - **候选窗全量一键跑**：新增 `scripts/run-cand-all.py`，一条命令依次执行
   Rust 单测、管道 e2e、UI 冒烟、交互、故障注入、稳定性、断开清理。
 - **小白一键验收**：新增 `scripts/候选窗一键验收.bat`，自动检测 Python、
-  自动构建 shurufa-ui、自动安装 pywinauto，然后跑验收预检并输出结果。
+  自动构建 shurufa-ui、自动安装 pywinauto，然后跑验收预检；自动项通过后
+  继续引导单屏手动验收（`scripts/test-cand-manual-guided.py`）。
 - **S5 前置：全屏回退内置**：TSF 检测前台窗口覆盖虚拟屏 ≥95% 时，即使
   `candidate_window=hosted` 也走内置绘制，避免全屏应用下候选窗被遮挡/闪烁；
   新增 `is_fullscreen_rect` 纯函数测试。
