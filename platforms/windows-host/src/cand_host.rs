@@ -51,6 +51,7 @@ struct ItemView {
     label: String,
     text: String,
     comment: String,
+    is_ai: bool,
 }
 
 struct CandView {
@@ -328,6 +329,7 @@ fn view_items(ctx: &Context) -> Vec<ItemView> {
             label: format!("{}", if i >= 9 { 0 } else { i + 1 }),
             text: c.text.clone(),
             comment: c.comment.clone(),
+            is_ai: c.comment.contains("\u{1F916}"),
         })
         .collect()
 }
@@ -628,6 +630,13 @@ unsafe fn paint(hwnd: HWND, hdc: HDC) {
             format!("{}{}", item.text, item.comment)
         };
         draw_text_at(hdc, &text, x + label_w, 0, view.height);
+        if item.is_ai {
+            // AI 候选副标用 label 色强调（hosted 暂无独立 AI 色，先用标签色）
+            let comment = format!(" {}", item.comment);
+            let cx = x + label_w + text_width(hdc, &item.text);
+            SetTextColor(hdc, windows::Win32::Foundation::COLORREF(colors.label));
+            draw_text_at(hdc, &comment, cx, 0, view.height);
+        }
     }
     SelectObject(hdc, old_font);
     let _ = DeleteObject(font.into());
@@ -650,6 +659,7 @@ fn map_get_clone(
                 label: it.label.clone(),
                 text: it.text.clone(),
                 comment: it.comment.clone(),
+                    is_ai: it.is_ai,
             })
             .collect(),
         item_rects: v.item_rects.clone(),
