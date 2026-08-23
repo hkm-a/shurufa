@@ -31,6 +31,7 @@ windows-ipc = { path = "../windows-ipc" }
 windows-skin = { path = "../windows-skin" }
 shurufa-options = { path = "../../core/options" }
 sync-core = { path = "../../core/sync" }
+update-core = { path = "../../core/update" }
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 windows-core = "0.62"

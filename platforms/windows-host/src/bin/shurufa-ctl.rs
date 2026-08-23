@@ -6,6 +6,7 @@
 use clap::{Parser, Subcommand};
 use clipboard_store::ClipboardStore;
 use shurufa_host::{open_store, print_entries};
+use update_core::{should_update, UpdateManifest};
 
 #[derive(Parser)]
 #[command(name = "shurufa-ctl", about = "Shurufa CLI：历史库/配对/词库管理")]
@@ -69,6 +70,22 @@ enum Command {
     /// 打印当前词库版本
     #[command(name = "dict-current")]
     DictCurrent,
+    /// 检查更新（拉取 update.json + 灰度判定）
+    #[command(name = "check-update")]
+    CheckUpdate {
+        /// update.json 地址
+        #[arg(long)]
+        url: String,
+        /// 渠道：stable / canary / beta
+        #[arg(long, default_value = "stable")]
+        channel: String,
+        /// 机器标识（默认取主机名）
+        #[arg(long)]
+        machine_id: Option<String>,
+        /// 当前版本（默认读 version.json，读不到用 0.0.0）
+        #[arg(long)]
+        current_version: Option<String>,
+    },
     /// 立即执行留存清理
     Retention,
     #[cfg(debug_assertions)]
@@ -185,6 +202,59 @@ fn main() {
         }
         Command::DictCurrent => shurufa_host::dict_update::cli_current(),
         Command::DictHistory => shurufa_host::dict_update::cli_history(),
+        Command::CheckUpdate {
+            url,
+            channel,
+            machine_id,
+            current_version,
+        } => {
+            let machine_id = machine_id.unwrap_or_else(|| {
+                std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown-machine".to_owned())
+            });
+            let current_version = current_version.unwrap_or_else(|| {
+                std::fs::read_to_string("version.json")
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| v.get("version").and_then(|x| x.as_str()).map(String::from))
+                    .unwrap_or_else(|| "0.0.0".to_owned())
+            });
+            println!("检查更新：channel={channel} machine={machine_id} current={current_version}");
+            let body = match ureq::get(&url).call() {
+                Ok(resp) => match resp.into_string() {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("读取 update.json 失败：{e}");
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("拉取 update.json 失败：{e}");
+                    std::process::exit(1);
+                }
+            };
+            let manifest = match UpdateManifest::from_json(&body) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("解析 update.json 失败：{e}");
+                    std::process::exit(1);
+                }
+            };
+            let Some(info) = manifest.channels.get(&channel) else {
+                eprintln!("渠道不存在：{channel}");
+                std::process::exit(1);
+            };
+            let update = should_update(&manifest, &channel, &machine_id, &current_version);
+            println!("目标版本：{}", info.version);
+            println!("灰度比例：{}%", info.rollout_percent);
+            println!("是否更新：{}", if update { "是" } else { "否" });
+            if update {
+                println!("下载地址：{}", info.url);
+                if !info.sha256.is_empty() {
+                    println!("SHA256：{}", info.sha256);
+                }
+            }
+            std::process::exit(if update { 0 } else { 2 });
+        }
         Command::Retention => shurufa_host::apply_retention_now(),
         #[cfg(debug_assertions)]
         Command::TsfNativeProbe => match shurufa_host::tsf_probe::run() {
