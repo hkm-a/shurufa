@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$VersionOverride
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,11 +15,13 @@ function Invoke-Native([string]$File, [string[]]$Arguments) {
 
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $manifest = Get-Content -LiteralPath (Join-Path $sourceRoot 'version.json') -Raw | ConvertFrom-Json
-$version = [string]$manifest.version
+$version = if ($VersionOverride) { $VersionOverride } else { [string]$manifest.version }
 
-# 打包前强制校验版本一致性（FOX 安装器 tauri.conf.json 与 version.json 对齐）。
-& (Join-Path $sourceRoot 'scripts\set-version.ps1') -Check
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+# 正式打包前强制校验版本一致性；canary 覆盖版本时跳过（避免污染版本派生点）。
+if (-not $VersionOverride) {
+  & (Join-Path $sourceRoot 'scripts\set-version.ps1') -Check
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 
 # 先重新生成三份构建期产物，避免仓内生成物过期（阶段 3）。
 & (Join-Path $sourceRoot 'scripts\regenerate-generated.ps1')

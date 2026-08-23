@@ -1,0 +1,64 @@
+name: Canary
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  canary-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 计算 canary 版本
+        id: version
+        shell: pwsh
+        run: |
+          $base = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          $sha = $env:GITHUB_SHA.Substring(0, 7)
+          $canary = "$base-canary.$sha"
+          echo "canary_version=$canary" >> $env:GITHUB_OUTPUT
+          echo "canary=$canary"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: platforms/windows-settings/package-lock.json
+      - name: 恢复 librime 缓存
+        id: cache-librime
+        uses: actions/cache@v4
+        with:
+          path: third_party/librime
+          key: librime-1.17.0-rime-33e7814-windows-msvc-x64
+      - name: 下载并解压 librime（Windows）
+        if: steps.cache-librime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force third_party\librime | Out-Null
+          Invoke-WebRequest -Uri https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-Windows-msvc-x64.7z -OutFile third_party\librime\rime.7z
+          7z x -y third_party\librime\rime.7z -othird_party\librime
+      - name: 安装设置页前端依赖
+        run: npm --prefix platforms/windows-settings ci
+      - name: 构建 Canary 安装器
+        shell: pwsh
+        run: ./scripts/build-installer.ps1 -VersionOverride "${{ steps.version.outputs.canary_version }}"
+      - name: 上传/更新 Canary Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: canary
+          name: Canary
+          body: |
+            自动 Canary 构建：`${{ steps.version.outputs.canary_version }}`
+
+            - 来源：${{ github.sha }}
+            - 分支：${{ github.ref_name }}
+            - 安装包为预发布，仅供内部/灰度验证。
+          files: |
+            dist/FOX-Setup-*.exe
+            dist/FOX-Setup-*.exe.sha256
+          prerelease: true
+          draft: false
