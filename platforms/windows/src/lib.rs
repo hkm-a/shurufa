@@ -8,7 +8,6 @@
 mod ai_candidates;
 mod cand_client;
 mod candidate_window;
-mod candidate_window_d2d;
 mod composition;
 mod direct_launch;
 mod emoji_question;

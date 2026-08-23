@@ -429,10 +429,13 @@ def main() -> int:
         visible = [h for h in find_class(HOSTED_CLASS) if Desktop(backend="win32").window(handle=h).is_visible()]
         record("A5 Esc 后 hosted 候选窗隐藏", len(visible) == 0)
 
-        # B1 杀 ui 回退内置
+        # B1 杀 ui：内置绘制已删除，候选窗消失但输入不中断
         stop_ui()
         type_text(win, "nihao")
-        record("B1 杀 ui 后回退内置候选窗", len(find_class(BUILTIN_CLASS)) > 0)
+        record(
+            "B1 杀 ui 后无 hosted/内置候选窗且不崩溃",
+            len(find_class(HOSTED_CLASS)) == 0 and len(find_class(BUILTIN_CLASS)) == 0,
+        )
 
         # B2 重启 ui 恢复 hosted
         ui_proc = start_ui(args.exe)
@@ -455,7 +458,7 @@ def main() -> int:
             len(hosted) >= 1 and any("你好" in window_title(h) for h in hosted),
         )
 
-        # E2 全屏/最大化近似回退内置
+        # E2 全屏/最大化：内置已删除，hosted 也不推送，候选窗应全部消失
         original_rect = win.rectangle()
         make_fullscreen(win)
         set_focus(win)
@@ -463,7 +466,7 @@ def main() -> int:
         time.sleep(0.5)
         builtin = find_class(BUILTIN_CLASS)
         hosted = find_class(HOSTED_CLASS)
-        record("E2 最大化时回退内置候选窗", len(builtin) > 0 and len(hosted) == 0)
+        record("E2 最大化时 hosted/内置候选窗均不显示", len(builtin) == 0 and len(hosted) == 0)
 
         # E5 候选文本可读
         restore_window(win, original_rect)
