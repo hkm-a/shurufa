@@ -64,8 +64,8 @@ def main() -> int:
             return 1
 
         buf = ctypes.create_unicode_buffer(512)
-        n = ctypes.windll.user32.GetWindowTextW(hwnd, buf, 512)
-        title = buf.value[:n] if n else ""
+        ctypes.windll.user32.GetWindowTextW(hwnd, buf, 512)
+        title = buf.value
         if "你好" not in title:
             print(f"FAIL: 候选窗标题未包含预期候选文本，实际={title!r}")
             proc.kill()

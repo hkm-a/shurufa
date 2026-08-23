@@ -386,7 +386,8 @@ unsafe fn handle_event(event: CandEvent) {
                 *slot = view;
                 *hwnd
             });
-            let title: Vec<u16> = uia_text.encode_utf16().collect();
+            let mut title: Vec<u16> = uia_text.encode_utf16().collect();
+            title.push(0);
             let _ = SetWindowTextW(_hwnd, PCWSTR(title.as_ptr()));
             position_and_show(client_id);
         }
@@ -419,7 +420,8 @@ fn dummy_view(client_id: u32) -> CandView {
 unsafe fn create_client_window(client_id: u32) -> HWND {
     let hinstance = windows::Win32::System::LibraryLoader::GetModuleHandleW(PCWSTR::null())
         .expect("GetModuleHandleW");
-    let title: Vec<u16> = format!("cand-{client_id}").encode_utf16().collect();
+    let mut title: Vec<u16> = format!("cand-{client_id}").encode_utf16().collect();
+    title.push(0);
     CreateWindowExW(
         WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         w!("ShurufaCandWin"),
