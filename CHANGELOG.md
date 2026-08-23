@@ -30,6 +30,9 @@
 - **S4 验收矩阵与预检脚本**：新增 `docs/候选窗迁出宿主进程-验收矩阵.md`
   与 `scripts/test-cand-acceptance.py`；有测试环境时先跑预检 + 自动项，
   再按矩阵逐项做手动验收，避免“有环境不知道测什么”。
+- **便携候选窗验收工具**：新增 `shurufa-cand-tool` 单 exe（无 Python/无
+  安装依赖），支持 `--selftest` / `--demo [秒]` / `--info`，适合拷到任意
+  Windows 机器快速验证 hosted 候选窗。
 - 方案文档状态更新为“S1/S2/S3 已实施，S4/S5 未开始”。
 
 ### 重构（2026-08-22，阶段 3 收尾：schemas 生成物出库）
