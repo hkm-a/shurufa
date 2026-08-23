@@ -48,6 +48,21 @@
   Windows 机器快速验证 hosted 候选窗。
 - 方案文档状态更新为“S1/S2/S3 已实施，S4/S5 未开始”。
 
+### 重构（2026-08-23，候选窗 S4/S5 与发布灰度管道）
+- **候选窗迁出收尾**：默认 `hosted`（S5 翻转），删除 TSF 内置绘制路径与
+  `candidate_window_d2d.rs`；hosted 支持右键菜单、固定位置、多行布局、
+  完整皮肤、Tab 标识、AI 副标、异步 AI 刷新。
+- **一键验收完善**：`test-cand-manual-auto.py` 改用 SendInput scancode，
+  真实鼠标点击 hosted 首项，A/B/C/E 单屏项全自动通过；新增 S4 验收报告。
+- **发布/灰度管道**：
+  - `core/update` 灰度判定（版本比较 + 稳定哈希分桶）
+  - `shurufa-ctl check-update / update-apply / update`（含下载进度）
+  - `generate-update-manifest.ps1` 生成 update.json
+  - Canary 自动构建 workflow，安装器写入 channel 配置
+  - 计划任务自动更新脚本
+  - `shurufa-ui` 常驻后台检查 + 系统托盘气球通知
+  - 控制中心更新面板/横幅（含目标版本）
+
 ### 重构（2026-08-22，阶段 3 收尾：schemas 生成物出库）
 - **三份构建期生成物出库**：`shurufa_t9.dict.yaml`（约 15 MB）、
   `jianpin_index.txt`（约 13.8 MB）、`rime_ice_nojianpin.schema.yaml` 不再提交
