@@ -72,6 +72,7 @@ fn cand_pipe_event_command_roundtrip() {
         context: ctx(&[("你好", ""), ("拟好", "")]),
         caret_rect: (10, 20, 8, 16),
         dpi: 96,
+        multi_line: false,
     };
     let reqdbg = ime_ipc::encode_request(&ime_ipc::Request::Context).unwrap();
     eprintln!("DBGREQ len={} first4={:?}", reqdbg.len(), &reqdbg[..8]);

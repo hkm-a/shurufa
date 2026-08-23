@@ -73,6 +73,7 @@ fn demo(seconds: u64) -> i32 {
         },
         caret_rect: (300, 300, 8, 16),
         dpi: 96,
+        multi_line: false,
     };
     let frame = match encode_cand_event(&event) {
         Ok(f) => f,

@@ -66,11 +66,15 @@ struct CandView {
     caret: POINT,
     show_tab: bool,
     tab_label: String,
+    multi_line: bool,
 }
 
 thread_local! {
     /// client_id → (hwnd, 最新视图)。窗口随事件更新，Hide 只隐藏不销毁。
     static CLIENTS: std::cell::RefCell<HashMap<u32, (HWND, CandView)>> =
+        std::cell::RefCell::new(HashMap::new());
+    /// client_id → 阴影壳（完整皮肤样式用）。
+    static SHADOWS: std::cell::RefCell<HashMap<u32, windows_skin::ShadowShell>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
@@ -269,8 +273,8 @@ fn scale(base: i32, dpi: u32) -> i32 {
 struct RowLayout {
     width: i32,
     height: i32,
-    /// 每项的 (x, w)——相对客户区左上角；y 统一为 0..height。
-    item_spans: Vec<(i32, i32)>,
+    /// 每项的 (x, y, w, h)——相对客户区左上角。
+    item_spans: Vec<(i32, i32, i32, i32)>,
 }
 
 fn layout_row(extra_left_w: i32, preedit_w: i32, item_widths: &[i32], dpi: u32) -> RowLayout {
@@ -281,10 +285,42 @@ fn layout_row(extra_left_w: i32, preedit_w: i32, item_widths: &[i32], dpi: u32) 
     let mut x = pad + extra_left_w + preedit_w + if extra_left_w + preedit_w > 0 { gap } else { 0 };
     let mut item_spans = Vec::with_capacity(item_widths.len());
     for &w in item_widths {
-        item_spans.push((x, w));
+        item_spans.push((x, 0, w, height));
         x += w + gap;
     }
     let width = (x - gap + pad).max(pad * 2);
+    RowLayout {
+        width,
+        height,
+        item_spans,
+    }
+}
+
+/// 多行候选面板布局：每行最多 MULTI_COLUMNS 项，自动换行。
+fn layout_multi(extra_left_w: i32, preedit_w: i32, item_widths: &[i32], dpi: u32) -> RowLayout {
+    const MULTI_COLUMNS: usize = 5;
+    let pad = scale(BASE_PADDING, dpi);
+    let gap = scale(BASE_GAP, dpi);
+    let font_h = scale(BASE_FONT_HEIGHT, dpi);
+    let row_h = font_h + scale(6, dpi);
+    let mut x = pad + extra_left_w + preedit_w + if extra_left_w + preedit_w > 0 { gap } else { 0 };
+    let mut y = 0i32;
+    let mut row_used = 0i32;
+    let mut max_row_used = 0i32;
+    let mut item_spans = Vec::with_capacity(item_widths.len());
+    for (i, &w) in item_widths.iter().enumerate() {
+        if i > 0 && i % MULTI_COLUMNS == 0 {
+            x = pad + extra_left_w + preedit_w + if extra_left_w + preedit_w > 0 { gap } else { 0 };
+            y += row_h;
+            row_used = 0;
+        }
+        item_spans.push((x, y, w, row_h));
+        x += w + gap;
+        row_used += w + gap;
+        max_row_used = max_row_used.max(row_used);
+    }
+    let height = y + row_h + pad;
+    let width = (pad + max_row_used + pad).max(pad * 2);
     RowLayout {
         width,
         height,
@@ -361,6 +397,7 @@ unsafe fn handle_event(event: CandEvent) {
             context,
             caret_rect,
             dpi,
+            multi_line,
         } => {
             let (x, y, _cx, _cy) = caret_rect;
             let items = view_items(&context);
@@ -384,7 +421,11 @@ unsafe fn handle_event(event: CandEvent) {
             SelectObject(hdc, old_font);
             let _ = DeleteObject(font.into());
             ReleaseDC(None, hdc);
-            let layout = layout_row(tab_w, preedit_w, &item_widths, dpi);
+            let layout = if multi_line {
+                layout_multi(tab_w, preedit_w, &item_widths, dpi)
+            } else {
+                layout_row(tab_w, preedit_w, &item_widths, dpi)
+            };
             let view = CandView {
                 client_id,
                 dpi,
@@ -392,11 +433,11 @@ unsafe fn handle_event(event: CandEvent) {
                 item_rects: layout
                     .item_spans
                     .iter()
-                    .map(|&(x, w)| RECT {
+                    .map(|&(x, y, w, h)| RECT {
                         left: x,
-                        top: 0,
+                        top: y,
                         right: x + w,
-                        bottom: layout.height,
+                        bottom: y + h,
                     })
                     .collect(),
                 items,
@@ -406,6 +447,7 @@ unsafe fn handle_event(event: CandEvent) {
                 caret: POINT { x, y },
                 show_tab,
                 tab_label: tab_label.to_owned(),
+                multi_line,
             };
             let uia_text = view
                 .items
@@ -436,6 +478,11 @@ unsafe fn handle_event(event: CandEvent) {
                     let _ = ShowWindow(*hwnd, SW_HIDE);
                 }
             });
+            SHADOWS.with(|s| {
+                if let Some(shadow) = s.borrow_mut().get_mut(&client_id) {
+                    shadow.hide();
+                }
+            });
         }
     }
 }
@@ -453,6 +500,7 @@ fn dummy_view(client_id: u32) -> CandView {
         caret: POINT::default(),
         show_tab: false,
         tab_label: String::new(),
+        multi_line: false,
     }
 }
 
@@ -461,7 +509,7 @@ unsafe fn create_client_window(client_id: u32) -> HWND {
         .expect("GetModuleHandleW");
     let mut title: Vec<u16> = format!("cand-{client_id}").encode_utf16().collect();
     title.push(0);
-    CreateWindowExW(
+    let hwnd = CreateWindowExW(
         WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         w!("ShurufaCandWin"),
         PCWSTR(title.as_ptr()),
@@ -475,7 +523,12 @@ unsafe fn create_client_window(client_id: u32) -> HWND {
         Some(hinstance.into()),
         None,
     )
-    .unwrap_or_default()
+    .unwrap_or_default();
+    if !hwnd.is_invalid() {
+        let skin = windows_skin::Skin::load();
+        windows_skin::apply_appearance(hwnd, &skin);
+    }
+    hwnd
 }
 
 /// 依光标矩形定位（物理像素；ui 进程 PerMonitorV2 感知，坐标直接可用），
@@ -516,6 +569,13 @@ unsafe fn position_and_show(client_id: u32) {
         );
         let _ = ShowWindow(*hwnd, SW_SHOWNOACTIVATE);
         let _ = InvalidateRect(Some(*hwnd), None, true);
+        // 完整皮肤：阴影壳跟随主窗
+        let skin = windows_skin::Skin::load();
+        SHADOWS.with(|s| {
+            let mut map = s.borrow_mut();
+            let shadow = map.entry(client_id).or_default();
+            shadow.sync(*hwnd, x, y, view.width, view.height, &skin.shadow);
+        });
     });
 }
 
@@ -691,6 +751,7 @@ fn map_get_clone(
         caret: v.caret,
         show_tab: v.show_tab,
         tab_label: v.tab_label.clone(),
+        multi_line: v.multi_line,
     });
     (found,)
 }
@@ -728,6 +789,7 @@ pub fn selftest() -> i32 {
             let client = PipeClient::connect_named(CAND_PIPE_NAME).map_err(|e| e.to_string())?;
             let event = CandEvent::Show {
                 client_id: 99,
+                multi_line: false,
                 context: Context {
                     preedit: "nihao".into(),
                     candidates: vec![

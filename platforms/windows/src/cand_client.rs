@@ -59,12 +59,14 @@ impl CandClient {
         ctx: &Context,
         caret_rect: (i32, i32, i32, i32),
         dpi: u32,
+        multi_line: bool,
     ) -> Result<(), String> {
         let event = CandEvent::Show {
             client_id,
             context: ctx.clone(),
             caret_rect,
             dpi,
+            multi_line,
         };
         let frame = encode_cand_event(&event)?;
         self.pipe.write_frame(&frame).map_err(|e| e.to_string())

@@ -135,6 +135,9 @@ pub enum CandEvent {
         context: Context,
         caret_rect: (i32, i32, i32, i32),
         dpi: u32,
+        /// 多行候选面板（M7）。缺省 false 兼容旧客户端。
+        #[serde(default)]
+        multi_line: bool,
     },
     /// 隐藏（组合结束/会话失焦）。
     Hide { client_id: u32 },
@@ -279,6 +282,7 @@ mod tests {
             },
             caret_rect: (100, 200, 8, 16),
             dpi: 144,
+            multi_line: false,
         };
         let bytes = encode_cand_event(&event).unwrap();
         let (frame, _) = decode_frame(&bytes).unwrap();
@@ -288,12 +292,14 @@ mod tests {
                 context,
                 caret_rect,
                 dpi,
+                multi_line,
             } => {
                 assert_eq!(client_id, 4242);
                 assert_eq!(context.preedit, "nihao");
                 assert_eq!(context.candidates.len(), 2);
                 assert_eq!(caret_rect, (100, 200, 8, 16));
                 assert_eq!(dpi, 144);
+                assert!(!multi_line);
             }
             other => panic!("unexpected: {other:?}"),
         }

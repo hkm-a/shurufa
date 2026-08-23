@@ -242,7 +242,11 @@ impl CandidateUi {
                 Some(p) => (p.x, p.y, 0, 0),
                 None => (0, 0, 0, 0),
             };
-            if client.show(self.client_id, &view_ctx, caret, dpi).is_ok() {
+            let multi_line = _panel_mode == CandidatePanelMode::Multi;
+            if client
+                .show(self.client_id, &view_ctx, caret, dpi, multi_line)
+                .is_ok()
+            {
                 self.visible = true;
                 return;
             }
