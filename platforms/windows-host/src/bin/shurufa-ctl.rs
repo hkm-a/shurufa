@@ -99,6 +99,30 @@ enum Command {
         #[arg(long)]
         out: Option<String>,
     },
+    /// 一键自动更新：灰度判断 + 下载 + 校验 + 启动安装
+    Update {
+        /// update.json 地址
+        #[arg(long)]
+        url: String,
+        /// 渠道：stable / canary / beta
+        #[arg(long, default_value = "stable")]
+        channel: String,
+        /// 机器标识（默认取主机名）
+        #[arg(long)]
+        machine_id: Option<String>,
+        /// 当前版本（默认读 version.json）
+        #[arg(long)]
+        current_version: Option<String>,
+        /// 只检查不安装
+        #[arg(long)]
+        check_only: bool,
+        /// 静默安装（NSIS /S）
+        #[arg(long)]
+        silent: bool,
+        /// 下载到本地路径（默认 %TEMP%\shurufa-update\update.exe）
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// 立即执行留存清理
     Retention,
     #[cfg(debug_assertions)]
@@ -313,6 +337,111 @@ fn main() {
             }
             println!("启动安装器…");
             let _ = std::process::Command::new(&out).spawn();
+            std::process::exit(0);
+        }
+        Command::Update {
+            url,
+            channel,
+            machine_id,
+            current_version,
+            check_only,
+            silent,
+            out,
+        } => {
+            let machine_id = machine_id.unwrap_or_else(|| {
+                std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown-machine".to_owned())
+            });
+            let current_version = current_version.unwrap_or_else(|| {
+                std::fs::read_to_string("version.json")
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| v.get("version").and_then(|x| x.as_str()).map(String::from))
+                    .unwrap_or_else(|| "0.0.0".to_owned())
+            });
+            println!("自动更新：channel={channel} machine={machine_id} current={current_version}");
+            let body = match ureq::get(&url).call() {
+                Ok(resp) => match resp.into_string() {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("读取 update.json 失败：{e}");
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("拉取 update.json 失败：{e}");
+                    std::process::exit(1);
+                }
+            };
+            let manifest = match UpdateManifest::from_json(&body) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("解析 update.json 失败：{e}");
+                    std::process::exit(1);
+                }
+            };
+            let Some(info) = manifest.channels.get(&channel) else {
+                eprintln!("渠道不存在：{channel}");
+                std::process::exit(1);
+            };
+            let update = should_update(&manifest, &channel, &machine_id, &current_version);
+            println!("目标版本：{}", info.version);
+            println!("灰度比例：{}%", info.rollout_percent);
+            if !update {
+                println!("当前无需更新");
+                std::process::exit(2);
+            }
+            if check_only {
+                println!("需要更新：{}", info.url);
+                std::process::exit(0);
+            }
+            use sha2::{Digest, Sha256};
+            use std::io::Write;
+            let out = out.unwrap_or_else(|| {
+                let dir = std::env::temp_dir().join("shurufa-update");
+                std::fs::create_dir_all(&dir).expect("创建更新目录失败");
+                dir.join("update.exe").to_string_lossy().to_string()
+            });
+            println!("下载：{}", info.url);
+            let resp = match ureq::get(&info.url).call() {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("下载失败：{e}");
+                    std::process::exit(1);
+                }
+            };
+            let mut reader = resp.into_reader();
+            let mut file = std::fs::File::create(&out).expect("创建本地文件失败");
+            let mut hasher = Sha256::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = std::io::Read::read(&mut reader, &mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                file.write_all(&buf[..n]).expect("写入文件失败");
+            }
+            file.flush().expect("flush 失败");
+            let actual = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            println!("已下载：{out}");
+            println!("SHA256：{actual}");
+            if !info.sha256.is_empty() && !info.sha256.eq_ignore_ascii_case(&actual) {
+                eprintln!("SHA256 不匹配：期望 {}", info.sha256);
+                std::process::exit(1);
+            }
+            if !info.sha256.is_empty() {
+                println!("SHA256 校验通过");
+            }
+            let mut cmd = std::process::Command::new(&out);
+            if silent {
+                cmd.arg("/S");
+            }
+            println!("启动安装器{}…", if silent { "（静默）" } else { "" });
+            let _ = cmd.spawn();
             std::process::exit(0);
         }
         Command::Retention => shurufa_host::apply_retention_now(),
