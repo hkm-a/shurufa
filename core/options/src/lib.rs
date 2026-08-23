@@ -1405,6 +1405,18 @@ mod tests {
     }
 
     #[test]
+    fn 候选窗默认hosted且校验器兼容双值() {
+        // S5 默认翻转：老 JSON 缺 candidate_window 时应走 hosted。
+        assert_eq!(ImeOptions::default().candidate_window, "hosted");
+        let parsed: ImeOptions = serde_json::from_str(r#"{"shift_switch_cn_en":true}"#).unwrap();
+        assert_eq!(parsed.candidate_window, "hosted");
+        assert!(validate_candidate_window("hosted"));
+        assert!(validate_candidate_window("builtin"));
+        assert!(!validate_candidate_window(""));
+        assert!(!validate_candidate_window("Hosted"));
+    }
+
+    #[test]
     fn 输入方案字段_缺省回退且写读往返() {
         // 老版本 JSON 无 input_scheme：serde default 为 "pinyin"
         let parsed: ImeOptions = serde_json::from_str(r#"{"shift_switch_cn_en":true}"#).unwrap();
