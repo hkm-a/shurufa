@@ -50,16 +50,32 @@ def main() -> int:
             proc.kill()
             return 1
 
+        import ctypes
+
         from pywinauto import Desktop
 
+        # 可见性检查用 win32 后端；候选文本用 GetWindowTextW 直接读窗口标题
+        # （cand_host 会把候选文本写入标题，pywinauto window_text 对这类
+        # 无边框工具窗偶发返回空，ctypes 更稳）。
         win = Desktop(backend="win32").window(handle=hwnd)
         if not win.is_visible():
             print("FAIL: 候选窗存在但不可见")
             proc.kill()
             return 1
 
+        buf = ctypes.create_unicode_buffer(512)
+        n = ctypes.windll.user32.GetWindowTextW(hwnd, buf, 512)
+        title = buf.value[:n] if n else ""
+        if "你好" not in title:
+            print(f"FAIL: 候选窗标题未包含预期候选文本，实际={title!r}")
+            proc.kill()
+            return 1
+
         rect = win.rectangle()
-        print(f"OK: 候选窗 hwnd={hwnd} rect=({rect.left},{rect.top},{rect.right},{rect.bottom})")
+        print(
+            f"OK: 候选窗 hwnd={hwnd} rect=({rect.left},{rect.top},{rect.right},{rect.bottom}) "
+            f"title={title!r}"
+        )
 
         code = proc.wait(timeout=10)
         print(f"OK: shurufa-ui --cand-selftest 退出码={code}")

@@ -24,11 +24,11 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GetSystemMetrics, PeekMessageW,
-    PostMessageW, RegisterClassW, SetWindowPos, ShowWindow, TranslateMessage, MSG, PM_REMOVE,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    PostMessageW, RegisterClassW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, MSG,
+    PM_REMOVE, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_APP, WM_GETOBJECT, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use ime_ipc::{decode_cand_event, encode_cand_command, CandCommand, CandEvent, Context};
@@ -370,6 +370,13 @@ unsafe fn handle_event(event: CandEvent) {
                 height: layout.height,
                 caret: POINT { x, y },
             };
+            let uia_text = view
+                .items
+                .iter()
+                .map(|it| format!("{}.{}", it.label, it.text))
+                .collect::<Vec<_>>()
+                .join("，");
+            crate::cand_uia::update_candidate_text(&uia_text);
             let _hwnd = CLIENTS.with(|c| {
                 let mut map = c.borrow_mut();
                 let entry = map
@@ -379,11 +386,15 @@ unsafe fn handle_event(event: CandEvent) {
                 *slot = view;
                 *hwnd
             });
+            let title: Vec<u16> = uia_text.encode_utf16().collect();
+            let _ = SetWindowTextW(_hwnd, PCWSTR(title.as_ptr()));
             position_and_show(client_id);
         }
         CandEvent::Hide { client_id } => {
+            crate::cand_uia::clear_candidate_text();
             CLIENTS.with(|c| {
                 if let Some((hwnd, _)) = c.borrow().get(&client_id) {
+                    let _ = SetWindowTextW(*hwnd, w!(""));
                     let _ = ShowWindow(*hwnd, SW_HIDE);
                 }
             });
@@ -474,6 +485,12 @@ unsafe extern "system" fn cand_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        value if value == WM_GETOBJECT => {
+            if let Some(lr) = crate::cand_uia::on_wm_getobject(hwnd, wparam, lparam) {
+                return lr;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_PAINT => {
             let mut ps = windows::Win32::Graphics::Gdi::PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
