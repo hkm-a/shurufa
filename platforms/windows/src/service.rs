@@ -996,6 +996,8 @@ impl Inner {
                     let position = PositionMode::from_option(&self.opts.candidate_position);
                     let panel_mode =
                         CandidatePanelMode::from_option(&self.opts.candidate_panel_mode);
+                    // S3 双路径灰度：builtin（默认）| hosted（迁出到 shurufa-ui）。
+                    ui.set_hosted(self.opts.candidate_window == "hosted");
                     // 固定模式无需锚点：直接复用缓存或清空，跳过 COM 往返。
                     let anchor = if position == PositionMode::Follow {
                         match composition_slot.as_ref() {

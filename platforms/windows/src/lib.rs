@@ -6,6 +6,7 @@
 #![cfg(windows)]
 
 mod ai_candidates;
+mod cand_client;
 mod candidate_window;
 mod candidate_window_d2d;
 mod composition;

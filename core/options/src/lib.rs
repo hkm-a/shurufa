@@ -85,6 +85,11 @@ pub struct ImeOptions {
     /// 约 2 秒内生效。多行布局随 M7 逐步落地，选项层先行。
     #[serde(default = "default_candidate_panel_mode")]
     pub candidate_panel_mode: String,
+    /// 候选窗渲染路径（S3，2026-08-23）：builtin（默认，TSF 进程内绘制）/
+    /// hosted（候选 UI 迁入 shurufa-ui 独立进程，经 shurufa-cand 管道）。
+    /// hosted 为灰度开关，默认 builtin；管道故障时 TSF 侧自动回退内置。
+    #[serde(default = "default_candidate_window")]
+    pub candidate_window: String,
     /// 按应用选项（weasel app_options 同款，2026-08-17 引入）：进程名
     /// （小写，如 "windowsterminal.exe"）→ 该应用下的输入法行为覆盖。
     /// 支持 ascii_mode（进入该应用自动切英文直输，离开恢复）与 vim_mode
@@ -171,6 +176,16 @@ pub fn default_candidate_panel_mode() -> String {
 /// 候选面板模式合法值："single"（单行候选条）| "multi"（多行候选面板）。
 pub fn validate_candidate_panel_mode(s: &str) -> bool {
     matches!(s, "single" | "multi")
+}
+
+/// 候选窗渲染路径默认值：内置绘制（灰度开关默认不启用 hosted）。
+pub fn default_candidate_window() -> String {
+    "builtin".to_owned()
+}
+
+/// 候选窗渲染路径合法值："builtin"（TSF 进程内绘制）| "hosted"（独立进程）。
+pub fn validate_candidate_window(s: &str) -> bool {
+    matches!(s, "builtin" | "hosted")
 }
 
 /// 设置中心"通用"页字段一览。 serde 双端兼容：老 JSON 无 `general` 键时
@@ -389,6 +404,7 @@ impl Default for ImeOptions {
             input_scheme: default_input_scheme(),
             candidate_position: default_candidate_position(),
             candidate_panel_mode: default_candidate_panel_mode(),
+            candidate_window: default_candidate_window(),
             app_options: std::collections::BTreeMap::new(),
             symbol_pairing: default_symbol_pairing(),
             scenario_dict: default_scenario_dict(),

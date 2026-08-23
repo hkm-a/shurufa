@@ -795,6 +795,13 @@ pub struct CandidateUi {
     /// 内容未变时复用的上次布局结果（宽度/高度只依赖指纹内的输入）。
     last_width: i32,
     last_height: i32,
+    /// S3 双路径灰度：true = hosted（候选 UI 迁到 shurufa-ui），
+    /// false = builtin（本进程内绘制）。默认 false。
+    hosted: bool,
+    /// hosted 模式的管道客户端；连接失败保持 None 自动回退内置。
+    cand_client: Option<crate::cand_client::CandClient>,
+    /// 本 TSF 宿主在候选窗服务里的 client_id（用进程 id 即可唯一）。
+    client_id: u32,
 }
 
 /// 候选窗布局计算（show 与 AI 结果刷新共用）：字体实测 → items/宽高 →
@@ -1144,7 +1151,15 @@ impl CandidateUi {
             last_fp: None,
             last_width: 0,
             last_height: 0,
+            hosted: false,
+            cand_client: None,
+            client_id: std::process::id(),
         }
+    }
+
+    /// S3：设置 hosted 灰度开关（由 service.rs 每帧按 options 写入）。
+    pub fn set_hosted(&mut self, hosted: bool) {
+        self.hosted = hosted;
     }
 
     fn ensure_window(&mut self) -> Option<HWND> {
@@ -1258,6 +1273,23 @@ impl CandidateUi {
         position: PositionMode,
         panel_mode: CandidatePanelMode,
     ) {
+        // S3 hosted：把候选帧推给 shurufa-ui，不在本进程建窗。
+        if self.hosted {
+            if self.cand_client.is_none() {
+                self.cand_client = crate::cand_client::CandClient::connect().ok();
+            }
+            if let Some(client) = &self.cand_client {
+                let dpi = unsafe { GetDpiForSystem().max(96) }.max(96);
+                let caret = match anchor {
+                    Some(p) => (p.x, p.y, 0, 0),
+                    None => (0, 0, 0, 0),
+                };
+                let _ = client.show(self.client_id, ctx, caret, dpi);
+                self.visible = true;
+                return;
+            }
+            // 连接失败：回退内置绘制路径。
+        }
         let Some(hwnd) = self.ensure_window() else {
             return;
         };
@@ -1371,6 +1403,12 @@ impl CandidateUi {
     }
 
     pub fn hide(&mut self) {
+        // S3 hosted：通知独立进程隐藏；若此前曾回退内置，下面仍会隐藏内置窗。
+        if self.hosted {
+            if let Some(client) = &self.cand_client {
+                let _ = client.hide(self.client_id);
+            }
+        }
         self.shadow.hide();
         if let Some(hwnd) = self.hwnd {
             unsafe {
