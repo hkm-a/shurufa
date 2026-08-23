@@ -173,37 +173,38 @@ unsafe fn serve_connection(
     loop {
         // 优先读客户端事件；没有输入时才处理待发命令，避免同一句柄上
         // 同时阻塞 Read/Write（实测会导致 WriteFile 与 ReadFile 互相等待）。
-        if conn.peek_available() {
-            let frame = match conn.read_frame() {
-                Ok(f) => f,
-                Err(_) => break,
-            };
-            let Ok(event) = decode_cand_event(&frame) else {
-                continue;
-            };
-            let client_id = match &event {
-                CandEvent::Show { client_id, .. } | CandEvent::Hide { client_id } => *client_id,
-            };
-            if !known_ids.contains(&client_id) {
-                known_ids.push(client_id);
-                conns().lock().unwrap().insert(client_id, tx.clone());
+        match conn.peek_available() {
+            Ok(true) => {
+                let frame = match conn.read_frame() {
+                    Ok(f) => f,
+                    Err(_) => break,
+                };
+                let Ok(event) = decode_cand_event(&frame) else {
+                    continue;
+                };
+                let client_id = match &event {
+                    CandEvent::Show { client_id, .. } | CandEvent::Hide { client_id } => *client_id,
+                };
+                if !known_ids.contains(&client_id) {
+                    known_ids.push(client_id);
+                    conns().lock().unwrap().insert(client_id, tx.clone());
+                }
+                let boxed = Box::into_raw(Box::new(event));
+                let ctl = CTL_HWND.load(Ordering::Relaxed);
+                if ctl == 0
+                    || PostMessageW(
+                        Some(HWND(ctl as *mut _)),
+                        WM_APP_CAND_EVENT,
+                        WPARAM(0),
+                        LPARAM(boxed as isize),
+                    )
+                    .is_err()
+                {
+                    drop(Box::from_raw(boxed));
+                    break;
+                }
             }
-            let boxed = Box::into_raw(Box::new(event));
-            let ctl = CTL_HWND.load(Ordering::Relaxed);
-            if ctl == 0
-                || PostMessageW(
-                    Some(HWND(ctl as *mut _)),
-                    WM_APP_CAND_EVENT,
-                    WPARAM(0),
-                    LPARAM(boxed as isize),
-                )
-                .is_err()
-            {
-                drop(Box::from_raw(boxed));
-                break;
-            }
-        } else {
-            match rx.try_recv() {
+            Ok(false) => match rx.try_recv() {
                 Ok(cmd) => {
                     if let Ok(frame) = encode_cand_command(&cmd) {
                         let _ = conn.write_frame(&frame);
@@ -213,7 +214,8 @@ unsafe fn serve_connection(
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
                 Err(TryRecvError::Disconnected) => break,
-            }
+            },
+            Err(_) => break,
         }
     }
     let mut map = conns().lock().unwrap();

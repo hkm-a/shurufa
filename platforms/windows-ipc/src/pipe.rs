@@ -116,10 +116,14 @@ impl PipeServer {
     }
 
     /// 非阻塞探测是否有可读消息（消息模式下一帧一条）。
-    pub fn peek_available(&self) -> bool {
+    /// 返回 `Err` 表示管道已断开/无效，调用方应结束连接。
+    pub fn peek_available(&self) -> IoResult<bool> {
         let mut available: u32 = 0;
-        let ok = unsafe { PeekNamedPipe(self.handle, None, 0, None, Some(&mut available), None) };
-        ok.is_ok() && available > 0
+        unsafe {
+            PeekNamedPipe(self.handle, None, 0, None, Some(&mut available), None)
+                .map_err(win_err)?;
+        }
+        Ok(available > 0)
     }
 
     /// 读一帧（消息模式一次 ReadFile 收一条完整消息）。

@@ -29,6 +29,9 @@
   已接入 CI 与验收预检。
 - **候选窗稳定性冒烟**：新增 `scripts/test-cand-stability.py`，反复多客户端
   Show + 杀进程重启恢复；已接入 CI 与验收预检。
+- **管道断开清理自动化**：新增 `scripts/test-cand-disconnect.py`，客户端断开
+  后旧候选窗隐藏、新客户端可恢复；修复 `peek_available` 返回 `Result` 以检测
+  断管；已接入 CI 与验收预检。
 - **S5 前置：全屏回退内置**：TSF 检测前台窗口覆盖虚拟屏 ≥95% 时，即使
   `candidate_window=hosted` 也走内置绘制，避免全屏应用下候选窗被遮挡/闪烁；
   新增 `is_fullscreen_rect` 纯函数测试。

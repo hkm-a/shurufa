@@ -98,6 +98,7 @@ jobs:
           python scripts/test-cand-interact.py --exe target\release\shurufa-ui.exe
           python scripts/test-cand-faults.py --exe target\release\shurufa-ui.exe
           python scripts/test-cand-stability.py --exe target\release\shurufa-ui.exe --rounds 2
+          python scripts/test-cand-disconnect.py --exe target\release\shurufa-ui.exe
       - name: 上传安装包与校验和
         uses: actions/upload-artifact@v4
         with:
