@@ -63,6 +63,19 @@
   - `shurufa-ui` 常驻后台检查 + 系统托盘气球通知
   - 控制中心更新面板/横幅（含目标版本）
 
+### 优化（2026-08-24，hosted 候选窗模式角标与 clippy 收尾）
+- **hosted 候选窗右上角模式角标**：显示 `中` / `En` / `全` / `⇪`，
+  角标右侧独立预留宽度，不遮挡候选；`ime_ipc::Context` 新增
+  `caps_visual`（serde default 兼容旧帧），TSF 侧 `set_caps_visual`
+  写入线程状态并在候选可见时立即重推一帧，Shift 长按视觉提示不再丢在
+  hosted 路径外。
+- **cand_host 单测**：新增 `模式角标_中英全角`，覆盖中文/英文/全角/
+  长按大写四态与优先级。
+- **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
+  `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
+  下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets
+  -D warnings` 通过。
+
 ### 重构（2026-08-22，阶段 3 收尾：schemas 生成物出库）
 - **三份构建期生成物出库**：`shurufa_t9.dict.yaml`（约 15 MB）、
   `jianpin_index.txt`（约 13.8 MB）、`rime_ice_nojianpin.schema.yaml` 不再提交

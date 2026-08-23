@@ -59,6 +59,10 @@ pub struct Context {
     /// 引擎当前是否全角（由服务侧填充）。
     #[serde(default)]
     pub is_full_shape: bool,
+    /// TSF 侧长按 Shift 的大写视觉提示（非引擎状态，由 TSF 填充；
+    /// 缺省 false 兼容旧 JSON / 非 TSF 调用方）。
+    #[serde(default)]
+    pub caps_visual: bool,
 }
 
 /// 服务 → 客户端：一次操作的应答。
@@ -293,7 +297,7 @@ mod tests {
             caret_rect: (100, 200, 8, 16),
             dpi: 144,
             multi_line: false,
-                position: "follow".to_owned(),
+            position: "follow".to_owned(),
         };
         let bytes = encode_cand_event(&event).unwrap();
         let (frame, _) = decode_frame(&bytes).unwrap();

@@ -32,9 +32,9 @@ fn read_channel() -> String {
 /// 用系统托盘气球通知提示有更新（不需要常驻托盘图标，10s 后自动删除）。
 fn notify_update_available(detail: &str) {
     use windows::core::w;
-        use windows::Win32::UI::Shell::{
-        Shell_NotifyIconW, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_INFOTIP_FLAGS, NIF_INFO,
-        NIM_ADD, NIM_DELETE,
+    use windows::Win32::UI::Shell::{
+        Shell_NotifyIconW, NIF_INFO, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS,
+        NOTIFY_ICON_INFOTIP_FLAGS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, LoadIconW, IDI_APPLICATION};
 
@@ -43,7 +43,10 @@ fn notify_update_available(detail: &str) {
             return;
         };
         let icon = LoadIconW(None, IDI_APPLICATION).unwrap_or_default();
-        let title: Vec<u16> = "FOX输入法更新".encode_utf16().chain(std::iter::once(0)).collect();
+        let title: Vec<u16> = "FOX输入法更新"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let msg: Vec<u16> = detail.encode_utf16().chain(std::iter::once(0)).collect();
         let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -54,7 +57,11 @@ fn notify_update_available(detail: &str) {
         nid.dwInfoFlags = NOTIFY_ICON_INFOTIP_FLAGS(1); // NIIF_INFO
         let ti = title.as_ptr();
         let mi = msg.as_ptr();
-        std::ptr::copy_nonoverlapping(ti, nid.szInfoTitle.as_mut_ptr(), title.len().min(nid.szInfoTitle.len()));
+        std::ptr::copy_nonoverlapping(
+            ti,
+            nid.szInfoTitle.as_mut_ptr(),
+            title.len().min(nid.szInfoTitle.len()),
+        );
         std::ptr::copy_nonoverlapping(mi, nid.szInfo.as_mut_ptr(), msg.len().min(nid.szInfo.len()));
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
         // 10s 后移除临时托盘图标（NOTIFYICONDATAW 不是 Send，这里只传 usize）
@@ -78,7 +85,10 @@ pub fn run_once() {
     let Some(manifest) = std::env::var_os("SHURUFA_UPDATE_MANIFEST") else {
         return;
     };
-    let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)) else {
+    let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(PathBuf::from))
+    else {
         return;
     };
     let ctl = exe_dir.join("shurufa-ctl.exe");
@@ -119,7 +129,10 @@ pub fn run_once() {
             "detail": text,
             "target_version": target_version,
         });
-        let _ = std::fs::write(dir.join("update-available.json"), serde_json::to_string_pretty(&state).unwrap_or_default());
+        let _ = std::fs::write(
+            dir.join("update-available.json"),
+            serde_json::to_string_pretty(&state).unwrap_or_default(),
+        );
         log_line(&format!("update_check: 发现更新\n{text}"));
         notify_update_available(&text);
     } else if output.status.code() == Some(2) {

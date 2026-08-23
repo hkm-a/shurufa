@@ -5,7 +5,7 @@
 //! - 读取 `CandCommand`（点击/滚轮）并合成虚拟键回走 TSF 正常按键路径；
 //! - 管道连接/写入失败时静默降级（不弹内置窗，输入本身不受影响）。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use windows::core::{w, PCWSTR};
@@ -14,8 +14,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetForegroundWindow, GetSystemMetrics, GetWindowRect,
-    PostMessageW, RegisterClassW, WM_APP, WNDCLASSW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    PostMessageW, RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, WM_APP, WNDCLASSW,
 };
 
 use ime_ipc::{Candidate, Context};
@@ -67,16 +67,21 @@ fn move_highlight_for_menu(index: usize) {
 }
 
 // ---------------------------------------------------------------------------
-// AI 候选消息常量与提交钩子（builtin 渲染已删除；常量保留供 ai_candidates
-// 编译，实际 hosted 下 AI 候选展示由 shurufa-ui 后续版本接管）。
+// AI 候选消息常量与提交钩子（builtin 渲染已删除；hosted 下 AI 结果到达后
+// 由隐藏窗口消息触发重推一帧）。
 // ---------------------------------------------------------------------------
 
-pub(crate) const WM_AI_CANDIDATES_READY: u32 = WM_APP + 81;
 /// AI 结果到达后触发 hosted 主动刷新的隐藏窗口消息。
 const WM_APP_AI_REFRESH: u32 = WM_APP + 82;
 const AI_REFRESH_CLASS: PCWSTR = w!("ShurufaAiRefreshHost");
 static AI_REFRESH_HWND: AtomicIsize = AtomicIsize::new(0);
 static CURRENT_UI: AtomicIsize = AtomicIsize::new(0);
+
+// TSF 侧长按 Shift 的大写视觉提示位；由 set_caps_visual 维护，
+// build_view_ctx 每次推帧时写入 CandEvent Context。
+thread_local! {
+    static CAPS_VISUAL: Cell<bool> = const { Cell::new(false) };
+}
 
 type AiCommitFn = Box<dyn Fn(&str) -> bool>;
 thread_local! {
@@ -126,9 +131,14 @@ pub fn syllable_breaks(preedit: &str) -> Vec<u16> {
     out
 }
 
-/// 长按大写视觉提示：builtin 已删除，hosted 下暂不支持，恒返回 false。
-pub fn set_caps_visual(_active: bool) -> bool {
-    false
+/// 长按大写视觉提示：写入 TSF 线程状态，并在候选窗可见时立即重推一帧，
+/// 让 hosted 候选窗的右上角角标同步为 `⇪` / 中 / En。
+pub fn set_caps_visual(active: bool) -> bool {
+    CAPS_VISUAL.with(|c| c.set(active));
+    unsafe {
+        refresh_ai_current();
+    }
+    true
 }
 
 /// 当前候选窗 HWND：builtin 已删除，hosted 无 TSF 侧窗口，恒 None。
@@ -202,6 +212,7 @@ fn is_foreground_fullscreen() -> bool {
 
 fn build_view_ctx(ctx: &Context) -> Context {
     let mut view_ctx = ctx.clone();
+    CAPS_VISUAL.with(|c| view_ctx.caps_visual = c.get());
     if view_ctx.candidates.is_empty() {
         let english = crate::english_candidates::suggest(&view_ctx.preedit);
         if !english.is_empty() {
@@ -319,7 +330,10 @@ impl CandidateUi {
             last_multi_line: false,
             last_position: "follow".to_owned(),
         };
-        CURRENT_UI.store(&ui as *const CandidateUi as *mut CandidateUi as isize, Ordering::Relaxed);
+        CURRENT_UI.store(
+            &ui as *const CandidateUi as *mut CandidateUi as isize,
+            Ordering::Relaxed,
+        );
         let _ = create_ai_refresh_window();
         ui
     }

@@ -30,15 +30,13 @@ fn download_with_progress(url: &str, out: &str) -> Result<String, String> {
         }
         done += n as u64;
         if let Some(t) = total {
-            if t > 0 {
-                eprint!(
-                    "\r下载进度：{}%",
-                    (done.saturating_mul(100) / t).min(100)
-                );
+            if let Some(pct) = done.saturating_mul(100).checked_div(t) {
+                eprint!("\r下载进度：{}%", pct.min(100));
             }
         }
         hasher.update(&buf[..n]);
-        file.write_all(&buf[..n]).map_err(|e| format!("写入文件失败：{e}"))?;
+        file.write_all(&buf[..n])
+            .map_err(|e| format!("写入文件失败：{e}"))?;
     }
     if total.is_some() {
         eprintln!();

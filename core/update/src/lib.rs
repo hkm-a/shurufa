@@ -49,14 +49,8 @@ impl UpdateManifest {
 pub fn version_gt(a: &str, b: &str) -> bool {
     let (a_main, a_pre) = split_pre(a);
     let (b_main, b_pre) = split_pre(b);
-    let a_parts: Vec<u32> = a_main
-        .split('.')
-        .map(|s| s.parse().unwrap_or(0))
-        .collect();
-    let b_parts: Vec<u32> = b_main
-        .split('.')
-        .map(|s| s.parse().unwrap_or(0))
-        .collect();
+    let a_parts: Vec<u32> = a_main.split('.').map(|s| s.parse().unwrap_or(0)).collect();
+    let b_parts: Vec<u32> = b_main.split('.').map(|s| s.parse().unwrap_or(0)).collect();
     let len = a_parts.len().max(b_parts.len());
     for i in 0..len {
         let av = a_parts.get(i).copied().unwrap_or(0);

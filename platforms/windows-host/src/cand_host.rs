@@ -24,14 +24,13 @@ use windows::Win32::Graphics::Gdi::{
     SetTextColor, DT_LEFT, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HBRUSH, HDC, HFONT, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-    DestroyWindow, FindWindowW, GetSystemMetrics, PeekMessageW, PostMessageW, RegisterClassW,
-    SetWindowPos, SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage, MSG, PM_REMOVE,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_GETOBJECT, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, MF_SEPARATOR, MF_STRING,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
+    FindWindowW, GetSystemMetrics, PeekMessageW, PostMessageW, RegisterClassW, SetWindowPos,
+    SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage, MF_SEPARATOR, MF_STRING, MSG,
+    PM_REMOVE, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_GETOBJECT, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT,
+    WM_RBUTTONDOWN, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use ime_ipc::{decode_cand_event, encode_cand_command, CandCommand, CandEvent, Context};
@@ -70,6 +69,7 @@ struct CandView {
     tab_label: String,
     multi_line: bool,
     position: String,
+    mode_badge: String,
 }
 
 thread_local! {
@@ -362,6 +362,22 @@ fn text_width(hdc: HDC, text: &str) -> i32 {
     size.cx
 }
 
+/// hosted 候选窗右上角模式角标：长按 Shift 大写视觉 `⇪` / 英文直输 `En` /
+/// 全角 `全` / 中文半角 `中`。
+/// 大写视觉优先（用户主动长按，必须立即反馈）；其次英文直输
+/// （英文+全角时也以 En 为准，避免角标切换闪烁）。
+fn mode_badge_for(ctx: &Context) -> String {
+    if ctx.caps_visual {
+        "⇪".to_owned()
+    } else if ctx.is_ascii {
+        "En".to_owned()
+    } else if ctx.is_full_shape {
+        "全".to_owned()
+    } else {
+        "中".to_owned()
+    }
+}
+
 fn view_items(ctx: &Context) -> Vec<ItemView> {
     ctx.candidates
         .iter()
@@ -410,6 +426,7 @@ unsafe fn handle_event(event: CandEvent) {
             let show_tab = !context.candidates.is_empty()
                 && context.candidates.iter().all(|c| c.text.is_ascii());
             let tab_label = if show_tab { "EN" } else { "拼" };
+            let mode_badge = mode_badge_for(&context);
             let hdc = GetDC(None);
             let font = cand_font(dpi);
             let old_font = SelectObject(hdc, font.into());
@@ -423,14 +440,24 @@ unsafe fn handle_event(event: CandEvent) {
                 .iter()
                 .map(|it| text_width(hdc, &format!("{}.{}{}", it.label, it.text, it.comment)))
                 .collect();
+            let pad = scale(BASE_PADDING, dpi);
+            let badge_w = if mode_badge.is_empty() {
+                0
+            } else {
+                text_width(hdc, &format!("[{}]", mode_badge)) + pad
+            };
             SelectObject(hdc, old_font);
             let _ = DeleteObject(font.into());
             ReleaseDC(None, hdc);
-            let layout = if multi_line {
+            let mut layout = if multi_line {
                 layout_multi(tab_w, preedit_w, &item_widths, dpi)
             } else {
                 layout_row(tab_w, preedit_w, &item_widths, dpi)
             };
+            if badge_w > 0 {
+                // 角标在右上角，不参与候选布局；额外加宽避免盖住最后一项。
+                layout.width += badge_w;
+            }
             let view = CandView {
                 client_id,
                 dpi,
@@ -454,6 +481,7 @@ unsafe fn handle_event(event: CandEvent) {
                 tab_label: tab_label.to_owned(),
                 multi_line,
                 position,
+                mode_badge,
             };
             let uia_text = view
                 .items
@@ -508,6 +536,7 @@ fn dummy_view(client_id: u32) -> CandView {
         tab_label: String::new(),
         multi_line: false,
         position: String::new(),
+        mode_badge: String::new(),
     }
 }
 
@@ -558,7 +587,10 @@ unsafe fn position_and_show(client_id: u32) {
         let margin = scale(8, view.dpi);
         let (mut x, y) = match view.position.as_str() {
             "bottom_left" => (vx + margin, vy + vh - view.height - margin),
-            "bottom_right" => (vx + vw - view.width - margin, vy + vh - view.height - margin),
+            "bottom_right" => (
+                vx + vw - view.width - margin,
+                vy + vh - view.height - margin,
+            ),
             _ => {
                 let x = view.caret.x;
                 let mut y = view.caret.y + view.height / 2 + gap;
@@ -681,7 +713,11 @@ unsafe fn show_context_menu(hwnd: HWND, x: i32, y: i32) {
     let Some((client_id, _text)) = CLIENTS.with(|c| {
         let map = c.borrow();
         let (id, (_, view)) = map.get_key_value_by_hwnd(hwnd)?;
-        let text = view.items.get(index).map(|it| it.text.clone()).unwrap_or_default();
+        let text = view
+            .items
+            .get(index)
+            .map(|it| it.text.clone())
+            .unwrap_or_default();
         Some((*id, text))
     }) else {
         return;
@@ -753,6 +789,13 @@ unsafe fn paint(hwnd: HWND, hdc: HDC) {
 
     let pad = scale(BASE_PADDING, view.dpi);
     let mut left = pad;
+    // 中/En/全 状态角标（右上角，不参与候选布局）
+    if !view.mode_badge.is_empty() {
+        let badge = format!("[{}]", view.mode_badge);
+        let bw = text_width(hdc, &badge);
+        SetTextColor(hdc, windows::Win32::Foundation::COLORREF(colors.label));
+        draw_text_at(hdc, &badge, view.width - bw - pad, 0, view.height);
+    }
     // Tab 行（英文联想/拼音标识）
     if view.show_tab {
         SetTextColor(hdc, windows::Win32::Foundation::COLORREF(colors.label));
@@ -824,7 +867,7 @@ fn map_get_clone(
                 label: it.label.clone(),
                 text: it.text.clone(),
                 comment: it.comment.clone(),
-                    is_ai: it.is_ai,
+                is_ai: it.is_ai,
             })
             .collect(),
         item_rects: v.item_rects.clone(),
@@ -836,6 +879,7 @@ fn map_get_clone(
         tab_label: v.tab_label.clone(),
         multi_line: v.multi_line,
         position: v.position.clone(),
+        mode_badge: v.mode_badge.clone(),
     });
     (found,)
 }
@@ -970,5 +1014,29 @@ mod tests {
         assert_eq!(items[0].label, "1");
         assert_eq!(items[8].label, "9");
         assert_eq!(items[9].label, "0");
+    }
+
+    #[test]
+    fn 模式角标_中英全角() {
+        let mut ctx = Context::default();
+        assert_eq!(mode_badge_for(&ctx), "中");
+
+        ctx.is_ascii = true;
+        assert_eq!(mode_badge_for(&ctx), "En");
+
+        ctx.is_ascii = false;
+        ctx.is_full_shape = true;
+        assert_eq!(mode_badge_for(&ctx), "全");
+
+        // 英文直输优先：英文 + 全角不闪烁切回中文
+        ctx.is_ascii = true;
+        assert_eq!(mode_badge_for(&ctx), "En");
+
+        // 长按 Shift 大写视觉优先于中/英/全角
+        ctx.caps_visual = true;
+        assert_eq!(mode_badge_for(&ctx), "⇪");
+        ctx.is_ascii = false;
+        ctx.is_full_shape = false;
+        assert_eq!(mode_badge_for(&ctx), "⇪");
     }
 }

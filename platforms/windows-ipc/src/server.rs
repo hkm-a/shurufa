@@ -26,6 +26,7 @@ fn context_from_bridge(ctx: &ime_bridge::Context) -> ime_ipc::Context {
         // 状态位需要会话访问，此处没有 session，置默认；由本函数调用方填充
         is_ascii: false,
         is_full_shape: false,
+        caps_visual: false,
     }
 }
 

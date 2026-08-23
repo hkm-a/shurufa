@@ -318,7 +318,6 @@ fn retry_sync_activity(id: u64) -> Result<String, String> {
     Ok("重试已提交，host 数秒内执行".to_owned())
 }
 
-
 fn ctl_path() -> Result<std::path::PathBuf, String> {
     std::env::current_exe()
         .ok()
@@ -338,7 +337,9 @@ fn check_update(url: String, channel: Option<String>) -> Result<String, String> 
             cmd.args(["--channel", &ch]);
         }
     }
-    let output = cmd.output().map_err(|e| format!("执行 shurufa-ctl 失败：{e}"))?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("执行 shurufa-ctl 失败：{e}"))?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if output.status.success() {
         Ok(text)
@@ -368,7 +369,9 @@ fn apply_update(url: String, channel: Option<String>, silent: bool) -> Result<St
     if silent {
         cmd.arg("--silent");
     }
-    let output = cmd.output().map_err(|e| format!("执行 shurufa-ctl 失败：{e}"))?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("执行 shurufa-ctl 失败：{e}"))?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if output.status.success() {
         Ok(text)
@@ -381,7 +384,6 @@ fn apply_update(url: String, channel: Option<String>, silent: bool) -> Result<St
         ))
     }
 }
-
 
 /// shurufa-ui 后台检查写出的更新状态。
 #[derive(serde::Serialize)]
@@ -404,7 +406,10 @@ fn update_status() -> Result<Option<UpdateStatus>, String> {
     let v: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("解析更新状态失败：{e}"))?;
     Ok(Some(UpdateStatus {
-        available: v.get("available").and_then(|x| x.as_bool()).unwrap_or(false),
+        available: v
+            .get("available")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
         checked_at: v
             .get("checked_at")
             .and_then(|x| x.as_str())

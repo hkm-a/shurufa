@@ -9,8 +9,8 @@
 //!
 //! 线程模型：每个宿主进程一个常驻 worker 线程（懒启动）。TSF 每键把当前
 //! preedit + 候选窗句柄投递进 channel（缓冲 1，快打时丢旧保新），worker
-//! 在 800ms 停顿窗口内取最后一条 → 调 agnès（8s 超时）→ 结果经
-//! PostMessage 回到候选窗 UI 线程（WM_AI_CANDIDATES_READY）刷新布局。
+//! 在 800ms 停顿窗口内取最后一条 → 调 agnès（8s 超时）→ 结果写入
+//! 共享缓存并通知 TSF UI 线程重推 hosted 候选帧。
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -21,13 +21,14 @@ pub const MAX_CANDIDATES: usize = 3;
 pub const TIMEOUT_MS: u64 = 8_000;
 pub const CACHE_TTL_MS: u64 = 10_000;
 pub const DEBOUNCE_MS: u64 = 800;
-/// 候选行保留给引擎候选的数量；AI 候选排在其后（合计不超过 9）。
-pub const RIME_KEEP: usize = 6;
+
+/// AI 结果跨线程缓存条目：候选列表 + 写入时刻。
+type AiCacheEntry = (Vec<String>, Instant);
 
 /// AI 结果跨线程缓存：worker 线程写入，TSF UI 线程 show() 时读取合并。
-static AI_CACHE: OnceLock<Mutex<HashMap<String, (Vec<String>, Instant)>>> = OnceLock::new();
+static AI_CACHE: OnceLock<Mutex<HashMap<String, AiCacheEntry>>> = OnceLock::new();
 
-fn ai_cache() -> &'static Mutex<HashMap<String, (Vec<String>, Instant)>> {
+fn ai_cache() -> &'static Mutex<HashMap<String, AiCacheEntry>> {
     AI_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
