@@ -382,6 +382,46 @@ fn apply_update(url: String, channel: Option<String>, silent: bool) -> Result<St
     }
 }
 
+
+/// shurufa-ui 后台检查写出的更新状态。
+#[derive(serde::Serialize)]
+struct UpdateStatus {
+    available: bool,
+    checked_at: String,
+    channel: String,
+    detail: String,
+}
+
+/// 读取 shurufa-ui 写出的 update-available.json。
+#[tauri::command]
+fn update_status() -> Result<Option<UpdateStatus>, String> {
+    let path = app_data_dir().join("update-available.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("读取更新状态失败：{e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析更新状态失败：{e}"))?;
+    Ok(Some(UpdateStatus {
+        available: v.get("available").and_then(|x| x.as_bool()).unwrap_or(false),
+        checked_at: v
+            .get("checked_at")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned(),
+        channel: v
+            .get("channel")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned(),
+        detail: v
+            .get("detail")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned(),
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // M10 交互式配对向导：settings ↔ host 通过 pair-prompt.json /
 // pair-confirm.json / pair-result.json 文件交互（host pair-ui 发起端）。
@@ -2528,6 +2568,7 @@ fn main() {
             retry_sync_activity,
             check_update,
             apply_update,
+            update_status,
             pair_ui_start,
             pair_ui_state,
             pair_ui_confirm,

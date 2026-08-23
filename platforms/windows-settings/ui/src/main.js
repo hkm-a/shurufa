@@ -1786,6 +1786,8 @@ function generalPage() {
     return `
       <section class="page settings-page">
         <header class="page-header"><div><p class="eyebrow">GENERAL</p><h1>通用</h1></div></header>
+
+      <div id="update-banner"></div>
         <article class="setting-panel"><div class="setting-row"><div class="row-icon dim"><i data-lucide="settings-2"></i></div><div><h3>通用设置</h3><p>读取中或暂不可用…</p></div></div></article>
       </section>`;
   }
@@ -2903,6 +2905,23 @@ function render() {
       }
     });
     bindSkinForm();
+  }
+  if (activePage === "general") void refreshUpdateStatus();
+}
+
+async function refreshUpdateStatus() {
+  try {
+    const status = await invoke("update_status");
+    const banner = document.querySelector("#update-banner");
+    if (!banner) return;
+    if (!status) {
+      banner.innerHTML = "";
+      return;
+    }
+    banner.innerHTML = `<div class="hint-card" style="margin-bottom:12px;border-color:var(--coral,#f97316)"><i data-lucide="download-cloud"></i><p><strong>发现新版本</strong>（${escapeHtml(status.channel)}）<br>${escapeHtml(status.detail)}</p></div>`;
+    if (window.createIcons) createIcons({ icons: controlCenterIcons });
+  } catch (_error) {
+    // 静默：没有后台状态时不影响设置页
   }
 }
 
