@@ -36,9 +36,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    GetSystemMetrics, LoadCursorW, MoveWindow, RegisterClassW, SetWindowPos, ShowWindow,
-    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, MF_SEPARATOR, MF_STRING,
-    SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
+    GetForegroundWindow, GetSystemMetrics, LoadCursorW, MoveWindow, RegisterClassW, SetWindowPos,
+    ShowWindow, TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, MF_SEPARATOR,
+    MF_STRING, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
     TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT,
     WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_SETTINGCHANGE,
     WM_SIZE, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
@@ -1134,6 +1135,44 @@ pub(crate) fn refresh_with_ai(payload_ptr: isize) {
     ));
 }
 
+/// 全屏/无边框最大化判定：前台窗口覆盖虚拟屏幕 ≥95% 时，hosted 候选窗
+/// 可能被游戏/全屏应用遮挡，TSF 应回退内置绘制。
+fn is_fullscreen_rect(rect: &RECT, vx: i32, vy: i32, vw: i32, vh: i32) -> bool {
+    if vw <= 0 || vh <= 0 {
+        return false;
+    }
+    let left = vx;
+    let top = vy;
+    let right = vx + vw;
+    let bottom = vy + vh;
+    let w = rect.right - rect.left;
+    let h = rect.bottom - rect.top;
+    w >= vw * 95 / 100
+        && h >= vh * 95 / 100
+        && rect.left <= left + vw / 100
+        && rect.top <= top + vh / 100
+        && rect.right >= right - vw / 100
+        && rect.bottom >= bottom - vh / 100
+}
+
+fn is_foreground_fullscreen() -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return false;
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(fg, &mut rect).is_err() {
+            return false;
+        }
+        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        is_fullscreen_rect(&rect, vx, vy, vw, vh)
+    }
+}
+
 impl CandidateUi {
     pub fn new() -> Self {
         // 预热皮肤缓存：TSF DLL 部署形态下皮肤文件在 DLL 旁的 schemas 目录
@@ -1274,7 +1313,8 @@ impl CandidateUi {
         panel_mode: CandidatePanelMode,
     ) {
         // S3 hosted：把候选帧推给 shurufa-ui，不在本进程建窗。
-        if self.hosted {
+        // S5 前置：全屏/无边框最大化应用回退内置，避免候选窗被遮挡/闪烁。
+        if self.hosted && !is_foreground_fullscreen() {
             if self.cand_client.is_none() {
                 self.cand_client = crate::cand_client::CandClient::connect().ok();
             }
@@ -2684,6 +2724,53 @@ mod tests {
     }
 
     /// 候选面板模式解析（M7）："multi" 映射多行，未知/空值回退单行。
+    #[test]
+    fn fullscreen_rect_detects_covered_virtual_screen() {
+        let vx = 0;
+        let vy = 0;
+        let vw = 1920;
+        let vh = 1080;
+        // 全屏窗口覆盖 100%
+        assert!(super::is_fullscreen_rect(
+            &windows::Win32::Foundation::RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080
+            },
+            vx,
+            vy,
+            vw,
+            vh
+        ));
+        // 普通窗口明显小于 95%
+        assert!(!super::is_fullscreen_rect(
+            &windows::Win32::Foundation::RECT {
+                left: 100,
+                top: 100,
+                right: 800,
+                bottom: 600
+            },
+            vx,
+            vy,
+            vw,
+            vh
+        ));
+        // 边界：覆盖 ≥95% 且贴住虚拟屏边缘算全屏
+        assert!(super::is_fullscreen_rect(
+            &windows::Win32::Foundation::RECT {
+                left: 0,
+                top: 0,
+                right: 1901,
+                bottom: 1070
+            },
+            vx,
+            vy,
+            vw,
+            vh
+        ));
+    }
+
     #[test]
     fn candidate_panel_mode_parses_options() {
         use super::CandidatePanelMode;
