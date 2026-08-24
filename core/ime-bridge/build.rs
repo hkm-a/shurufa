@@ -72,11 +72,9 @@ fn main() {
             if let Ok(mut entries) = std::fs::read_dir(&clang_lib) {
                 if let Some(Ok(entry)) = entries.next() {
                     let clang_include = entry.path().join("include");
-                    let clang_include_str =
-                        clang_include.to_string_lossy().replace('\\', "/");
+                    let clang_include_str = clang_include.to_string_lossy().replace('\\', "/");
                     if clang_include.is_dir() {
-                        builder =
-                            builder.clang_arg(format!("-isystem{clang_include_str}"));
+                        builder = builder.clang_arg(format!("-isystem{clang_include_str}"));
                     }
                 }
             }
