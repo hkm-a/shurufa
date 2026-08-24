@@ -23,14 +23,16 @@ use windows::Win32::Graphics::Gdi::{
     FillRect, GetDC, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, SelectObject, SetBkMode,
     SetTextColor, DT_LEFT, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HBRUSH, HDC, HFONT, TRANSPARENT,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CAPITAL};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    FindWindowW, GetSystemMetrics, PeekMessageW, PostMessageW, RegisterClassW, SetWindowPos,
-    SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage, MF_SEPARATOR, MF_STRING, MSG,
-    PM_REMOVE, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_GETOBJECT, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT,
-    WM_RBUTTONDOWN, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    FindWindowW, GetSystemMetrics, PeekMessageW, PostMessageW, RegisterClassW, SetTimer,
+    SetWindowPos, SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage, MF_SEPARATOR,
+    MF_STRING, MSG, PM_REMOVE, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_GETOBJECT, WM_LBUTTONDOWN,
+    WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_TIMER, WNDCLASSW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use ime_ipc::{decode_cand_event, encode_cand_command, CandCommand, CandEvent, Context};
@@ -43,6 +45,8 @@ use crate::log_line;
 pub const CAND_WINDOW_CLASS: &str = "ShurufaCandWin";
 /// 连接线程 → 主线程的事件投递消息；lparam = Box<CandEvent> 裸指针。
 const WM_APP_CAND_EVENT: u32 = WM_APP + 61;
+/// OS CapsLock 轮询定时器 ID（250ms；只在候选窗宿主存活时运行）。
+const CAPS_POLL_TIMER_ID: usize = 1;
 
 // -----------------------------------------------------------------------
 // 主线程状态（窗口与布局只在 ui 主线程触碰）
@@ -79,6 +83,8 @@ thread_local! {
     /// client_id → 阴影壳（完整皮肤样式用）。
     static SHADOWS: std::cell::RefCell<HashMap<u32, windows_skin::ShadowShell>> =
         std::cell::RefCell::new(HashMap::new());
+    /// 上次看到的 OS CapsLock 状态；变化时重绘所有候选窗，角标即时切换。
+    static LAST_OS_CAPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// 控制窗口句柄（连接线程也要用它投递事件，因此必须是跨线程原子，不能 thread_local）。
@@ -148,6 +154,7 @@ pub fn start() -> bool {
             }
         };
         CTL_HWND.store(ctl.0 as isize, Ordering::Relaxed);
+        let _ = SetTimer(Some(ctl), CAPS_POLL_TIMER_ID, 250, None);
 
         std::thread::spawn(|| accept_loop());
         true
@@ -378,6 +385,43 @@ fn mode_badge_for(ctx: &Context) -> String {
     }
 }
 
+/// 最终角标：OS CapsLock 开启或已有长按 Shift 大写视觉时都显示 `⇪`。
+fn effective_mode_badge(base: &str, os_caps_lock: bool) -> String {
+    if os_caps_lock || base == "⇪" {
+        "⇪".to_owned()
+    } else {
+        base.to_owned()
+    }
+}
+
+/// 查询 OS 大写锁状态（GetAsyncKeyState 低位的 toggle 位，无需消息队列）。
+fn is_os_caps_lock_on() -> bool {
+    unsafe { (GetAsyncKeyState(VK_CAPITAL.0 as i32) & 1) != 0 }
+}
+
+/// OS CapsLock 状态变化时重绘全部候选窗；由 250ms 定时器驱动。
+fn sync_os_caps_lock() {
+    let on = is_os_caps_lock_on();
+    let changed = LAST_OS_CAPS.with(|last| {
+        if last.get() == on {
+            false
+        } else {
+            last.set(on);
+            true
+        }
+    });
+    if !changed {
+        return;
+    }
+    CLIENTS.with(|c| {
+        for (hwnd, _) in c.borrow().values() {
+            unsafe {
+                let _ = InvalidateRect(Some(*hwnd), None, true);
+            }
+        }
+    });
+}
+
 fn view_items(ctx: &Context) -> Vec<ItemView> {
     ctx.candidates
         .iter()
@@ -405,6 +449,10 @@ unsafe extern "system" fn ctl_wnd_proc(
     if msg == WM_APP_CAND_EVENT {
         let boxed = Box::from_raw(lparam.0 as *mut CandEvent);
         handle_event(*boxed);
+        return LRESULT(0);
+    }
+    if msg == WM_TIMER && wparam.0 == CAPS_POLL_TIMER_ID {
+        sync_os_caps_lock();
         return LRESULT(0);
     }
     DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -444,7 +492,8 @@ unsafe fn handle_event(event: CandEvent) {
             let badge_w = if mode_badge.is_empty() {
                 0
             } else {
-                text_width(hdc, &format!("[{}]", mode_badge)) + pad
+                // 角标可能随 OS CapsLock 在 中/En/全/⇪ 间切换，按最宽的 [En] 预留。
+                text_width(hdc, "[En]") + pad
             };
             SelectObject(hdc, old_font);
             let _ = DeleteObject(font.into());
@@ -789,9 +838,10 @@ unsafe fn paint(hwnd: HWND, hdc: HDC) {
 
     let pad = scale(BASE_PADDING, view.dpi);
     let mut left = pad;
-    // 中/En/全 状态角标（右上角，不参与候选布局）
-    if !view.mode_badge.is_empty() {
-        let badge = format!("[{}]", view.mode_badge);
+    // 中/En/全/⇪ 状态角标（右上角，不参与候选布局）；OS CapsLock 开启时强制 ⇪
+    let badge_text = effective_mode_badge(&view.mode_badge, is_os_caps_lock_on());
+    if !badge_text.is_empty() {
+        let badge = format!("[{}]", badge_text);
         let bw = text_width(hdc, &badge);
         SetTextColor(hdc, windows::Win32::Foundation::COLORREF(colors.label));
         draw_text_at(hdc, &badge, view.width - bw - pad, 0, view.height);
@@ -1038,5 +1088,15 @@ mod tests {
         ctx.is_ascii = false;
         ctx.is_full_shape = false;
         assert_eq!(mode_badge_for(&ctx), "⇪");
+    }
+
+    #[test]
+    fn os大写锁_强制显示大写角标() {
+        assert_eq!(effective_mode_badge("中", true), "⇪");
+        assert_eq!(effective_mode_badge("En", true), "⇪");
+        assert_eq!(effective_mode_badge("全", true), "⇪");
+        assert_eq!(effective_mode_badge("⇪", false), "⇪");
+        assert_eq!(effective_mode_badge("中", false), "中");
+        assert_eq!(effective_mode_badge("En", false), "En");
     }
 }

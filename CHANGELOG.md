@@ -69,8 +69,11 @@
   `caps_visual`（serde default 兼容旧帧），TSF 侧 `set_caps_visual`
   写入线程状态并在候选可见时立即重推一帧，Shift 长按视觉提示不再丢在
   hosted 路径外。
-- **cand_host 单测**：新增 `模式角标_中英全角`，覆盖中文/英文/全角/
-  长按大写四态与优先级。
+- **cand_host 单测**：新增 `模式角标_中英全角` 与 `os大写锁_强制显示大写角标`，
+  覆盖中文/英文/全角/长按大写/OS CapsLock 各态与优先级。
+- **OS CapsLock 状态同步**：cand_host 以 250ms 定时器轮询
+  `GetAsyncKeyState(VK_CAPITAL)`，状态变化即重绘候选窗，角标瞬时切换为
+  `⇪`；窗口宽度按最宽的 `[En]` 预留，避免角标切换时遮挡候选。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets
