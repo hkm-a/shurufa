@@ -681,20 +681,49 @@ pub fn start_daemon() {
                                             if let Some(parent) = path.parent() {
                                                 let _ = std::fs::create_dir_all(parent);
                                             }
+                                            // 覆盖前备份旧文件，避免远端配置直接冲掉本机定制。
+                                            let backup = if path.exists() {
+                                                match std::fs::read_to_string(&path) {
+                                                    Ok(old) if old != data => {
+                                                        let backup_dir = dir.join("sync-config-backups");
+                                                        let _ = std::fs::create_dir_all(&backup_dir);
+                                                        let ts = std::time::SystemTime::now()
+                                                            .duration_since(std::time::UNIX_EPOCH)
+                                                            .map(|d| d.as_millis())
+                                                            .unwrap_or(0);
+                                                        let safe = name.replace(['/', '\\'], "_");
+                                                        let backup_path =
+                                                            backup_dir.join(format!("{ts}_{kind}_{safe}"));
+                                                        std::fs::copy(&path, &backup_path)
+                                                            .ok()
+                                                            .map(|_| backup_path)
+                                                    }
+                                                    _ => None,
+                                                }
+                                            } else {
+                                                None
+                                            };
                                             match std::fs::write(&path, data.as_bytes()) {
                                                 Ok(()) => {
+                                                    let detail = match &backup {
+                                                        Some(bp) => format!(
+                                                            "已写入 {}（旧文件备份 {}）",
+                                                            path.display(),
+                                                            bp.display()
+                                                        ),
+                                                        None => format!("已写入 {}", path.display()),
+                                                    };
                                                     record_sync_activity(
                                                         SyncDirection::In,
                                                         SyncActivityKind::Config,
                                                         preview,
                                                         Some(from_name.clone()),
                                                         true,
-                                                        Some(format!("已写入 {}", path.display())),
+                                                        Some(detail.clone()),
                                                         None,
                                                     );
                                                     crate::log_line(&format!(
-                                                        "收到 {from_name} 的配置 {kind}/{name}，已写入 {}",
-                                                        path.display()
+                                                        "收到 {from_name} 的配置 {kind}/{name}，{detail}"
                                                     ));
                                                 }
                                                 Err(e) => {

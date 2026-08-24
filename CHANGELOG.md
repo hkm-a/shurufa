@@ -118,6 +118,8 @@
 - **P2 配置云同步双向完成**：Android 新增「同步配置到电脑」按钮，
   模拟器联调验证 Windows 收到并写入 options.json；
   custom_phrase/skin/options 三类型双向链路闭环。
+- **P2 配置云同步备份保护**：Windows 接收配置时若旧文件内容不同，
+  先备份到 `sync-config-backups/` 再覆盖，避免远端配置直接冲掉本机定制。
   掉线未复核）。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
