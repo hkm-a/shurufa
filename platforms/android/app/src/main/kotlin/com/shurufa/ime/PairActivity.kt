@@ -17,6 +17,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.concurrent.thread
 
@@ -126,6 +127,11 @@ class PairActivity : Activity() {
         root.addView(subtitle("已配对设备"))
         deviceList = hint("")
         root.addView(deviceList)
+
+        root.addView(Button(this).apply {
+            text = "同步配置到电脑"
+            setOnClickListener { sendConfigsToPc() }
+        })
 
         setContentView(ScrollView(this).apply { addView(root) })
         refreshDevices()
@@ -352,6 +358,19 @@ class PairActivity : Activity() {
             // 由 UI 层超时（PAIR_TIMEOUT_MS）兜底；interrupt 只作为 onDestroy 的最后手段。
             status.text = "已取消"
         }
+    }
+
+    private fun sendConfigsToPc() {
+        val dir = filesDir
+        val candidates = listOf(
+            Pair("custom_phrase", File(dir, "rime/custom_phrase.txt")),
+            Pair("skin", File(dir, "shurufa-skin.json")),
+            Pair("options", File(dir, "options.json")),
+        )
+        val sent = candidates.count { (kind, file) ->
+            file.isFile && SyncBridge.sendConfig(this, kind, file)
+        }
+        Toast.makeText(this, "已发送 $sent 份配置到电脑", Toast.LENGTH_SHORT).show()
     }
 
     private fun refreshDevices() {

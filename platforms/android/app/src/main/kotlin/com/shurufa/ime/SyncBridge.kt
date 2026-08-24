@@ -36,6 +36,8 @@ object SyncBridge {
     external fun nativeSendFile(name: String, mimeType: String, data: ByteArray)
     /** v3 文件同步：整路径直送，由 SyncService 内部完成分块/ACK 状态机。 */
     external fun nativeSendFilePath(path: String): Boolean
+    /** 配置/短语/皮肤同步（config-sync-v1）：读本地文件后广播给已配对设备。 */
+    external fun nativeSendConfig(kind: String, path: String): Boolean
     external fun nativeMaxImageBytes(): Int
     external fun nativeMaxFileBytes(): Int
     external fun nativeDevices(): String
@@ -115,6 +117,12 @@ object SyncBridge {
     private fun syncDir(context: Context): File = File(context.filesDir, "sync").apply { mkdirs() }
 
     /** 与 Rust 同步核心保持一致的单张 PNG 上限。 */
+    /** 发送一份配置/短语/皮肤文件到已配对电脑。 */
+    fun sendConfig(context: Context, kind: String, path: File): Boolean {
+        if (!ensureStarted(context)) return false
+        return nativeSendConfig(kind, path.absolutePath)
+    }
+
     fun maxImageBytes(): Int = nativeMaxImageBytes().takeIf { it > 0 } ?: 8 * 1024 * 1024
 
     fun maxFileBytes(): Int = nativeMaxFileBytes().takeIf { it > 0 } ?: 8 * 1024 * 1024

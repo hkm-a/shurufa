@@ -382,6 +382,34 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendFilePath(
     )
 }
 
+/// 推送本机配置/短语/皮肤文件给已配对设备（config-sync-v1）。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendConfig(
+    mut env: JNIEnv,
+    _class: JClass,
+    kind: JString,
+    path: JString,
+) -> jboolean {
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else { return 0 };
+            let kind = jstr(&mut env, &kind);
+            let path = jstr(&mut env, &path);
+            let Ok(data) = std::fs::read_to_string(&path) else {
+                return 0;
+            };
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("config.txt")
+                .to_owned();
+            state.service.send_config(&kind, &name, &data);
+            1
+        },
+        0,
+    )
+}
+
 /// 返回同步核心允许传输的单张 PNG 上限，供 Kotlin 转码阶段使用同一约束。
 #[no_mangle]
 pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeMaxImageBytes(
