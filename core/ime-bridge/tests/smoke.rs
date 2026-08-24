@@ -139,6 +139,99 @@ fn rime_ice_supports_core_input_and_personalization() {
     );
     session.simulate("{Escape}");
 
+    // R1.2 分隔符与音节切分（2026-08-24 实机校准）
+    assert!(
+        session.simulate("shang'hai"),
+        "shang'hai 键序列未被引擎接受"
+    );
+    let sep_ctx = session.context();
+    assert_eq!(
+        sep_ctx.candidates.first().map(|c| c.text.as_str()),
+        Some("上海"),
+        "shang'hai 首选应为「上海」：{:?}",
+        sep_ctx
+            .candidates
+            .iter()
+            .take(3)
+            .map(|c| &c.text)
+            .collect::<Vec<_>>()
+    );
+    session.simulate("{Escape}");
+
+    // ü 在 Rime 键序里用 v 编码：ce'lve / celve 都应收敛到“策略”
+    assert!(session.simulate("ce'lve"), "ce'lve 键序列未被引擎接受");
+    let ce_ctx = session.context();
+    assert_eq!(
+        ce_ctx.candidates.first().map(|c| c.text.as_str()),
+        Some("策略"),
+        "ce'lve 首选应为「策略」：{:?}",
+        ce_ctx
+            .candidates
+            .iter()
+            .take(3)
+            .map(|c| &c.text)
+            .collect::<Vec<_>>()
+    );
+    session.simulate("{Escape}");
+    assert!(session.simulate("celve"), "celve 键序列未被引擎接受");
+    let ce_ctx = session.context();
+    assert_eq!(
+        ce_ctx.candidates.first().map(|c| c.text.as_str()),
+        Some("策略"),
+        "celve 首选应为「策略」：{:?}",
+        ce_ctx
+            .candidates
+            .iter()
+            .take(3)
+            .map(|c| &c.text)
+            .collect::<Vec<_>>()
+    );
+    session.simulate("{Escape}");
+
+    assert!(session.simulate("lisi"), "lisi 键序列未被引擎接受");
+    let li_ctx = session.context();
+    assert_eq!(
+        li_ctx.candidates.first().map(|c| c.text.as_str()),
+        Some("李四"),
+        "lisi 首选应为「李四」：{:?}",
+        li_ctx
+            .candidates
+            .iter()
+            .take(3)
+            .map(|c| &c.text)
+            .collect::<Vec<_>>()
+    );
+    session.simulate("{Escape}");
+
+    assert!(session.simulate("nangrang"), "nangrang 键序列未被引擎接受");
+    let nr_ctx = session.context();
+    assert_eq!(
+        nr_ctx.candidates.first().map(|c| c.text.as_str()),
+        Some("囊让"),
+        "nangrang 首选应为「囊让」：{:?}",
+        nr_ctx
+            .candidates
+            .iter()
+            .take(3)
+            .map(|c| &c.text)
+            .collect::<Vec<_>>()
+    );
+    session.simulate("{Escape}");
+    assert!(session.simulate("nanrang"), "nanrang 键序列未被引擎接受");
+    let nr_ctx = session.context();
+    assert_eq!(
+        nr_ctx.candidates.first().map(|c| c.text.as_str()),
+        Some("难让"),
+        "nanrang 首选应为「难让」：{:?}",
+        nr_ctx
+            .candidates
+            .iter()
+            .take(3)
+            .map(|c| &c.text)
+            .collect::<Vec<_>>()
+    );
+    session.simulate("{Escape}");
+
     // 模糊音（n/l、前后鼻音）功能已按产品决策砍掉（2026-08-12）：librime 的
     // derive 规则在当前构建下不参与词典查表，干净 userdb 下模糊词不出现，
     // 依赖残留 userdb 掩盖不可靠。rime_ice.schema.yaml 中的 derive 规则保留
