@@ -97,6 +97,9 @@
   rime/custom_phrase.txt），并新增 `sync::broadcast_config` 出站入口。
 - **P2 配置云同步（第四步）**：新增 `shurufa-ctl sync-config <kind> <path>`
   命令行入口，临时同步实例直接向已配对设备广播配置/短语/皮肤文件。
+- **P2 配置云同步（第五步）**：设置中心「自定义短语」页新增
+  「同步到设备」按钮，经 `sync_config` 命令调用
+  `shurufa-ctl sync-config custom_phrase`。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets

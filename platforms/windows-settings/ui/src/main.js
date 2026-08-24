@@ -2216,6 +2216,7 @@ function phrasesPage() {
           <button class="outline-action" data-action="phrase-add"><i data-lucide="plus"></i>添加条目</button>
           <button class="primary-action" data-action="phrase-save"><i data-lucide="save"></i>保存</button>
           <button class="outline-action" data-action="phrase-deploy"><i data-lucide="refresh-cw"></i>保存并部署</button>
+          <button class="outline-action" data-action="phrase-sync"><i data-lucide="send"></i>同步到设备</button>
         </div>
       </article>
     </section>`;
@@ -3394,6 +3395,15 @@ async function handleAction(button) {
         } else {
           showToast(`${saved}（保存后需「保存并部署」或重启输入法生效）`);
         }
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "phrase-sync") {
+      try {
+        const result = await invoke("sync_config", { kind: "custom_phrase" });
+        showToast(result);
       } catch (error) {
         showToast(String(error), true);
       }

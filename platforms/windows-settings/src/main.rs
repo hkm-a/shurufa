@@ -326,6 +326,37 @@ fn ctl_path() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "未找到 shurufa-ctl.exe（控制中心应部署在 ProgramData\\shurufa）".to_owned())
 }
 
+/// 把指定配置/短语/皮肤文件同步给所有已配对设备（调用 shurufa-ctl sync-config）。
+#[tauri::command]
+fn sync_config(kind: String) -> Result<String, String> {
+    let ctl = ctl_path()?;
+    let path = match kind.as_str() {
+        "custom_phrase" => app_data_dir().join("rime").join("custom_phrase.txt"),
+        "skin" => app_data_dir().join("shurufa-skin.json"),
+        "options" => app_data_dir().join("options.json"),
+        _ => return Err("kind 必须是 custom_phrase / skin / options".to_owned()),
+    };
+    if !path.exists() {
+        return Err(format!("本地文件不存在：{}", path.display()));
+    }
+    let output = Command::new(ctl)
+        .args(["sync-config", &kind, &path.display().to_string()])
+        .output()
+        .map_err(|e| format!("执行 shurufa-ctl 失败：{e}"))?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(format!(
+            "同步配置失败（exit={:?}）：{}
+{}",
+            output.status.code(),
+            text,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
 /// 检查更新：调用 shurufa-ctl update --check-only，返回其 stdout。
 #[tauri::command]
 fn check_update(url: String, channel: Option<String>) -> Result<String, String> {
@@ -2584,6 +2615,7 @@ fn main() {
             sync_activity,
             retry_sync_activity,
             check_update,
+            sync_config,
             apply_update,
             update_status,
             pair_ui_start,
