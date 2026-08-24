@@ -204,6 +204,30 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                                         if let Some(parent) = path.parent() {
                                             let _ = std::fs::create_dir_all(parent);
                                         }
+                                        // 覆盖前备份旧文件，避免远端配置直接冲掉本机定制。
+                                        let backup = if path.exists() {
+                                            match std::fs::read_to_string(&path) {
+                                                Ok(old) if old != data => {
+                                                    let backup_dir =
+                                                        root.join("sync-config-backups");
+                                                    let _ = std::fs::create_dir_all(&backup_dir);
+                                                    let ts = std::time::SystemTime::now()
+                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                        .map(|d| d.as_millis())
+                                                        .unwrap_or(0);
+                                                    let safe = name.replace(['/', '\\'], "_");
+                                                    let backup_path = backup_dir
+                                                        .join(format!("{ts}_{kind}_{safe}"));
+                                                    std::fs::copy(&path, &backup_path)
+                                                        .ok()
+                                                        .map(|_| backup_path)
+                                                }
+                                                _ => None,
+                                            }
+                                        } else {
+                                            None
+                                        };
+                                        let _ = backup;
                                         let _ = std::fs::write(&path, data.as_bytes());
                                     }
                                     let _ = (from_name, name);
