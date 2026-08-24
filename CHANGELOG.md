@@ -92,6 +92,9 @@
   `ConfigFile` 出站广播与入站事件，按 `config-sync-v1` 协商门控；
   新增 `SyncService::send_config` 与 `Incoming::ConfigFile`，
   宿主落盘/UI 接线仍留后续。
+- **P2 配置云同步（第三步）**：Windows 宿主同步线程接入
+  `Incoming::ConfigFile` 落盘（options.json / shurufa-skin.json /
+  rime/custom_phrase.txt），并新增 `sync::broadcast_config` 出站入口。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets

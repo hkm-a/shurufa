@@ -23,6 +23,12 @@ enum Broadcast {
     },
     /// v3 文件：整路径交由 SyncService 内部分块、跟踪 ACK/Progress。
     FileV3(std::path::PathBuf),
+    /// 配置/短语/皮肤同步（config-sync-v1）。
+    Config {
+        kind: String,
+        name: String,
+        data: String,
+    },
 }
 
 /// 守护进程内广播出口；`run` 模式启动后可用
@@ -114,6 +120,17 @@ pub fn send_file_to_all(path: &std::path::Path) {
     let path_buf = path.to_path_buf();
     if let Some(tx) = CLIP_TX.get() {
         let _ = tx.send(Broadcast::FileV3(path_buf));
+    }
+}
+
+/// 把一份配置/短语/皮肤文本广播给所有已配对设备（config-sync-v1）。
+pub fn broadcast_config(kind: &str, name: &str, data: &str) {
+    if let Some(tx) = CLIP_TX.get() {
+        let _ = tx.send(Broadcast::Config {
+            kind: kind.to_string(),
+            name: name.to_string(),
+            data: data.to_string(),
+        });
     }
 }
 
@@ -461,6 +478,9 @@ pub fn start_daemon() {
                                     )),
                                 }
                             }
+                            Broadcast::Config { kind, name, data } => {
+                                service.send_config(&kind, &name, &data);
+                            }
                         },
                         Some(incoming) = in_rx.recv() => {
                             // 入库/落盘/图片转码/写系统剪贴板均为阻塞或 CPU 密集
@@ -580,6 +600,36 @@ pub fn start_daemon() {
                                     }
                                     None => crate::log_line("收到图片解码失败"),
                                 },
+                                Incoming::ConfigFile { from_name, kind, name, data } => {
+                                    let dir = crate::app_data_dir();
+                                    let path = match kind.as_str() {
+                                        "options" => Some(dir.join("options.json")),
+                                        "skin" => Some(dir.join("shurufa-skin.json")),
+                                        "custom_phrase" => {
+                                            Some(dir.join("rime").join("custom_phrase.txt"))
+                                        }
+                                        _ => None,
+                                    };
+                                    match path {
+                                        Some(path) => {
+                                            if let Some(parent) = path.parent() {
+                                                let _ = std::fs::create_dir_all(parent);
+                                            }
+                                            match std::fs::write(&path, data.as_bytes()) {
+                                                Ok(()) => crate::log_line(&format!(
+                                                    "收到 {from_name} 的配置 {kind}/{name}，已写入 {}",
+                                                    path.display()
+                                                )),
+                                                Err(e) => crate::log_line(&format!(
+                                                    "写入 {from_name} 的配置 {kind}/{name} 失败：{e}"
+                                                )),
+                                            }
+                                        }
+                                        None => crate::log_line(&format!(
+                                            "收到未知配置类型 {kind}（来自 {from_name}），忽略"
+                                        )),
+                                    }
+                                }
                                 Incoming::SearchResults { from_name, req_id, hits } => {
                                     crate::log_line(&format!(
                                         "跨设备搜索 {}：{from_name} 返回 {} 条命中",
