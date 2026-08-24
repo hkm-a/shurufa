@@ -102,6 +102,8 @@
   `shurufa-ctl sync-config custom_phrase`。
 - **P2 配置云同步（第六步）**：皮肤页与通用页也新增
   「同步到设备」按钮，分别同步 `skin` / `options`。
+- **P2 配置云同步（第七步）**：duplex 集成测试新增
+  `ConfigFile` 端到端断言（甲→乙 custom_phrase 原样到达）。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets

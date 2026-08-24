@@ -120,6 +120,24 @@ async fn 配对后双向同步文本() {
         }
     );
 
+    // 甲 → 乙 传配置/短语/皮肤（config-sync-v1）
+    a.send_config("custom_phrase", "custom_phrase.txt", "公司\tgs\t100\n");
+    let got = recv_clip(&mut rx_b).await;
+    match got {
+        Incoming::ConfigFile {
+            from_name,
+            kind,
+            name,
+            data,
+        } => {
+            assert_eq!(from_name, "甲机");
+            assert_eq!(kind, "custom_phrase");
+            assert_eq!(name, "custom_phrase.txt");
+            assert_eq!(data, "公司\tgs\t100\n");
+        }
+        other => panic!("期待 ConfigFile，实际 {other:?}"),
+    }
+
     // 乙 → 甲
     b.send_clip("收到，乙机回礼");
     let got = recv_clip(&mut rx_a).await;
