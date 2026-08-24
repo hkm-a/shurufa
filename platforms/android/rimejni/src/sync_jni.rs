@@ -184,8 +184,31 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                                 }
                                 // 对端的搜索响应当前只供 PC 侧 CLI/日志消费，Android 暂不展示。
                                 Incoming::SearchResults { .. } => return,
-                                // 配置/短语/皮肤同步：Android 侧暂不消费，忽略。
-                                Incoming::ConfigFile { .. } => return,
+                                // 配置/短语/皮肤同步：写入 filesDir 对应配置路径。
+                                Incoming::ConfigFile {
+                                    from_name,
+                                    kind,
+                                    name,
+                                    data,
+                                } => {
+                                    let root = received_dir.parent().unwrap_or(&received_dir);
+                                    let path = match kind.as_str() {
+                                        "options" => Some(root.join("options.json")),
+                                        "skin" => Some(root.join("shurufa-skin.json")),
+                                        "custom_phrase" => {
+                                            Some(root.join("rime").join("custom_phrase.txt"))
+                                        }
+                                        _ => None,
+                                    };
+                                    if let Some(path) = path {
+                                        if let Some(parent) = path.parent() {
+                                            let _ = std::fs::create_dir_all(parent);
+                                        }
+                                        let _ = std::fs::write(&path, data.as_bytes());
+                                    }
+                                    let _ = (from_name, name);
+                                    return;
+                                }
                                 // 文件 v3 事件：Android 侧仅做日志级提示，
                                 // 由宿主的 ClipboardSyncService 自行弹出
                                 // Notification / 历史入库。

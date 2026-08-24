@@ -107,6 +107,9 @@
 - **P2 配置云同步（第八步）**：入站配置落盘时写入同步活动流
   （新增 `SyncActivityKind::Config`），设置中心同步历史可显示
   「配置」条目；Android JNI 暂忽略 ConfigFile。
+- **P2 配置云同步（第九步）**：Android JNI 接收 ConfigFile 后
+  写入 filesDir 对应配置路径（options.json / shurufa-skin.json /
+  rime/custom_phrase.txt）。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets
