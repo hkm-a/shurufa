@@ -101,6 +101,15 @@ enum Command {
         /// 要同步的本地文件路径
         path: String,
     },
+    /// 列出配置同步备份文件
+    #[command(name = "sync-config-backups")]
+    SyncConfigBackups,
+    /// 从备份恢复配置/短语/皮肤
+    #[command(name = "sync-config-restore")]
+    SyncConfigRestore {
+        /// 备份文件名（sync-config-backups 列出的名字）
+        file: String,
+    },
     /// 更新自托管云词库
     #[command(name = "dict-update")]
     DictUpdate { url: String },
@@ -282,6 +291,8 @@ fn main() {
         Command::Unpair { fp } => shurufa_host::sync::cli_unpair(&fp),
         Command::Relay { value } => shurufa_host::sync::cli_relay(&value),
         Command::SyncConfig { kind, path } => shurufa_host::sync::cli_sync_config(&kind, &path),
+        Command::SyncConfigBackups => shurufa_host::sync::cli_sync_config_backups(),
+        Command::SyncConfigRestore { file } => shurufa_host::sync::cli_sync_config_restore(&file),
         Command::DictUpdate { url } => shurufa_host::dict_update::cli_update(&url),
         Command::Deploy => shurufa_host::dict_update::cli_deploy(),
         Command::DictRollback { revision } => {

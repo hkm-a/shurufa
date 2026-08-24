@@ -121,6 +121,8 @@
 - **P2 配置云同步备份保护**：Windows 接收配置时若旧文件内容不同，
   先备份到 `sync-config-backups/` 再覆盖，避免远端配置直接冲掉本机定制。
 - **P2 配置云同步备份保护（Android）**：Android 接收配置前同样
+- **P2 配置备份恢复**：新增 `shurufa-ctl sync-config-backups`
+  查看备份、`sync-config-restore <file>` 一键恢复。
   备份旧文件到 `files/sync-config-backups/`。
   掉线未复核）。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与

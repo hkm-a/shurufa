@@ -1131,6 +1131,67 @@ pub fn cli_remote_search(query: &str) {
     });
 }
 
+fn config_backup_dir() -> PathBuf {
+    crate::app_data_dir().join("sync-config-backups")
+}
+
+/// `sync-config-backups` 子命令：列出配置同步备份文件。
+pub fn cli_sync_config_backups() {
+    let dir = config_backup_dir();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries.flatten().collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+    if entries.is_empty() {
+        println!("（暂无配置同步备份）");
+        return;
+    }
+    for entry in entries {
+        if let Ok(meta) = entry.metadata() {
+            if meta.is_file() {
+                if let Some(name) = entry.file_name().to_str() {
+                    println!("{name}");
+                }
+            }
+        }
+    }
+}
+
+/// `sync-config-restore` 子命令：从备份文件名恢复对应配置。
+/// 文件名格式：`<ts>_<kind>_<safe_name>`。
+pub fn cli_sync_config_restore(file: &str) {
+    let backup = config_backup_dir().join(file);
+    if !backup.is_file() {
+        eprintln!("备份文件不存在：{}", backup.display());
+        std::process::exit(1);
+    }
+    let Some((_, kind)) = file.split_once('_') else {
+        eprintln!("备份文件名格式不正确：{file}");
+        std::process::exit(1);
+    };
+    let kind = kind.split('_').next().unwrap_or("");
+    let dir = crate::app_data_dir();
+    let target = match kind {
+        "options" => dir.join("options.json"),
+        "skin" => dir.join("shurufa-skin.json"),
+        "custom_phrase" => dir.join("rime").join("custom_phrase.txt"),
+        _ => {
+            eprintln!("无法从备份文件名识别配置类型：{file}");
+            std::process::exit(1);
+        }
+    };
+    if let Some(parent) = target.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::copy(&backup, &target) {
+        Ok(_) => println!("已从 {} 恢复到 {}", backup.display(), target.display()),
+        Err(e) => {
+            eprintln!("恢复失败：{e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// `relay` 子命令：持久化自托管中继地址；下次启动守护进程时生效。
 pub fn cli_relay(value: &str) {
     let value = value.trim();
