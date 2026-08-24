@@ -121,30 +121,38 @@ def bench_algo_leak(iterations: int = 1000, seed: int = 0x5F3759DF) -> dict:
     end_rss = None
     baseline_rss_readings = []
 
-    proc = subprocess.Popen(
-        [str(ALGO_EXE), "--once", keys_list[0]],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=str(REPO_ROOT),
-    )
-    start_rss = current_rss_bytes(proc.pid)
-    proc.wait(timeout=10)
-
-    for key in keys_list[1:]:
+    for key in keys_list:
         proc = subprocess.Popen(
             [str(ALGO_EXE), "--once", key],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(REPO_ROOT),
         )
-        rss_now = current_rss_bytes(proc.pid)
-        baseline_rss_readings.append((key, rss_now))
-        proc.wait(timeout=10)
+        try:
+            # 等进程完成 librime 加载/首次驻留后再读 RSS，避免把“还没起来”误判成波动。
+            time.sleep(0.15)
+            rss_now = current_rss_bytes(proc.pid)
+            baseline_rss_readings.append((key, rss_now))
+        except Exception:
+            # 进程可能已在 150ms 内跑完退出；跳过该样本，不让单次调度抖动毁掉整轮。
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
-    end_rss = baseline_rss_readings[-1][1]
+    readings = [rss for (_key, rss) in baseline_rss_readings]
+    if not readings:
+        return {"ok": False, "reason": "RSS 采样失败（没有读到任何进程样本）"}
 
-    if start_rss is None or end_rss is None or start_rss == 0:
-        return {"ok": False, "reason": "RSS 采样失败（check_alog.exe 启动失败）"}
+    # 用首尾各 5 个样本的中位数对比，避免单个进程调度抖动造成假阳性。
+    head = readings[:5]
+    tail = readings[-5:]
+    start_rss = int(statistics.median(head))
+    end_rss = int(statistics.median(tail))
+
+    if start_rss == 0:
+        return {"ok": False, "reason": "RSS 采样失败（首段中位数为 0）"}
 
     drift_pct = ((end_rss - start_rss) / start_rss) * 100.0
     return {
@@ -154,8 +162,8 @@ def bench_algo_leak(iterations: int = 1000, seed: int = 0x5F3759DF) -> dict:
         "end_rss": end_rss,
         "drift_pct": round(drift_pct, 2),
         "note": (
-            "波动强劲正/负浮动均可能取决于引擎拿到某个键序列时 userdb 的写入次数；"
-            "样本量为进程组均值，仅防漏，不作严格堆内存测量"
+            "每个进程等待 150ms 后采样，取首尾各 5 个样本中位数；"
+            "样本量为独立 algo --once 进程，仅防漏，不作严格堆内存测量"
         ),
     }
 
