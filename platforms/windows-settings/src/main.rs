@@ -384,10 +384,9 @@ fn sync_config_restore(file: String) -> Result<String, String> {
     if !backup.is_file() {
         return Err(format!("备份文件不存在：{}", backup.display()));
     }
-    let Some((_, kind)) = file.split_once('_') else {
+    let Some(kind) = sync_core::config_sync::kind_from_backup_name(&file) else {
         return Err("备份文件名格式不正确".to_owned());
     };
-    let kind = kind.split('_').next().unwrap_or("");
     let target = match kind {
         "options" => app_data_dir().join("options.json"),
         "skin" => app_data_dir().join("shurufa-skin.json"),
@@ -397,8 +396,7 @@ fn sync_config_restore(file: String) -> Result<String, String> {
     if let Some(parent) = target.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    std::fs::copy(&backup, &target)
-        .map_err(|e| format!("恢复失败：{e}"))?;
+    std::fs::copy(&backup, &target).map_err(|e| format!("恢复失败：{e}"))?;
     Ok(format!("已恢复到 {}", target.display()))
 }
 

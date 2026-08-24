@@ -16,6 +16,8 @@ mod service;
 mod tls;
 pub mod wan;
 
+pub mod config_sync;
+
 pub use identity::DeviceIdentity;
 pub use peers::{Peer, PeerStore};
 pub use protocol::{Message, SearchHit};

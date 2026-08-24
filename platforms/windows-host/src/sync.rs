@@ -34,6 +34,9 @@ enum Broadcast {
 /// 守护进程内广播出口；`run` 模式启动后可用
 static CLIP_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<Broadcast>> = OnceLock::new();
 
+/// 常驻同步服务实例（Clone 句柄），供配置增量 watcher 判断是否有在线对端。
+static SYNC_SERVICE: OnceLock<SyncService> = OnceLock::new();
+
 /// M10：发送中文件台账 msg_id → 原路径。FileTransferDone 失败时取回路径
 /// 生成 SendFile 重试载荷（补 M8-1b 缺口：msg_id→原路径映射）。
 static PENDING_FILE_SENDS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
@@ -235,9 +238,23 @@ fn spawn_sync_config_watcher() {
             let Some(path) = req.get("path").and_then(serde_json::Value::as_str) else {
                 continue;
             };
-            let Ok(data) = std::fs::read_to_string(path) else {
-                crate::log_line(&format!("配置同步：读取 {} 失败，已跳过", path));
-                continue;
+            let dir = crate::app_data_dir();
+            let data = match sync_core::config_sync::prepare_send(
+                &dir,
+                kind,
+                std::path::Path::new(path),
+            ) {
+                Ok(Some(data)) => data,
+                Ok(None) => {
+                    crate::log_line(&format!(
+                        "配置同步：{kind} 内容自上次同步后未变化，跳过增量发送"
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    crate::log_line(&format!("配置同步：读取 {} 失败，已跳过（{e}）", path));
+                    continue;
+                }
             };
             let name = std::path::Path::new(path)
                 .file_name()
@@ -249,6 +266,17 @@ fn spawn_sync_config_watcher() {
                 data.chars().count()
             ));
             broadcast_config(kind, &name, &data);
+            let has_peer = SYNC_SERVICE
+                .get()
+                .map(|service| service.connected_count() > 0)
+                .unwrap_or(false);
+            if has_peer {
+                if let Err(e) = sync_core::config_sync::mark_sent(&dir, kind, &data) {
+                    crate::log_line(&format!("配置同步：记录发送状态失败：{e}"));
+                }
+            } else {
+                crate::log_line("配置同步：当前无在线对端，暂不记录增量状态，下次可重发");
+            }
         })
         .ok();
 }
@@ -491,6 +519,7 @@ pub fn start_daemon() {
                     service.local_port(),
                     &service.fingerprint()[..12]
                 ));
+                let _ = SYNC_SERVICE.set(service.clone());
                 // 对端发来的跨设备搜索请求：走本机历史库的 LIKE 搜索，
                 // 结果以 SearchHit 列表回传（仅文本条目，图片/文件不回传内容）。
                 service.set_search_handler(Arc::new(|query: &str| {
@@ -668,83 +697,61 @@ pub fn start_daemon() {
                                     }
                                     let dir = crate::app_data_dir();
                                     let preview = format!("{kind}/{name}（{} 字符）", data.chars().count());
-                                    let path = match kind.as_str() {
-                                        "options" => Some(dir.join("options.json")),
-                                        "skin" => Some(dir.join("shurufa-skin.json")),
-                                        "custom_phrase" => {
-                                            Some(dir.join("rime").join("custom_phrase.txt"))
-                                        }
-                                        _ => None,
-                                    };
-                                    match path {
-                                        Some(path) => {
-                                            if let Some(parent) = path.parent() {
-                                                let _ = std::fs::create_dir_all(parent);
-                                            }
-                                            // 覆盖前备份旧文件，避免远端配置直接冲掉本机定制。
-                                            let backup = if path.exists() {
-                                                match std::fs::read_to_string(&path) {
-                                                    Ok(old) if old != data => {
-                                                        let backup_dir = dir.join("sync-config-backups");
-                                                        let _ = std::fs::create_dir_all(&backup_dir);
-                                                        let ts = std::time::SystemTime::now()
-                                                            .duration_since(std::time::UNIX_EPOCH)
-                                                            .map(|d| d.as_millis())
-                                                            .unwrap_or(0);
-                                                        let safe = name.replace(['/', '\\'], "_");
-                                                        let backup_path =
-                                                            backup_dir.join(format!("{ts}_{kind}_{safe}"));
-                                                        std::fs::copy(&path, &backup_path)
-                                                            .ok()
-                                                            .map(|_| backup_path)
-                                                    }
-                                                    _ => None,
-                                                }
-                                            } else {
-                                                None
-                                            };
-                                            match std::fs::write(&path, data.as_bytes()) {
-                                                Ok(()) => {
-                                                    let detail = match &backup {
+                                    if sync_core::config_sync::config_path(&dir, &kind).is_none() {
+                                        crate::log_line(&format!(
+                                            "收到未知配置类型 {kind}（来自 {from_name}），忽略"
+                                        ));
+                                        return;
+                                    }
+                                    match sync_core::config_sync::apply_incoming(&dir, &kind, &name, &data) {
+                                        Ok(outcome) => {
+                                            let path = sync_core::config_sync::config_path(&dir, &kind)
+                                                .expect("已校验 kind");
+                                            let detail = match outcome.status {
+                                                sync_core::config_sync::ApplyStatus::Noop =>
+                                                    format!("内容未变化，跳过 {}", path.display()),
+                                                sync_core::config_sync::ApplyStatus::AppliedRemote =>
+                                                    format!("已写入 {}", path.display()),
+                                                sync_core::config_sync::ApplyStatus::Merged => {
+                                                    match &outcome.backup {
                                                         Some(bp) => format!(
-                                                            "已写入 {}（旧文件备份 {}）",
+                                                            "两端均修改，已自动合并写入 {}（旧文件备份 {}）",
                                                             path.display(),
                                                             bp.display()
                                                         ),
-                                                        None => format!("已写入 {}", path.display()),
-                                                    };
-                                                    record_sync_activity(
-                                                        SyncDirection::In,
-                                                        SyncActivityKind::Config,
-                                                        preview,
-                                                        Some(from_name.clone()),
-                                                        true,
-                                                        Some(detail.clone()),
-                                                        None,
-                                                    );
-                                                    crate::log_line(&format!(
-                                                        "收到 {from_name} 的配置 {kind}/{name}，{detail}"
-                                                    ));
+                                                        None => format!("两端均修改，已自动合并写入 {}", path.display()),
+                                                    }
                                                 }
-                                                Err(e) => {
-                                                    record_sync_activity(
-                                                        SyncDirection::In,
-                                                        SyncActivityKind::Config,
-                                                        preview,
-                                                        Some(from_name.clone()),
-                                                        false,
-                                                        Some(format!("写入失败：{e}")),
-                                                        None,
-                                                    );
-                                                    crate::log_line(&format!(
-                                                        "写入 {from_name} 的配置 {kind}/{name} 失败：{e}"
-                                                    ));
-                                                }
-                                            }
+                                                sync_core::config_sync::ApplyStatus::KeptLocal =>
+                                                    format!("本地已修改，保留本地 {}（远端未变化）", path.display()),
+                                            };
+                                            record_sync_activity(
+                                                SyncDirection::In,
+                                                SyncActivityKind::Config,
+                                                preview,
+                                                Some(from_name.clone()),
+                                                true,
+                                                Some(detail.clone()),
+                                                None,
+                                            );
+                                            crate::log_line(&format!(
+                                                "收到 {from_name} 的配置 {kind}/{name}，{detail}"
+                                            ));
                                         }
-                                        None => crate::log_line(&format!(
-                                            "收到未知配置类型 {kind}（来自 {from_name}），忽略"
-                                        )),
+                                        Err(e) => {
+                                            record_sync_activity(
+                                                SyncDirection::In,
+                                                SyncActivityKind::Config,
+                                                preview,
+                                                Some(from_name.clone()),
+                                                false,
+                                                Some(format!("写入失败：{e}")),
+                                                None,
+                                            );
+                                            crate::log_line(&format!(
+                                                "写入 {from_name} 的配置 {kind}/{name} 失败：{e}"
+                                            ));
+                                        }
                                     }
                                 }
                                 Incoming::SearchResults { from_name, req_id, hits } => {
@@ -1165,11 +1172,10 @@ pub fn cli_sync_config_restore(file: &str) {
         eprintln!("备份文件不存在：{}", backup.display());
         std::process::exit(1);
     }
-    let Some((_, kind)) = file.split_once('_') else {
+    let Some(kind) = sync_core::config_sync::kind_from_backup_name(file) else {
         eprintln!("备份文件名格式不正确：{file}");
         std::process::exit(1);
     };
-    let kind = kind.split('_').next().unwrap_or("");
     let dir = crate::app_data_dir();
     let target = match kind {
         "options" => dir.join("options.json"),

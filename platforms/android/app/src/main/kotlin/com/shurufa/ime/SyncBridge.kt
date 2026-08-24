@@ -38,6 +38,10 @@ object SyncBridge {
     external fun nativeSendFilePath(path: String): Boolean
     /** 配置/短语/皮肤同步（config-sync-v1）：读本地文件后广播给已配对设备。 */
     external fun nativeSendConfig(kind: String, path: String): Boolean
+    /** 列出配置同步备份文件名（每行一个，来自 sync-config-backups/）。 */
+    external fun nativeConfigBackups(): String
+    /** 从备份文件恢复配置/短语/皮肤，返回是否成功。 */
+    external fun nativeRestoreConfigBackup(file: String): Boolean
     external fun nativeMaxImageBytes(): Int
     external fun nativeMaxFileBytes(): Int
     external fun nativeDevices(): String
@@ -122,6 +126,11 @@ object SyncBridge {
         if (!ensureStarted(context)) return false
         return nativeSendConfig(kind, path.absolutePath)
     }
+
+    fun configBackups(): List<String> =
+        nativeConfigBackups().lines().filter { it.isNotBlank() }
+
+    fun restoreConfigBackup(file: String): Boolean = nativeRestoreConfigBackup(file)
 
     fun maxImageBytes(): Int = nativeMaxImageBytes().takeIf { it > 0 } ?: 8 * 1024 * 1024
 

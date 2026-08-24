@@ -1,6 +1,7 @@
 package com.shurufa.ime
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Color
 import android.net.nsd.NsdManager
@@ -18,6 +19,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.concurrent.thread
 
@@ -39,6 +43,7 @@ class PairActivity : Activity() {
     private lateinit var dictionaryInput: EditText
     private lateinit var codeArea: LinearLayout
     private lateinit var codeText: TextView
+    private lateinit var backupContainer: LinearLayout
 
     private val main = Handler(Looper.getMainLooper())
     private var polling = false
@@ -133,7 +138,17 @@ class PairActivity : Activity() {
             setOnClickListener { sendConfigsToPc() }
         })
 
+        root.addView(subtitle("配置同步备份"))
+        root.addView(hint("收到电脑配置且本机文件不同时，会自动备份旧文件；可在这里查看或恢复。"))
+        backupContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(backupContainer)
+        root.addView(Button(this).apply {
+            text = "刷新备份列表"
+            setOnClickListener { refreshBackupUi() }
+        })
+
         setContentView(ScrollView(this).apply { addView(root) })
+        refreshBackupUi()
         refreshDevices()
         // 入站配对也要能显示确认码：Windows 发起、本机接收时不再“静默拒绝”。
         startCodePolling(0)
@@ -371,6 +386,91 @@ class PairActivity : Activity() {
             file.isFile && SyncBridge.sendConfig(this, kind, file)
         }
         Toast.makeText(this, "已发送 $sent 份配置到电脑", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun refreshBackupUi() {
+        backupContainer.removeAllViews()
+        val backups = SyncBridge.configBackups().sortedDescending()
+        if (backups.isEmpty()) {
+            backupContainer.addView(hint("（暂无备份）"))
+            return
+        }
+        backups.forEach { file ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(4), 0, dp(4))
+            }
+            row.addView(TextView(this).apply {
+                text = backupLabel(file)
+                textSize = 13f
+                setTextColor(Color.parseColor("#303030"))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            row.addView(Button(this).apply {
+                text = "查看"
+                setOnClickListener { showBackupPreview(file) }
+            })
+            row.addView(Button(this).apply {
+                text = "恢复"
+                setOnClickListener { confirmRestoreBackup(file) }
+            })
+            backupContainer.addView(row)
+        }
+    }
+
+    private fun backupLabel(file: String): String {
+        val tsText = file.substringBefore('_')
+        val ts = tsText.toLongOrNull()
+        val rest = file.substringAfter('_', "")
+        val kind = when {
+            rest.startsWith("custom_phrase") -> "custom_phrase"
+            rest.startsWith("options") -> "options"
+            rest.startsWith("skin") -> "skin"
+            else -> rest.substringBefore('_')
+        }
+        val kindName = when (kind) {
+            "options" -> "选项"
+            "skin" -> "皮肤"
+            "custom_phrase" -> "自定义短语"
+            else -> kind
+        }
+        val time = ts?.let {
+            SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(it))
+        } ?: "?"
+        return "$kindName · $time\n$file"
+    }
+
+    private fun showBackupPreview(file: String) {
+        val backup = File(filesDir, "sync-config-backups/$file")
+        if (!backup.isFile) {
+            Toast.makeText(this, "备份文件不存在", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val content = backup.readText()
+        val preview = if (content.length > 2000) content.take(2000) + "\n…（内容过长，仅显示前 2000 字符）" else content
+        AlertDialog.Builder(this)
+            .setTitle(backupLabel(file))
+            .setMessage(preview)
+            .setPositiveButton("关闭", null)
+            .show()
+    }
+
+    private fun confirmRestoreBackup(file: String) {
+        AlertDialog.Builder(this)
+            .setTitle("恢复配置备份")
+            .setMessage("将用备份覆盖当前配置：\n$file\n\n继续？")
+            .setPositiveButton("恢复") { _, _ ->
+                val ok = SyncBridge.restoreConfigBackup(file)
+                Toast.makeText(
+                    this,
+                    if (ok) "已恢复 $file" else "恢复失败：备份无效或类型未知",
+                    Toast.LENGTH_SHORT,
+                ).show()
+                refreshBackupUi()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun refreshDevices() {

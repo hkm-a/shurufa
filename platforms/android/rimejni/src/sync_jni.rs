@@ -24,8 +24,8 @@ use jni::{JNIEnv, JavaVM};
 use tokio::runtime::Runtime;
 
 use sync_core::{
-    ConfirmFn, FileConfirmFn, FileOfferPrompt, Incoming, PairPrompt, SyncConfig, SyncService,
-    MAX_CLIP_FILE_BYTES,
+    config_sync, ConfirmFn, FileConfirmFn, FileOfferPrompt, Incoming, PairPrompt, SyncConfig,
+    SyncService, MAX_CLIP_FILE_BYTES,
 };
 
 struct PairPending {
@@ -37,6 +37,8 @@ struct PairPending {
 struct SyncState {
     rt: Runtime,
     service: SyncService,
+    /// filesDir（配置根目录），用于备份列表/恢复。
+    config_root: PathBuf,
     /// 入站条目队列：(kind, from, payload)。kind=text 时 payload 为文本；
     /// kind=image/file 时内容已存入历史库，payload 为条目 id。
     incoming: Arc<Mutex<VecDeque<(String, String, String)>>>,
@@ -116,6 +118,7 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                 return 1;
             }
             let dir = PathBuf::from(jstr(&mut env, &config_dir));
+            let config_root = dir.parent().unwrap_or(&dir).to_path_buf();
             let name = jstr(&mut env, &device_name);
 
             let rt = match Runtime::new() {
@@ -184,7 +187,7 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                                 }
                                 // 对端的搜索响应当前只供 PC 侧 CLI/日志消费，Android 暂不展示。
                                 Incoming::SearchResults { .. } => return,
-                                // 配置/短语/皮肤同步：写入 filesDir 对应配置路径。
+                                // 配置/短语/皮肤同步：三方冲突合并 + 增量状态落盘。
                                 Incoming::ConfigFile {
                                     from_name,
                                     kind,
@@ -192,44 +195,7 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                                     data,
                                 } => {
                                     let root = received_dir.parent().unwrap_or(&received_dir);
-                                    let path = match kind.as_str() {
-                                        "options" => Some(root.join("options.json")),
-                                        "skin" => Some(root.join("shurufa-skin.json")),
-                                        "custom_phrase" => {
-                                            Some(root.join("rime").join("custom_phrase.txt"))
-                                        }
-                                        _ => None,
-                                    };
-                                    if let Some(path) = path {
-                                        if let Some(parent) = path.parent() {
-                                            let _ = std::fs::create_dir_all(parent);
-                                        }
-                                        // 覆盖前备份旧文件，避免远端配置直接冲掉本机定制。
-                                        let backup = if path.exists() {
-                                            match std::fs::read_to_string(&path) {
-                                                Ok(old) if old != data => {
-                                                    let backup_dir =
-                                                        root.join("sync-config-backups");
-                                                    let _ = std::fs::create_dir_all(&backup_dir);
-                                                    let ts = std::time::SystemTime::now()
-                                                        .duration_since(std::time::UNIX_EPOCH)
-                                                        .map(|d| d.as_millis())
-                                                        .unwrap_or(0);
-                                                    let safe = name.replace(['/', '\\'], "_");
-                                                    let backup_path = backup_dir
-                                                        .join(format!("{ts}_{kind}_{safe}"));
-                                                    std::fs::copy(&path, &backup_path)
-                                                        .ok()
-                                                        .map(|_| backup_path)
-                                                }
-                                                _ => None,
-                                            }
-                                        } else {
-                                            None
-                                        };
-                                        let _ = backup;
-                                        let _ = std::fs::write(&path, data.as_bytes());
-                                    }
+                                    let _ = config_sync::apply_incoming(root, &kind, &name, &data);
                                     let _ = (from_name, name);
                                     return;
                                 }
@@ -256,6 +222,7 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                     let _ = STATE.set(SyncState {
                         rt,
                         service,
+                        config_root: config_root.clone(),
                         incoming,
                         pending,
                     });
@@ -419,8 +386,13 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendConfig(
             let Some(state) = STATE.get() else { return 0 };
             let kind = jstr(&mut env, &kind);
             let path = jstr(&mut env, &path);
-            let Ok(data) = std::fs::read_to_string(&path) else {
-                return 0;
+            let data = match config_sync::prepare_send(
+                &state.config_root,
+                &kind,
+                std::path::Path::new(&path),
+            ) {
+                Ok(Some(data)) => data,
+                _ => return 0,
             };
             let name = std::path::Path::new(&path)
                 .file_name()
@@ -428,7 +400,79 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendConfig(
                 .unwrap_or("config.txt")
                 .to_owned();
             state.service.send_config(&kind, &name, &data);
+            // 只有确有在线对端时才标记“已同步”；离线发送会丢，不能消耗增量状态。
+            if state.service.connected_count() > 0 {
+                let _ = config_sync::mark_sent(&state.config_root, &kind, &data);
+            }
             1
+        },
+        0,
+    )
+}
+
+/// 列出配置同步备份文件名（每行一个）。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeConfigBackups(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else {
+                return to_jstring(&env, "");
+            };
+            let dir = state.config_root.join("sync-config-backups");
+            let mut names = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_file() {
+                            if let Some(name) = entry.file_name().to_str() {
+                                names.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            names.sort();
+            to_jstring(&env, &names.join("\n"))
+        },
+        to_jstring(&env, ""),
+    )
+}
+
+/// 从备份恢复配置/短语/皮肤。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeRestoreConfigBackup(
+    mut env: JNIEnv,
+    _class: JClass,
+    file: JString,
+) -> jboolean {
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else { return 0 };
+            let file = jstr(&mut env, &file);
+            let backup = state.config_root.join("sync-config-backups").join(&file);
+            if !backup.is_file() {
+                return 0;
+            }
+            let Some(kind) = config_sync::kind_from_backup_name(&file) else {
+                return 0;
+            };
+            let root = &state.config_root;
+            let target = match kind {
+                "options" => root.join("options.json"),
+                "skin" => root.join("shurufa-skin.json"),
+                "custom_phrase" => root.join("rime").join("custom_phrase.txt"),
+                _ => return 0,
+            };
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::copy(&backup, &target) {
+                Ok(_) => 1,
+                Err(_) => 0,
+            }
         },
         0,
     )

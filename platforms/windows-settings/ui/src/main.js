@@ -379,6 +379,7 @@ let generalSettings = null;
 // 语音转写卡片（wave 4 新挂在通用页里；speechSettings 与 general 完全独立
 // 存储 / 独立 Tauri 命令），null=未加载/读取失败
 let speechSettings = null;
+let configBackups = [];
 // 输入方案页（wave 4 新增）：null=未加载；list=后端 list_input_schemes 返回的 4 项
 let schemeList = null;
 let schemeCurrent = "pinyin";
@@ -1783,6 +1784,32 @@ function settingsPage() {
 // 皮肤目录走 SSOT（候选窗皮肤文件），此字段保留给后续版本——只读展示。
 // ---------------------------------------------------------------------------
 
+function configBackupsPanel() {
+  const rows = (configBackups || []).map((file) => {
+    const rest = file.slice(file.indexOf("_") + 1);
+    const kindName = rest.startsWith("custom_phrase")
+      ? "自定义短语"
+      : rest.startsWith("options")
+        ? "选项"
+        : rest.startsWith("skin")
+          ? "皮肤"
+          : (rest.split("_")[0] || "?");
+    const ts = Number(file.split("_")[0]) || 0;
+    const time = ts
+      ? new Date(ts).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
+      : "?";
+    return `<div class="setting-row"><div class="row-icon teal"><i data-lucide="history"></i></div><div><h3>${escapeHtml(kindName)} · ${escapeHtml(time)}</h3><p class="path-value">${escapeHtml(file)}</p></div><div class="row-side"><button class="outline-action" data-action="restore-config-backup" data-file="${escapeHtml(file)}"><i data-lucide="refresh-cw"></i>恢复</button></div></div>`;
+  }).join(`<div class="divider"></div>`);
+  const empty = (configBackups || []).length === 0
+    ? `<div class="setting-row"><div class="row-icon dim"><i data-lucide="info"></i></div><div><h3>暂无配置同步备份</h3><p>收到电脑配置且本机文件不同时会自动备份旧文件</p></div></div>`
+    : "";
+  return `<article class="setting-panel"><div class="panel-heading"><div class="row-icon coral"><i data-lucide="history"></i></div><div><h3>配置同步备份</h3><p>远端配置覆盖前自动保存的旧文件，可一键恢复</p></div></div>${rows || empty}<div class="divider"></div><div class="panel-actions"><button class="outline-action" data-action="refresh-config-backups"><i data-lucide="refresh-cw"></i>刷新</button></div></article>`;
+}
+
+async function refreshConfigBackups() {
+  configBackups = await invoke("sync_config_backups");
+}
+
 function generalPage() {
   if (!generalSettings) {
     return `
@@ -3061,9 +3088,11 @@ async function navigateTo(page) {
     try {
       await refreshGeneralSettings();
       await refreshSpeechSettings();
+      await refreshConfigBackups();
     } catch (error) {
       generalSettings = null;
       speechSettings = null;
+      configBackups = [];
       showToast(String(error), true);
     }
   } else if (page === "scheme") {

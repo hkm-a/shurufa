@@ -127,6 +127,14 @@
   可刷新备份列表并一键恢复。
   备份旧文件到 `files/sync-config-backups/`。
   掉线未复核）。
+- **P2 配置备份 UI（Android）**：配对页新增「配置同步备份」区，可
+  查看/恢复 `sync-config-backups/` 下的备份文件；JNI 已有
+  `nativeConfigBackups` / `nativeRestoreConfigBackup` 接入 Kotlin。
+- **P2 配置同步冲突合并 / 增量同步**：`sync-core` 新增 `config_sync`
+  模块，按 `.sync-config-state.json` 做三方比较：本地未变采用远端、
+  远端未变保留本地、两端都变自动合并（custom_phrase 按码合并，
+  options/skin 按 JSON 深度合并，合并前备份旧文件）；发送侧只广播
+  自上次同步后变化过的配置，Windows 宿主与 Android JNI 均已接入。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets
