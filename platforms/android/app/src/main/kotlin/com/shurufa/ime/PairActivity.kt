@@ -129,6 +129,8 @@ class PairActivity : Activity() {
 
         setContentView(ScrollView(this).apply { addView(root) })
         refreshDevices()
+        // 入站配对也要能显示确认码：Windows 发起、本机接收时不再“静默拒绝”。
+        startCodePolling(0)
     }
 
     override fun onStart() {
