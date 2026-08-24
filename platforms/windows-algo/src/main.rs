@@ -231,26 +231,39 @@ fn watch_input_scheme(
     last_known: std::sync::Arc<std::sync::Mutex<shurufa_options::ImeOptions>>,
     current_scheme: std::sync::Arc<std::sync::Mutex<String>>,
 ) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(2));
-        let current = shurufa_options::load();
-        let old = {
-            let mut guard = last_known.lock().unwrap_or_else(|p| p.into_inner());
-            let stale = guard.clone();
-            *guard = current.clone();
-            stale
-        };
-        if input_scheme_differs(&old, &current) {
-            let sid = schema_id_for(&current.input_scheme, current.jianpin_enabled);
-            {
-                let mut slot = current_scheme.lock().unwrap_or_else(|p| p.into_inner());
-                *slot = sid.to_owned();
+    std::thread::spawn(move || {
+        let opts_path = shurufa_options::path();
+        let mut last_mtime: Option<std::time::SystemTime> = None;
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            // mtime 没变就不读盘/不解析：空闲 CPU 只付一次 stat 的代价。
+            let mtime = std::fs::metadata(&opts_path)
+                .and_then(|m| m.modified())
+                .ok();
+            let changed = mtime != last_mtime;
+            last_mtime = mtime;
+            if !changed {
+                continue;
             }
-            set_jianpin_injection(current.jianpin_enabled);
-            log(&format!(
-                "输入方案变化：{} → {}（简拼={}，schema={}），新会话将热切换",
-                old.input_scheme, current.input_scheme, current.jianpin_enabled, sid
-            ));
+            let current = shurufa_options::load();
+            let old = {
+                let mut guard = last_known.lock().unwrap_or_else(|p| p.into_inner());
+                let stale = guard.clone();
+                *guard = current.clone();
+                stale
+            };
+            if input_scheme_differs(&old, &current) {
+                let sid = schema_id_for(&current.input_scheme, current.jianpin_enabled);
+                {
+                    let mut slot = current_scheme.lock().unwrap_or_else(|p| p.into_inner());
+                    *slot = sid.to_owned();
+                }
+                set_jianpin_injection(current.jianpin_enabled);
+                log(&format!(
+                    "输入方案变化：{} → {}（简拼={}，schema={}），新会话将热切换",
+                    old.input_scheme, current.input_scheme, current.jianpin_enabled, sid
+                ));
+            }
         }
     });
 }
