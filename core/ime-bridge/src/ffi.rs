@@ -103,12 +103,8 @@ mod loader {
 #[cfg(windows)]
 pub use loader::get_api;
 
-// 非 Windows 平台（Android/Linux）按常规动态链接
-#[cfg(not(windows))]
-extern "C" {
-    fn rime_get_api() -> *mut RimeApi;
-}
-
+// 非 Windows 平台（Android/Linux）按常规动态链接；rime_get_api 由
+// 生成的 rime_bindings.rs 提供（include! 已引入）。
 #[cfg(not(windows))]
 pub fn get_api() -> Result<*mut RimeApi, String> {
     let api = unsafe { rime_get_api() };

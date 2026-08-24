@@ -39,9 +39,33 @@ fn main() {
             std::env::set_var("LIBCLANG_PATH", dir);
         }
     }
-    let bindings = bindgen::Builder::default()
+    let mut builder = bindgen::Builder::default()
         .header(header.to_string_lossy().into_owned())
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
+    // Android 交叉编译：bindgen 的 libclang 需要显式 sysroot 才能找到
+    // stddef.h 等平台头文件。从 ANDROID_NDK_HOME 推导，避免写死本机路径。
+    let target = env::var("TARGET").unwrap_or_default();
+    if target.contains("android") {
+        if let Ok(ndk) = env::var("ANDROID_NDK_HOME") {
+            let host = if cfg!(windows) {
+                "windows-x86_64"
+            } else if cfg!(target_os = "macos") {
+                "darwin-x86_64"
+            } else {
+                "linux-x86_64"
+            };
+            let sysroot = PathBuf::from(&ndk)
+                .join("toolchains/llvm/prebuilt")
+                .join(host)
+                .join("sysroot");
+            let sysroot_str = sysroot.to_string_lossy().replace('\\', "/");
+            println!("cargo:warning=android bindgen sysroot: {sysroot_str}");
+            builder = builder
+                .clang_arg(format!("--target={target}"))
+                .clang_arg(format!("--sysroot={sysroot_str}"));
+        }
+    }
+    let bindings = builder
         .generate()
         .expect("bindgen 生成 rime_api.h 绑定失败");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
