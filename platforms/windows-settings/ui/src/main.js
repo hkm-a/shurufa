@@ -1813,6 +1813,12 @@ function generalPage() {
           <div><h3>日志级别</h3><p>跟踪级别最详细，日志文件增长更快</p></div>
           <div class="row-side"><select data-general-field="log_level">${logOptions}</select></div>
         </div>
+        <div class="divider"></div>
+        <div class="setting-row">
+          <div class="row-icon"><i data-lucide="settings-2"></i></div>
+          <div><h3>同步设置到设备</h3><p>把当前 options.json 广播给所有已配对设备</p></div>
+          <div class="row-side"><button class="outline-action" data-action="sync-options"><i data-lucide="send"></i>同步</button></div>
+        </div>
       </article>
 
       <article class="setting-panel">
@@ -2336,6 +2342,7 @@ function skinPage() {
           <button class="primary-action" data-action="save-skin"><i data-lucide="sparkles"></i>保存并应用</button>
           <button class="outline-action" data-action="reset-skin"><i data-lucide="trash-2"></i>删除自定义（回退内置）</button>
           <button class="outline-action" data-action="reload-skin"><i data-lucide="refresh-cw"></i>重新加载</button>
+          <button class="outline-action" data-action="skin-sync"><i data-lucide="send"></i>同步到设备</button>
         </div>
         <div class="field-action skin-file-actions">
           <input id="skin-export-name" maxlength="40" placeholder="导出文件名（如：护眼绿）" aria-label="导出文件名" />
@@ -3395,6 +3402,24 @@ async function handleAction(button) {
         } else {
           showToast(`${saved}（保存后需「保存并部署」或重启输入法生效）`);
         }
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "skin-sync") {
+      try {
+        const result = await invoke("sync_config", { kind: "skin" });
+        showToast(result);
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "sync-options") {
+      try {
+        const result = await invoke("sync_config", { kind: "options" });
+        showToast(result);
       } catch (error) {
         showToast(String(error), true);
       }
