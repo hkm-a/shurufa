@@ -63,6 +63,28 @@ fn main() {
             builder = builder
                 .clang_arg(format!("--target={target}"))
                 .clang_arg(format!("--sysroot={sysroot_str}"));
+            // NDK 的 libclang 内置头（stddef.h 等）不在默认搜索路径，
+            // 需要显式追加 clang 资源 include 与 sysroot/usr/include。
+            let clang_lib = PathBuf::from(&ndk)
+                .join("toolchains/llvm/prebuilt")
+                .join(host)
+                .join("lib/clang");
+            if let Ok(mut entries) = std::fs::read_dir(&clang_lib) {
+                if let Some(Ok(entry)) = entries.next() {
+                    let clang_include = entry.path().join("include");
+                    let clang_include_str =
+                        clang_include.to_string_lossy().replace('\\', "/");
+                    if clang_include.is_dir() {
+                        builder =
+                            builder.clang_arg(format!("-isystem{clang_include_str}"));
+                    }
+                }
+            }
+            let sysroot_include = sysroot.join("usr/include");
+            let sysroot_include_str = sysroot_include.to_string_lossy().replace('\\', "/");
+            if sysroot_include.is_dir() {
+                builder = builder.clang_arg(format!("-isystem{sysroot_include_str}"));
+            }
         }
     }
     let bindings = builder
