@@ -104,6 +104,9 @@
   「同步到设备」按钮，分别同步 `skin` / `options`。
 - **P2 配置云同步（第七步）**：duplex 集成测试新增
   `ConfigFile` 端到端断言（甲→乙 custom_phrase 原样到达）。
+- **P2 配置云同步（第八步）**：入站配置落盘时写入同步活动流
+  （新增 `SyncActivityKind::Config`），设置中心同步历史可显示
+  「配置」条目；Android JNI 暂忽略 ConfigFile。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets

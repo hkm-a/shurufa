@@ -602,6 +602,7 @@ pub fn start_daemon() {
                                 },
                                 Incoming::ConfigFile { from_name, kind, name, data } => {
                                     let dir = crate::app_data_dir();
+                                    let preview = format!("{kind}/{name}（{} 字符）", data.chars().count());
                                     let path = match kind.as_str() {
                                         "options" => Some(dir.join("options.json")),
                                         "skin" => Some(dir.join("shurufa-skin.json")),
@@ -616,13 +617,35 @@ pub fn start_daemon() {
                                                 let _ = std::fs::create_dir_all(parent);
                                             }
                                             match std::fs::write(&path, data.as_bytes()) {
-                                                Ok(()) => crate::log_line(&format!(
-                                                    "收到 {from_name} 的配置 {kind}/{name}，已写入 {}",
-                                                    path.display()
-                                                )),
-                                                Err(e) => crate::log_line(&format!(
-                                                    "写入 {from_name} 的配置 {kind}/{name} 失败：{e}"
-                                                )),
+                                                Ok(()) => {
+                                                    record_sync_activity(
+                                                        SyncDirection::In,
+                                                        SyncActivityKind::Config,
+                                                        preview,
+                                                        Some(from_name.clone()),
+                                                        true,
+                                                        Some(format!("已写入 {}", path.display())),
+                                                        None,
+                                                    );
+                                                    crate::log_line(&format!(
+                                                        "收到 {from_name} 的配置 {kind}/{name}，已写入 {}",
+                                                        path.display()
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    record_sync_activity(
+                                                        SyncDirection::In,
+                                                        SyncActivityKind::Config,
+                                                        preview,
+                                                        Some(from_name.clone()),
+                                                        false,
+                                                        Some(format!("写入失败：{e}")),
+                                                        None,
+                                                    );
+                                                    crate::log_line(&format!(
+                                                        "写入 {from_name} 的配置 {kind}/{name} 失败：{e}"
+                                                    ));
+                                                }
                                             }
                                         }
                                         None => crate::log_line(&format!(

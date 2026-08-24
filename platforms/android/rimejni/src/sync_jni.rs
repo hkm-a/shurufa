@@ -184,6 +184,8 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                                 }
                                 // 对端的搜索响应当前只供 PC 侧 CLI/日志消费，Android 暂不展示。
                                 Incoming::SearchResults { .. } => return,
+                                // 配置/短语/皮肤同步：Android 侧暂不消费，忽略。
+                                Incoming::ConfigFile { .. } => return,
                                 // 文件 v3 事件：Android 侧仅做日志级提示，
                                 // 由宿主的 ClipboardSyncService 自行弹出
                                 // Notification / 历史入库。

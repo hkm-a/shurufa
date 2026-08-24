@@ -1632,7 +1632,7 @@ function syncActivityRows() {
       : "";
     return `<div class="setting-row">
       <div class="row-icon"><i data-lucide="${iconFor[e.kind] || "activity"}"></i></div>
-      <div><h3>${dirFor(e.direction)}${e.kind === "image" ? " 图片" : e.kind === "file" ? " 文件" : " 文本"}<span class="pill ${statusCls}">${statusText}</span></h3><p>${escapeHtml(String(e.preview).slice(0, 60))} · ${peer} · ${relTimeAgo(e.ts_ms)}</p></div>
+      <div><h3>${dirFor(e.direction)}${e.kind === "image" ? " 图片" : e.kind === "file" ? " 文件" : e.kind === "config" ? " 配置" : " 文本"}<span class="pill ${statusCls}">${statusText}</span></h3><p>${escapeHtml(String(e.preview).slice(0, 60))} · ${peer} · ${relTimeAgo(e.ts_ms)}</p></div>
       ${retryBtn}
     </div>`;
   }).join("");

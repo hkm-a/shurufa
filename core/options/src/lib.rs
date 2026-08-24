@@ -990,6 +990,8 @@ pub enum SyncActivityKind {
     Text,
     Image,
     File,
+    /// 配置/短语/皮肤同步（P2 #16）。
+    Config,
 }
 
 /// 同步活动方向：收到（in）/ 发出（out）。
