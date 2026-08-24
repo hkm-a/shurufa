@@ -16,6 +16,7 @@ pub mod paste;
 pub mod speech;
 pub mod supervis;
 pub mod sync;
+pub mod toast_host;
 #[cfg(debug_assertions)]
 pub mod tsf_probe;
 pub mod update_check;

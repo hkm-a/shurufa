@@ -1231,8 +1231,20 @@ unsafe extern "system" fn wnd_proc(
                 let (prompt, result) = *boxed;
                 PANEL.with_borrow_mut(|slot| {
                     if let Some(state) = slot.as_mut() {
+                        let is_selection_mode =
+                            matches!(state.mode, PanelMode::Polish | PanelMode::Translate);
                         state.status = match result {
-                            Ok(draft) => Status::Preview { prompt, draft },
+                            Ok(draft) => {
+                                if is_selection_mode {
+                                    let label = if state.mode == PanelMode::Translate {
+                                        "划词翻译完成"
+                                    } else {
+                                        "划词润色完成"
+                                    };
+                                    crate::toast_host::send_toast(label);
+                                }
+                                Status::Preview { prompt, draft }
+                            }
                             Err(reason) => Status::Failed { reason },
                         };
                         unsafe {

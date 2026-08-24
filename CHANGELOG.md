@@ -78,6 +78,10 @@
   `inline_preedit` 字段；设置中心「按应用输入法行为」新增第三开关；
   `CandEvent::Show` 透传该开关，hosted 候选窗在开启时不再重复绘制
   preedit（由应用内联显示）。默认关闭，保持现状；老配置兼容。
+- **宿主 → TSF toast 管道**：新增 `\.\pipe\shurufa-toast`，TSF
+  客户端连接后上报 PID，shurufa-ui 作为服务端按前台 PID 投递
+  `HostToast`；TSF 经隐藏窗口消息在 UI 线程弹出轻量提示，断线每 2 秒
+  自动重连。AI 划词翻译/润色完成时已接入该通道向当前输入进程提示。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets

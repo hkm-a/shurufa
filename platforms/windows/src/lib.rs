@@ -19,6 +19,7 @@ mod registry;
 mod service;
 mod skin;
 mod toast;
+mod toast_pipe;
 pub mod uia_provider;
 
 use std::ffi::c_void;

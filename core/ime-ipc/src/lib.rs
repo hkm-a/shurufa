@@ -194,6 +194,35 @@ pub fn decode_cand_command(data: &[u8]) -> Result<CandCommand, String> {
     serde_json::from_slice(data).map_err(|e| e.to_string())
 }
 
+/// 宿主 → TSF toast 管道的 TSF 侧注册帧：客户端（TSF）连上后先发自身 PID，
+/// 宿主按前台进程 PID 把 toast 投递给对应 TSF 实例。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToastHello {
+    pub pid: u32,
+}
+
+/// 宿主 → TSF toast 消息：TSF 收到后在 UI 线程弹出轻量提示。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HostToast {
+    pub text: String,
+}
+
+pub fn encode_toast_hello(hello: &ToastHello) -> Result<Vec<u8>, String> {
+    encode_json(hello)
+}
+
+pub fn decode_toast_hello(data: &[u8]) -> Result<ToastHello, String> {
+    serde_json::from_slice(data).map_err(|e| e.to_string())
+}
+
+pub fn encode_host_toast(toast: &HostToast) -> Result<Vec<u8>, String> {
+    encode_json(toast)
+}
+
+pub fn decode_host_toast(data: &[u8]) -> Result<HostToast, String> {
+    serde_json::from_slice(data).map_err(|e| e.to_string())
+}
+
 /// 从缓冲区解析一帧：返回 `(帧数据, 剩余)`。数据不足返回 `None`。
 pub fn decode_frame(buf: &[u8]) -> Option<(Vec<u8>, &[u8])> {
     use tokio_util::codec::{Decoder, LengthDelimitedCodec};
@@ -364,6 +393,21 @@ mod tests {
     fn rejects_messages_larger_than_pipe_capacity() {
         let result = encode_request(&Request::Simulate("x".repeat(MAX_FRAME_BYTES)));
         assert!(matches!(result, Err(ref message) if message == "消息过大"));
+    }
+
+    #[test]
+    fn toast_hello_and_host_toast_roundtrip() {
+        let hello = ToastHello { pid: 1234 };
+        let bytes = encode_toast_hello(&hello).unwrap();
+        let (frame, _) = decode_frame(&bytes).unwrap();
+        assert_eq!(decode_toast_hello(&frame).unwrap(), hello);
+
+        let toast = HostToast {
+            text: "划词翻译完成".to_owned(),
+        };
+        let bytes = encode_host_toast(&toast).unwrap();
+        let (frame, _) = decode_frame(&bytes).unwrap();
+        assert_eq!(decode_host_toast(&frame).unwrap(), toast);
     }
 
     impl Request {

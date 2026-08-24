@@ -100,6 +100,10 @@ fn run() -> windows::core::Result<()> {
         if !shurufa_host::cand_host::start() {
             log_line("cand_host 启动失败：hosted 模式候选窗将回退内置渲染");
         }
+        // 宿主 → TSF toast 管道：AI 划词完成等事件可提示当前输入进程。
+        if !shurufa_host::toast_host::start() {
+            log_line("toast_host 启动失败：宿主事件 toast 不可用");
+        }
         let speech_hotkey = shurufa_host::speech::register_hotkey();
         println!("语音转写热键：{speech_hotkey}");
         log_line(&format!("语音转写热键：{speech_hotkey}"));

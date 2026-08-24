@@ -349,6 +349,8 @@ impl TextService {
                 false
             }));
         }
+        // 宿主 → TSF toast 管道：接收 shurufa-ui 发来的事件提示。
+        crate::toast_pipe::start();
         TextService {
             inner: RefCell::new(Inner {
                 thread_mgr: None,

@@ -27,6 +27,8 @@ use windows::Win32::System::Pipes::{
 pub const PIPE_NAME: &str = r"\\.\pipe\shurufa-algo";
 /// 候选窗事件管道（TSF → shurufa-ui，阶段 6 候选窗迁出宿主进程）。
 pub const CAND_PIPE_NAME: &str = r"\\.\pipe\shurufa-cand";
+/// 宿主 → TSF toast 管道（shurufa-ui 为 server，TSF 为 client）。
+pub const TOAST_PIPE_NAME: &str = r"\\.\pipe\shurufa-toast";
 
 /// 每帧最大字节（候选最多 8 页 × 10 条，文本 UTF-8 足够）。
 const MAX_FRAME: u32 = ime_ipc::MAX_FRAME_BYTES as u32;
