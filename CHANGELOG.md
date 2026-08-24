@@ -83,11 +83,15 @@
   `HostToast`；TSF 经隐藏窗口消息在 UI 线程弹出轻量提示，断线每 2 秒
   自动重连。AI 划词翻译/润色完成时已接入该通道向当前输入进程提示。
 - **algo 空闲轮询优化**：输入方案热切换改为先比对 `options.json` mtime，
+  文件没变不再每 2 秒读盘解析；空闲 CPU 只付一次 stat 的代价。
 - **P2 配置云同步（第一步）**：`core/sync` 协议新增
   `ConfigFile` 消息与 `config-sync-v1` 特性协商，支持
   custom_phrase / skin / options 类配置文件的线格式与缺省字段兼容；
   接收/落盘/UI 接线留后续切片。
-  文件没变不再每 2 秒读盘解析；空闲 CPU 只付一次 stat 的代价。
+- **P2 配置云同步（第二步）**：`core/sync` 服务层接入
+  `ConfigFile` 出站广播与入站事件，按 `config-sync-v1` 协商门控；
+  新增 `SyncService::send_config` 与 `Incoming::ConfigFile`，
+  宿主落盘/UI 接线仍留后续。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets

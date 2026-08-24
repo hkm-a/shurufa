@@ -24,6 +24,8 @@ use crate::{tls, DeviceIdentity, Peer, PeerStore};
 
 /// 同步文本上限：与桌面剪贴板采集策略一致
 const MAX_CLIP_TEXT: usize = 64 * 1024;
+/// 配置/短语/皮肤单文件同步上限（1 MiB，文本类配置足够）。
+const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 /// 同步图片上限（PNG 字节）：留在协议帧上限内。
 ///
 /// 平台层必须使用此值约束转码结果，避免图片在发送端被静默丢弃。
@@ -177,6 +179,13 @@ pub enum Incoming {
         /// Ok 时为接收方报回的字节数；Err 时为人类可读原因。
         detail: Result<u64, String>,
     },
+    /// 对端同步来的配置/短语/皮肤文本（config-sync-v1 协商后）。
+    ConfigFile {
+        from_name: String,
+        kind: String,
+        name: String,
+        data: String,
+    },
 }
 
 /// 出站广播内容：文本或图片，经 broadcast 通道推给所有活跃连接。
@@ -199,6 +208,14 @@ enum Outbound {
     SearchRequest {
         query: String,
         req_id: String,
+    },
+    /// 配置/短语/皮肤同步（config-sync-v1 协商后写出）。
+    ConfigFile {
+        kind: String,
+        name: String,
+        data: String,
+        msg_id: String,
+        sent_at_ms: i64,
     },
     /// 文件 v3 控制/数据面消息；仅在协商了 file-v1 的连接上写出。
     FileWire(Box<Message>),
@@ -719,6 +736,26 @@ impl SyncService {
             name: name.to_string(),
             mime_type: mime_type.to_string(),
             data: data.to_vec(),
+        });
+    }
+
+    /// 广播一条本机产生的配置/短语/皮肤文本（config-sync-v1）。
+    /// 仅发给协商了该特性的对端；空内容/超长/非法 kind 直接忽略。
+    pub fn send_config(&self, kind: &str, name: &str, data: &str) {
+        if !matches!(kind, "custom_phrase" | "skin" | "options")
+            || name.is_empty()
+            || name.contains(['/', '\\'])
+            || data.is_empty()
+            || data.len() > MAX_CONFIG_BYTES
+        {
+            return;
+        }
+        let _ = self.shared.outgoing.send(Outbound::ConfigFile {
+            kind: kind.to_string(),
+            name: name.to_string(),
+            data: data.to_string(),
+            msg_id: new_msg_id(),
+            sent_at_ms: now_ms(),
         });
     }
 
@@ -1432,6 +1469,8 @@ where
         crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_SEARCH_V1);
     let peer_has_file_v1 =
         crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_FILE_V1);
+    let peer_has_config =
+        crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_CONFIG_SYNC_V1);
     shared.log(&format!(
         "已连接 {peer_name}（协议 {}：{} msg_id）",
         if peer_has_msg_id { "v2" } else { "v1" },
@@ -1454,6 +1493,7 @@ where
         fp.clone(),
         peer_name.clone(),
         peer_has_search,
+        peer_has_config,
     ));
 
     let mut write_half = write_half;
@@ -1531,6 +1571,28 @@ where
                         break Err(e);
                     }
                 }
+                Ok(Outbound::ConfigFile {
+                    kind,
+                    name,
+                    data,
+                    msg_id,
+                    sent_at_ms,
+                }) => {
+                    if !peer_has_config {
+                        continue;
+                    }
+                    let msg = Message::ConfigFile {
+                        kind,
+                        name,
+                        data,
+                        sent_at_ms,
+                        msg_id: Some(msg_id),
+                        origin_device_fp: Some(shared.identity.fingerprint.clone()),
+                    };
+                    if let Err(e) = write_msg(&mut write_half, &msg).await {
+                        break Err(e);
+                    }
+                }
                 Ok(Outbound::FileWire(msg)) => {
                     // 文件 v3 控制/数据面消息：file-v1 协商后才允许上路，
                     // 保证 v2 对端不会因收到未知变体而断开。
@@ -1594,6 +1656,7 @@ async fn duplex_read_loop<S>(
     fp: String,
     peer_name: String,
     peer_has_search: bool,
+    peer_has_config: bool,
 ) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -1679,6 +1742,31 @@ where
                 }
                 _ => {}
             },
+            Ok(Ok(Message::ConfigFile {
+                kind,
+                name,
+                data,
+                sent_at_ms: _,
+                msg_id: _,
+                origin_device_fp: _,
+            })) => {
+                if !peer_has_config {
+                    continue;
+                }
+                if data.len() > MAX_CONFIG_BYTES {
+                    shared.log(&format!("{peer_name} 配置同步超限，忽略 {kind}/{name}"));
+                    continue;
+                }
+                let _ = shared
+                    .incoming
+                    .send(Incoming::ConfigFile {
+                        from_name: peer_name.clone(),
+                        kind,
+                        name,
+                        data,
+                    })
+                    .await;
+            }
             Ok(Ok(Message::FileOffer {
                 msg_id,
                 name,
