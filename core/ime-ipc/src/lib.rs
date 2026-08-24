@@ -145,6 +145,10 @@ pub enum CandEvent {
         /// 位置模式：follow / bottom_left / bottom_right。缺省 follow。
         #[serde(default)]
         position: String,
+        /// 按应用 inline_preedit：true 时由应用内联显示预编辑串，
+        /// 候选窗不再重复绘制 preedit。缺省 false 兼容旧客户端。
+        #[serde(default)]
+        inline_preedit: bool,
     },
     /// 隐藏（组合结束/会话失焦）。
     Hide { client_id: u32 },
@@ -298,6 +302,7 @@ mod tests {
             dpi: 144,
             multi_line: false,
             position: "follow".to_owned(),
+            inline_preedit: false,
         };
         let bytes = encode_cand_event(&event).unwrap();
         let (frame, _) = decode_frame(&bytes).unwrap();
@@ -309,6 +314,7 @@ mod tests {
                 dpi,
                 multi_line,
                 position,
+                ..
             } => {
                 assert_eq!(client_id, 4242);
                 assert_eq!(context.preedit, "nihao");

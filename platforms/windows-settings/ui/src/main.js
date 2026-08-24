@@ -1725,13 +1725,14 @@ function appOptionsPanel() {
         <input class="app-option-name" value="${escapeHtml(item.app)}" placeholder="app.exe（进程名，小写）" aria-label="进程名" />
         <label class="app-option-toggle"><span>自动英文直输</span><label class="switch"><input type="checkbox" class="app-option-ascii" ${item.ascii_mode ? "checked" : ""} /><span></span></label></label>
         <label class="app-option-toggle"><span>vim 模式</span><label class="switch"><input type="checkbox" class="app-option-vim" ${item.vim_mode ? "checked" : ""} /><span></span></label></label>
+        <label class="app-option-toggle"><span>内联预编辑</span><label class="switch"><input type="checkbox" class="app-option-inline" ${item.inline_preedit ? "checked" : ""} /><span></span></label></label>
       </div>
       <button class="icon-action" data-action="remove-app-option" data-index="${i}" aria-label="删除"><i data-lucide="trash-2"></i></button>
     </div>`
   ).join("");
-  const empty = list.length === 0 ? `<div class="setting-row"><div class="row-icon dim"><i data-lucide="info"></i></div><div><h3>还没有按应用设置</h3><p>添加后，进入该应用自动切英文直输（终端 / IDE 常用）或启用 vim 模式（vim / emacs 回 normal 模式自动切英文），离开恢复</p></div></div>` : "";
+  const empty = list.length === 0 ? `<div class="setting-row"><div class="row-icon dim"><i data-lucide="info"></i></div><div><h3>还没有按应用设置</h3><p>添加后，进入该应用自动切英文直输（终端 / IDE 常用）、启用 vim 模式（vim / emacs 回 normal 模式自动切英文）或内联预编辑（应用内显示拼音，候选窗不重复），离开恢复</p></div></div>` : "";
   return `<article class="setting-panel app-options-panel">
-    <div class="panel-heading"><div class="row-icon violet"><i data-lucide="app-window"></i></div><div><h3>按应用输入法行为</h3><p>进程名匹配时生效：自动英文直输 / vim 模式（weasel app_options 同款），离开恢复</p></div></div>
+    <div class="panel-heading"><div class="row-icon violet"><i data-lucide="app-window"></i></div><div><h3>按应用输入法行为</h3><p>进程名匹配时生效：自动英文直输 / vim 模式 / 内联预编辑（weasel app_options 同款），离开恢复</p></div></div>
     ${rows || empty}
     <div class="divider"></div>
     <div class="panel-actions"><button class="outline-action" data-action="add-app-option"><i data-lucide="plus"></i>添加应用</button><button class="primary-action compact" data-action="save-app-options"><i data-lucide="save"></i>保存</button></div>
@@ -3191,7 +3192,8 @@ async function handleAction(button) {
           .map((row) => ({
             app: row.querySelector(".app-option-name")?.value ?? "",
             ascii_mode: row.querySelector(".app-option-ascii")?.checked ?? false,
-            vim_mode: row.querySelector(".app-option-vim")?.checked ?? false
+            vim_mode: row.querySelector(".app-option-vim")?.checked ?? false,
+            inline_preedit: row.querySelector(".app-option-inline")?.checked ?? false
           }))
           .filter((item) => item.app.trim() !== "");
         await invoke("save_app_options", { items });

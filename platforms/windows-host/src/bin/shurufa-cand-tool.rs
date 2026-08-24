@@ -75,6 +75,7 @@ fn demo(seconds: u64) -> i32 {
         dpi: 96,
         multi_line: false,
         position: "follow".to_owned(),
+        inline_preedit: false,
     };
     let frame = match encode_cand_event(&event) {
         Ok(f) => f,

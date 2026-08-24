@@ -74,6 +74,10 @@
 - **OS CapsLock 状态同步**：cand_host 以 250ms 定时器轮询
   `GetAsyncKeyState(VK_CAPITAL)`，状态变化即重绘候选窗，角标瞬时切换为
   `⇪`；窗口宽度按最宽的 `[En]` 预留，避免角标切换时遮挡候选。
+- **按应用内联预编辑（inline_preedit）**：`AppOption` 新增
+  `inline_preedit` 字段；设置中心「按应用输入法行为」新增第三开关；
+  `CandEvent::Show` 透传该开关，hosted 候选窗在开启时不再重复绘制
+  preedit（由应用内联显示）。默认关闭，保持现状；老配置兼容。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets

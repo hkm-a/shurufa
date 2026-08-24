@@ -53,6 +53,7 @@ impl CandClient {
     }
 
     /// 推送全量候选帧（ui 侧零会话状态，每帧都全量）。
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &self,
         client_id: u32,
@@ -61,6 +62,7 @@ impl CandClient {
         dpi: u32,
         multi_line: bool,
         position: &str,
+        inline_preedit: bool,
     ) -> Result<(), String> {
         let event = CandEvent::Show {
             client_id,
@@ -69,6 +71,7 @@ impl CandClient {
             dpi,
             multi_line,
             position: position.to_owned(),
+            inline_preedit,
         };
         let frame = encode_cand_event(&event)?;
         self.pipe.write_frame(&frame).map_err(|e| e.to_string())

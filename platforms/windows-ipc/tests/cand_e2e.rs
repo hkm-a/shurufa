@@ -74,6 +74,7 @@ fn cand_pipe_event_command_roundtrip() {
         dpi: 96,
         multi_line: false,
         position: "follow".to_owned(),
+        inline_preedit: false,
     };
     let reqdbg = ime_ipc::encode_request(&ime_ipc::Request::Context).unwrap();
     eprintln!("DBGREQ len={} first4={:?}", reqdbg.len(), &reqdbg[..8]);

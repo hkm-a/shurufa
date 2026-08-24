@@ -74,6 +74,7 @@ struct CandView {
     multi_line: bool,
     position: String,
     mode_badge: String,
+    inline_preedit: bool,
 }
 
 thread_local! {
@@ -467,6 +468,7 @@ unsafe fn handle_event(event: CandEvent) {
             dpi,
             multi_line,
             position,
+            inline_preedit,
         } => {
             let (x, y, _cx, _cy) = caret_rect;
             let items = view_items(&context);
@@ -531,6 +533,7 @@ unsafe fn handle_event(event: CandEvent) {
                 multi_line,
                 position,
                 mode_badge,
+                inline_preedit,
             };
             let uia_text = view
                 .items
@@ -586,6 +589,7 @@ fn dummy_view(client_id: u32) -> CandView {
         multi_line: false,
         position: String::new(),
         mode_badge: String::new(),
+        inline_preedit: false,
     }
 }
 
@@ -853,8 +857,8 @@ unsafe fn paint(hwnd: HWND, hdc: HDC) {
         draw_text_at(hdc, &tab, left, 0, view.height);
         left += text_width(hdc, &tab) + scale(BASE_GAP, view.dpi);
     }
-    // preedit
-    if !view.preedit.is_empty() {
+    // preedit（inline_preedit=true 时由应用内联显示，候选窗不重复绘制）
+    if !view.preedit.is_empty() && !view.inline_preedit {
         SetTextColor(hdc, windows::Win32::Foundation::COLORREF(colors.preedit));
         draw_text_at(hdc, &format!("{} ", view.preedit), left, 0, view.height);
     }
@@ -930,6 +934,7 @@ fn map_get_clone(
         multi_line: v.multi_line,
         position: v.position.clone(),
         mode_badge: v.mode_badge.clone(),
+        inline_preedit: v.inline_preedit,
     });
     (found,)
 }
@@ -987,6 +992,7 @@ pub fn selftest() -> i32 {
                 },
                 caret_rect: (200, 300, 8, 16),
                 dpi: 96,
+                inline_preedit: false,
             };
             client
                 .write_frame(&ime_ipc::encode_cand_event(&event).unwrap())

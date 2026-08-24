@@ -161,6 +161,11 @@ pub struct AppOption {
     /// 有组合时由引擎先处理（Esc 取消组合），不抢不切。None = 不覆盖。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vim_mode: Option<bool>,
+    /// 应用内联预编辑（weasel inline_preedit 同款）：true 时由应用内联显示
+    /// 组合串，候选窗不再重复绘制 preedit；false/None 保持候选窗内显示
+    /// preedit。None = 不覆盖（跟随默认 false，兼容现状）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_preedit: Option<bool>,
 }
 
 /// 候选窗位置策略默认值：跟随光标（Fcitx5/微软拼音默认行为一致）。
@@ -1525,6 +1530,7 @@ mod tests {
                 AppOption {
                     ascii_mode: Some(true),
                     vim_mode: None,
+                    inline_preedit: None,
                 },
             )]
             .into_iter()
@@ -1537,7 +1543,8 @@ mod tests {
             back.app_options.get("windowsterminal.exe"),
             Some(&AppOption {
                 ascii_mode: Some(true),
-                vim_mode: None
+                vim_mode: None,
+                inline_preedit: None,
             })
         );
         // 缺字段的 AppOption 默认不覆盖

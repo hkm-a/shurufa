@@ -1422,6 +1422,10 @@ struct AppOptionDto {
     /// None = 未配置（老数据/未勾选），不覆盖。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     vim_mode: Option<bool>,
+    /// 应用内联预编辑（weasel inline_preedit 同款）：true 时应用内联显示
+    /// 组合串，候选窗不重复绘制 preedit。None = 未配置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inline_preedit: Option<bool>,
 }
 
 #[tauri::command]
@@ -1434,6 +1438,7 @@ fn app_options() -> Vec<AppOptionDto> {
                 app,
                 ascii_mode,
                 vim_mode: opt.vim_mode,
+                inline_preedit: opt.inline_preedit,
             })
         })
         .collect()
@@ -1454,6 +1459,7 @@ fn save_app_options(items: Vec<AppOptionDto>) -> Result<(), String> {
             shurufa_options::AppOption {
                 ascii_mode: Some(item.ascii_mode),
                 vim_mode: item.vim_mode,
+                inline_preedit: item.inline_preedit,
             },
         );
     }

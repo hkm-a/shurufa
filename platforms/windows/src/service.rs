@@ -309,6 +309,19 @@ pub(crate) fn app_vim_mode_enabled(
         .unwrap_or(false)
 }
 
+/// 纯函数：当前应用是否启用应用内联预编辑（weasel inline_preedit）。
+/// 默认 false（候选窗内显示 preedit，保持现状）；仅当应用覆盖表显式
+/// inline_preedit=true 时返回 true。
+pub(crate) fn app_inline_preedit_enabled(
+    app: &Option<String>,
+    overrides: &std::collections::BTreeMap<String, shurufa_options::AppOption>,
+) -> bool {
+    app.as_ref()
+        .and_then(|name| overrides.get(name))
+        .and_then(|opt| opt.inline_preedit)
+        .unwrap_or(false)
+}
+
 impl TextService {
     pub fn new() -> Self {
         let client = Arc::new(Mutex::new(ImeClient::new()));
@@ -1024,6 +1037,10 @@ impl Inner {
                         self.last_anchor = None;
                         None
                     };
+                    ui.set_inline_preedit(app_inline_preedit_enabled(
+                        &self.app_ascii.current_app,
+                        &self.opts.app_options,
+                    ));
                     ui.show(&ctx, anchor, position, panel_mode);
                 } else {
                     ui.hide();
@@ -1415,9 +1432,9 @@ impl ITfCompositionSink_Impl for TextService_Impl {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_name_from_path, app_vim_mode_enabled, decide_app_ascii, decide_shift_release,
-        input_scheme_differs, is_long_press, is_vim_normal_mode_key, remap_tab_key,
-        symbol_pair_for, AppAsciiAction, ShiftReleaseAction, SHIFT_LONG_PRESS_MS,
+        app_inline_preedit_enabled, app_name_from_path, app_vim_mode_enabled, decide_app_ascii,
+        decide_shift_release, input_scheme_differs, is_long_press, is_vim_normal_mode_key,
+        remap_tab_key, symbol_pair_for, AppAsciiAction, ShiftReleaseAction, SHIFT_LONG_PRESS_MS,
     };
 
     /// watcher 唯一的条件判定：只在 input_scheme 真正变化时才打"方案变化"日志；
@@ -1540,6 +1557,7 @@ mod tests {
             AppOption {
                 ascii_mode: Some(true),
                 vim_mode: None,
+                inline_preedit: None,
             },
         );
         overrides.insert(
@@ -1547,6 +1565,7 @@ mod tests {
             AppOption {
                 ascii_mode: Some(false),
                 vim_mode: None,
+                inline_preedit: None,
             },
         );
 
@@ -1592,6 +1611,7 @@ mod tests {
             AppOption {
                 ascii_mode: None,
                 vim_mode: None,
+                inline_preedit: None,
             },
         );
         assert_eq!(
@@ -1624,6 +1644,7 @@ mod tests {
             AppOption {
                 ascii_mode: Some(true),
                 vim_mode: Some(true),
+                inline_preedit: None,
             },
         );
         overrides.insert(
@@ -1631,6 +1652,7 @@ mod tests {
             AppOption {
                 ascii_mode: Some(true),
                 vim_mode: None,
+                inline_preedit: None,
             },
         );
 
@@ -1652,6 +1674,40 @@ mod tests {
             &vim,
             &std::collections::BTreeMap::new()
         ));
+    }
+
+    /// app_inline_preedit_enabled：仅当应用覆盖表显式 inline_preedit=true 时启用；
+    /// 无条目 / None / 未识别前台应用一律 false（跟随默认 false）。
+    #[test]
+    fn app_inline_preedit_覆盖语义() {
+        use shurufa_options::AppOption;
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert(
+            "gvim.exe".to_owned(),
+            AppOption {
+                ascii_mode: Some(true),
+                vim_mode: Some(true),
+                inline_preedit: Some(true),
+            },
+        );
+        overrides.insert(
+            "chrome.exe".to_owned(),
+            AppOption {
+                ascii_mode: Some(true),
+                vim_mode: None,
+                inline_preedit: None,
+            },
+        );
+
+        let gvim = Some("gvim.exe".to_owned());
+        let chrome = Some("chrome.exe".to_owned());
+        let other = Some("notepad.exe".to_owned());
+        let none = None;
+
+        assert!(app_inline_preedit_enabled(&gvim, &overrides));
+        assert!(!app_inline_preedit_enabled(&chrome, &overrides));
+        assert!(!app_inline_preedit_enabled(&other, &overrides));
+        assert!(!app_inline_preedit_enabled(&none, &overrides));
     }
 
     /// 符号配对表（微信输入法同类）：四个开括号 → (配对文本, 光标位置)。

@@ -317,6 +317,7 @@ pub struct CandidateUi {
     last_dpi: u32,
     last_multi_line: bool,
     last_position: String,
+    inline_preedit: bool,
 }
 
 impl CandidateUi {
@@ -329,6 +330,7 @@ impl CandidateUi {
             last_dpi: 96,
             last_multi_line: false,
             last_position: "follow".to_owned(),
+            inline_preedit: false,
         };
         CURRENT_UI.store(
             &ui as *const CandidateUi as *mut CandidateUi as isize,
@@ -340,6 +342,11 @@ impl CandidateUi {
 
     /// S3/S5 兼容入口：现在恒为 hosted，忽略参数。
     pub fn set_hosted(&mut self, _hosted: bool) {}
+
+    /// 按应用 inline_preedit：true 时候选窗不重复绘制 preedit（应用内联显示）。
+    pub fn set_inline_preedit(&mut self, enabled: bool) {
+        self.inline_preedit = enabled;
+    }
 
     pub fn show(
         &mut self,
@@ -377,7 +384,15 @@ impl CandidateUi {
                 PositionMode::Follow => "follow",
             };
             if client
-                .show(self.client_id, &view_ctx, caret, dpi, multi_line, position)
+                .show(
+                    self.client_id,
+                    &view_ctx,
+                    caret,
+                    dpi,
+                    multi_line,
+                    position,
+                    self.inline_preedit,
+                )
                 .is_ok()
             {
                 self.visible = true;
@@ -423,6 +438,7 @@ impl CandidateUi {
                     self.last_dpi,
                     self.last_multi_line,
                     &self.last_position,
+                    self.inline_preedit,
                 )
                 .is_ok()
             {
