@@ -54,6 +54,28 @@ pub struct ApplyOutcome {
     pub backup: Option<PathBuf>,
 }
 
+/// 一次已自动合并但需要用户确认的配置冲突。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConflictRecord {
+    pub ts_ms: u64,
+    pub kind: String,
+    pub name: String,
+    /// `sync-config-backups/` 下的本地旧文件（合并前）。
+    pub local_backup: String,
+    /// `sync-config-backups/` 下的远端原文件（合并前）。
+    pub remote_backup: String,
+    /// 自动合并结果的 SHA-256。
+    pub merged_sha256: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConflictLog {
+    #[serde(default)]
+    pub conflicts: Vec<ConflictRecord>,
+}
+
+pub const CONFLICT_RECORD_FILE: &str = ".sync-config-conflicts.json";
+
 pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }
@@ -133,6 +155,56 @@ pub fn backup_local(
     std::fs::copy(config_path(root, kind)?, &backup_path)
         .ok()
         .map(|_| backup_path)
+}
+
+pub fn conflicts_path(root: &Path) -> PathBuf {
+    root.join(CONFLICT_RECORD_FILE)
+}
+
+pub fn load_conflicts(root: &Path) -> ConflictLog {
+    std::fs::read_to_string(conflicts_path(root))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_conflicts(root: &Path, log: &ConflictLog) -> Result<(), String> {
+    let path = conflicts_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建冲突记录目录失败：{e}"))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(log).map_err(|e| format!("序列化冲突记录失败：{e}"))?;
+    std::fs::write(&tmp, bytes).map_err(|e| format!("写入冲突记录失败：{e}"))?;
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("移除旧冲突记录失败：{e}"))?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| format!("替换冲突记录失败：{e}"))
+}
+
+/// 把一次合并冲突追加到记录；最多保留 20 条，旧记录自动淘汰。
+pub fn record_conflict(root: &Path, record: ConflictRecord) {
+    let mut log = load_conflicts(root);
+    log.conflicts
+        .retain(|r| r.remote_backup != record.remote_backup);
+    log.conflicts.push(record);
+    if log.conflicts.len() > 20 {
+        let remove_count = log.conflicts.len() - 20;
+        log.conflicts.drain(0..remove_count);
+    }
+    let _ = save_conflicts(root, &log);
+}
+
+/// 按远端备份文件名移除一条已处理的冲突记录。
+pub fn remove_conflict(root: &Path, remote_backup: &str) -> Result<bool, String> {
+    let mut log = load_conflicts(root);
+    let before = log.conflicts.len();
+    log.conflicts.retain(|r| r.remote_backup != remote_backup);
+    if log.conflicts.len() == before {
+        return Ok(false);
+    }
+    save_conflicts(root, &log)?;
+    Ok(true)
 }
 
 fn write_file(path: &Path, data: &str) -> Result<(), String> {
@@ -258,10 +330,33 @@ pub fn apply_incoming(
 
     // 两端都变（或没有状态可参考但本地内容不同）：先备份，再自动合并。
     let backup = backup_local(root, kind, name, &local, remote_bytes);
+    // 同时保存一份“远端原文件”，供用户在冲突 UI 里选择“采用远端”。
+    let safe = name.replace(['/', '\\'], "_");
+    let ts = now_ms();
+    let remote_backup_name = format!("{ts}_{kind}_remote_{safe}");
+    let remote_backup_path = backup_dir(root).join(&remote_backup_name);
+    let _ = std::fs::create_dir_all(backup_dir(root));
+    let _ = std::fs::write(&remote_backup_path, data);
+
     // JSON 无法自动合并（如本地正处于半编辑状态）时退化为远端优先，旧文件仍已备份。
     let merged = merge(kind, &local_text, data).unwrap_or_else(|_| data.to_string());
     write_file(&path, &merged)?;
     let merged_hash = sha256_hex(merged.as_bytes());
+    if let Some(local_backup) = &backup {
+        if let Some(local_backup_name) = local_backup.file_name().and_then(|n| n.to_str()) {
+            record_conflict(
+                root,
+                ConflictRecord {
+                    ts_ms: ts,
+                    kind: kind.to_string(),
+                    name: name.to_string(),
+                    local_backup: local_backup_name.to_string(),
+                    remote_backup: remote_backup_name,
+                    merged_sha256: merged_hash.clone(),
+                },
+            );
+        }
+    }
     let mut next = file_state;
     next.local_sha256 = merged_hash;
     next.remote_sha256 = incoming_hash;
@@ -504,8 +599,12 @@ mod tests {
         let text = std::fs::read_to_string(&local_path).unwrap();
         assert!(text.contains("本地\tbd\t90"));
         assert!(text.contains("远端\tyd\t80"));
-        // 备份目录应有文件。
-        assert_eq!(std::fs::read_dir(backup_dir(&root)).unwrap().count(), 1);
+        // 备份目录应有本地旧文件 + 远端原文件两份。
+        assert_eq!(std::fs::read_dir(backup_dir(&root)).unwrap().count(), 2);
+        // 冲突记录应可被 UI 读取。
+        let conflicts = load_conflicts(&root).conflicts;
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].kind, "custom_phrase");
     }
 
     #[test]

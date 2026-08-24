@@ -135,6 +135,9 @@
   远端未变保留本地、两端都变自动合并（custom_phrase 按码合并，
   options/skin 按 JSON 深度合并，合并前备份旧文件）；发送侧只广播
   自上次同步后变化过的配置，Windows 宿主与 Android JNI 均已接入。
+- **P2 配置冲突手动处理（Android）**：冲突合并时同时保存本地旧文件
+  与远端原文件，并写入 `.sync-config-conflicts.json`；配对页新增
+  「最近配置冲突」列表，可选择保留合并、恢复本地或采用远端。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets

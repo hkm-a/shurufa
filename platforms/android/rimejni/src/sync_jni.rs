@@ -478,6 +478,55 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeRestoreConfigBackup
     )
 }
 
+/// 列出待用户确认的配置冲突记录。
+/// 每行一条，字段用 `\u{1}` 分隔：ts_ms、kind、name、local_backup、remote_backup、merged_sha256。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeConfigConflicts(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let default = to_jstring(&env, "");
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else {
+                return to_jstring(&env, "");
+            };
+            let log = config_sync::load_conflicts(&state.config_root);
+            let lines = log
+                .conflicts
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+                        r.ts_ms, r.kind, r.name, r.local_backup, r.remote_backup, r.merged_sha256
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            to_jstring(&env, &lines)
+        },
+        default,
+    )
+}
+
+/// 移除一条已处理的配置冲突记录。
+#[no_mangle]
+pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeRemoveConfigConflict(
+    mut env: JNIEnv,
+    _class: JClass,
+    remote_backup: JString,
+) -> jboolean {
+    crate::jni_catch(
+        || {
+            let Some(state) = STATE.get() else { return 0 };
+            let remote_backup = jstr(&mut env, &remote_backup);
+            config_sync::remove_conflict(&state.config_root, &remote_backup).unwrap_or(false)
+                as jboolean
+        },
+        0,
+    )
+}
+
 /// 返回同步核心允许传输的单张 PNG 上限，供 Kotlin 转码阶段使用同一约束。
 #[no_mangle]
 pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeMaxImageBytes(

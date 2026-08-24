@@ -24,6 +24,16 @@ import java.util.Locale
  * 系统通知；用户在 Android 系统通知上点「接受/拒绝」后经
  * [nativeConfirmOffer] 回传给 Rust 唤醒被阻塞的回调。
  */
+/** 一次已自动合并、等待用户确认的配置冲突。 */
+data class ConfigConflict(
+    val tsMs: Long,
+    val kind: String,
+    val name: String,
+    val localBackup: String,
+    val remoteBackup: String,
+    val mergedSha256: String,
+)
+
 object SyncBridge {
     init {
         System.loadLibrary("shurufa_rime")
@@ -42,6 +52,10 @@ object SyncBridge {
     external fun nativeConfigBackups(): String
     /** 从备份文件恢复配置/短语/皮肤，返回是否成功。 */
     external fun nativeRestoreConfigBackup(file: String): Boolean
+    /** 列出待用户确认的配置冲突记录（每行字段以 \u0001 分隔）。 */
+    external fun nativeConfigConflicts(): String
+    /** 移除一条已处理的配置冲突记录。 */
+    external fun nativeRemoveConfigConflict(remoteBackup: String): Boolean
     external fun nativeMaxImageBytes(): Int
     external fun nativeMaxFileBytes(): Int
     external fun nativeDevices(): String
@@ -131,6 +145,23 @@ object SyncBridge {
         nativeConfigBackups().lines().filter { it.isNotBlank() }
 
     fun restoreConfigBackup(file: String): Boolean = nativeRestoreConfigBackup(file)
+
+    fun configConflicts(): List<ConfigConflict> =
+        nativeConfigConflicts().lines().filter { it.isNotBlank() }.mapNotNull { line ->
+            val parts = line.split('\u0001')
+            if (parts.size < 6) null
+            else ConfigConflict(
+                tsMs = parts[0].toLongOrNull() ?: 0L,
+                kind = parts[1],
+                name = parts[2],
+                localBackup = parts[3],
+                remoteBackup = parts[4],
+                mergedSha256 = parts[5],
+            )
+        }
+
+    fun removeConfigConflict(remoteBackup: String): Boolean =
+        nativeRemoveConfigConflict(remoteBackup)
 
     fun maxImageBytes(): Int = nativeMaxImageBytes().takeIf { it > 0 } ?: 8 * 1024 * 1024
 

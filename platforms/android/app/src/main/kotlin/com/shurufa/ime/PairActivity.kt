@@ -44,6 +44,7 @@ class PairActivity : Activity() {
     private lateinit var codeArea: LinearLayout
     private lateinit var codeText: TextView
     private lateinit var backupContainer: LinearLayout
+    private lateinit var conflictContainer: LinearLayout
 
     private val main = Handler(Looper.getMainLooper())
     private var polling = false
@@ -147,8 +148,18 @@ class PairActivity : Activity() {
             setOnClickListener { refreshBackupUi() }
         })
 
+        root.addView(subtitle("最近配置冲突"))
+        root.addView(hint("两端同时修改时会自动合并，并可在这里选择保留合并、恢复本地或采用远端。"))
+        conflictContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(conflictContainer)
+        root.addView(Button(this).apply {
+            text = "刷新冲突列表"
+            setOnClickListener { refreshConflictUi() }
+        })
+
         setContentView(ScrollView(this).apply { addView(root) })
         refreshBackupUi()
+        refreshConflictUi()
         refreshDevices()
         // 入站配对也要能显示确认码：Windows 发起、本机接收时不再“静默拒绝”。
         startCodePolling(0)
@@ -386,6 +397,79 @@ class PairActivity : Activity() {
             file.isFile && SyncBridge.sendConfig(this, kind, file)
         }
         Toast.makeText(this, "已发送 $sent 份配置到电脑", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun refreshConflictUi() {
+        conflictContainer.removeAllViews()
+        val conflicts = SyncBridge.configConflicts().sortedByDescending { it.tsMs }
+        if (conflicts.isEmpty()) {
+            conflictContainer.addView(hint("（无待处理冲突）"))
+            return
+        }
+        conflicts.forEach { conflict ->
+            val kindName = when (conflict.kind) {
+                "options" -> "选项"
+                "skin" -> "皮肤"
+                "custom_phrase" -> "自定义短语"
+                else -> conflict.kind
+            }
+            val time = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+                .format(Date(conflict.tsMs))
+            val label = "$kindName · $time\n${conflict.name}"
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(4), 0, dp(4))
+            }
+            row.addView(TextView(this).apply {
+                text = label
+                textSize = 13f
+                setTextColor(Color.parseColor("#303030"))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            row.addView(Button(this).apply {
+                text = "保留合并"
+                setOnClickListener {
+                    SyncBridge.removeConfigConflict(conflict.remoteBackup)
+                    Toast.makeText(this@PairActivity, "已保留合并结果", Toast.LENGTH_SHORT).show()
+                    refreshConflictUi()
+                }
+            })
+            row.addView(Button(this).apply {
+                text = "恢复本地"
+                setOnClickListener {
+                    confirmConflictResolve(conflict, useRemote = false)
+                }
+            })
+            row.addView(Button(this).apply {
+                text = "采用远端"
+                setOnClickListener {
+                    confirmConflictResolve(conflict, useRemote = true)
+                }
+            })
+            conflictContainer.addView(row)
+        }
+    }
+
+    private fun confirmConflictResolve(conflict: ConfigConflict, useRemote: Boolean) {
+        val backup = if (useRemote) conflict.remoteBackup else conflict.localBackup
+        val action = if (useRemote) "采用远端" else "恢复本地"
+        AlertDialog.Builder(this)
+            .setTitle("处理配置冲突")
+            .setMessage("$action 将覆盖当前合并结果：\n$backup\n\n继续？")
+            .setPositiveButton(action) { _, _ ->
+                val ok = SyncBridge.restoreConfigBackup(backup)
+                if (ok) {
+                    SyncBridge.removeConfigConflict(conflict.remoteBackup)
+                    Toast.makeText(this, "已$action", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "处理失败：备份文件无效", Toast.LENGTH_SHORT).show()
+                }
+                refreshConflictUi()
+                refreshBackupUi()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun refreshBackupUi() {
