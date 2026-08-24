@@ -1967,6 +1967,7 @@ function generalPage() {
           </div>
         </div>`}
       </article>
+      ${configBackupsPanel()}
     </section>`;
 }
 
@@ -3421,6 +3422,22 @@ async function handleAction(button) {
       try {
         const result = await invoke("sync_config", { kind: "options" });
         showToast(result);
+      } catch (error) {
+        showToast(String(error), true);
+      }
+      return;
+    }
+    if (action === "refresh-config-backups") {
+      refreshConfigBackups().then(() => showToast("已刷新备份列表")).catch(() => showToast("刷新失败", true));
+      return;
+    }
+    if (action === "restore-config-backup") {
+      const file = String(button.dataset.file || "");
+      if (!file) return;
+      try {
+        const result = await invoke("sync_config_restore", { file });
+        showToast(result);
+        await refreshConfigBackups();
       } catch (error) {
         showToast(String(error), true);
       }

@@ -357,6 +357,51 @@ fn sync_config(kind: String) -> Result<String, String> {
     }
 }
 
+/// 列出配置同步备份文件（sync-config-backups/ 下的文件名）。
+#[tauri::command]
+fn sync_config_backups() -> Vec<String> {
+    let dir = app_data_dir().join("sync-config-backups");
+    let mut names = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        names.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
+/// 从备份文件恢复配置/短语/皮肤。
+#[tauri::command]
+fn sync_config_restore(file: String) -> Result<String, String> {
+    let backup = app_data_dir().join("sync-config-backups").join(&file);
+    if !backup.is_file() {
+        return Err(format!("备份文件不存在：{}", backup.display()));
+    }
+    let Some((_, kind)) = file.split_once('_') else {
+        return Err("备份文件名格式不正确".to_owned());
+    };
+    let kind = kind.split('_').next().unwrap_or("");
+    let target = match kind {
+        "options" => app_data_dir().join("options.json"),
+        "skin" => app_data_dir().join("shurufa-skin.json"),
+        "custom_phrase" => app_data_dir().join("rime").join("custom_phrase.txt"),
+        _ => return Err("无法从备份文件名识别配置类型".to_owned()),
+    };
+    if let Some(parent) = target.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::copy(&backup, &target)
+        .map_err(|e| format!("恢复失败：{e}"))?;
+    Ok(format!("已恢复到 {}", target.display()))
+}
+
 /// 检查更新：调用 shurufa-ctl update --check-only，返回其 stdout。
 #[tauri::command]
 fn check_update(url: String, channel: Option<String>) -> Result<String, String> {
@@ -2620,6 +2665,8 @@ fn main() {
             retry_sync_activity,
             check_update,
             sync_config,
+            sync_config_backups,
+            sync_config_restore,
             apply_update,
             update_status,
             pair_ui_start,

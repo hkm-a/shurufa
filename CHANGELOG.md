@@ -123,6 +123,8 @@
 - **P2 配置云同步备份保护（Android）**：Android 接收配置前同样
 - **P2 配置备份恢复**：新增 `shurufa-ctl sync-config-backups`
   查看备份、`sync-config-restore <file>` 一键恢复。
+- **P2 配置备份 UI**：设置中心「通用」页新增「配置同步备份」面板，
+  可刷新备份列表并一键恢复。
   备份旧文件到 `files/sync-config-backups/`。
   掉线未复核）。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
