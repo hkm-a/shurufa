@@ -95,6 +95,15 @@ pub struct ImeOptions {
     /// 支持 ascii_mode（进入该应用自动切英文直输，离开恢复）与 vim_mode
     /// （该应用按 vim 回 normal 模式键时自动切英文，2026-08-18 引入）；
     /// 空表 = 全部应用走全局行为。TSF 在前台应用变化时应用覆盖。
+    /// 接收配置/短语/皮肤同步（P2 #16，2026-08-24）：false 时忽略远端
+    /// ConfigFile，避免自动覆盖本机 options/skin/custom_phrase。默认开。
+    #[serde(default = "t")]
+    pub config_sync_enabled: bool,
+    /// 按应用选项（weasel app_options 同款，2026-08-17 引入）：进程名
+    /// （小写，如 "windowsterminal.exe"）→ 该应用下的输入法行为覆盖。
+    /// 支持 ascii_mode（进入该应用自动切英文直输，离开恢复）与 vim_mode
+    /// （该应用按 vim 回 normal 模式键时自动切英文，2026-08-18 引入）；
+    /// 空表 = 全部应用走全局行为。TSF 在前台应用变化时应用覆盖。
     #[serde(default)]
     pub app_options: std::collections::BTreeMap<String, AppOption>,
     /// 符号配对（微信输入法同类，2026-08-18 引入）：中文态、无组合时按
@@ -411,6 +420,7 @@ impl Default for ImeOptions {
             candidate_panel_mode: default_candidate_panel_mode(),
             candidate_window: default_candidate_window(),
             app_options: std::collections::BTreeMap::new(),
+            config_sync_enabled: true,
             symbol_pairing: default_symbol_pairing(),
             scenario_dict: default_scenario_dict(),
             ai_candidates: default_ai_candidates(),

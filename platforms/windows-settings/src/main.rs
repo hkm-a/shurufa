@@ -1386,6 +1386,7 @@ struct ImeOptionsDto {
     ctrl_period_ascii_punct: bool,
     capslock_to_english: bool,
     symbol_pairing: bool,
+    config_sync_enabled: bool,
 }
 
 impl From<ImeOptions> for ImeOptionsDto {
@@ -1396,6 +1397,7 @@ impl From<ImeOptions> for ImeOptionsDto {
             ctrl_period_ascii_punct: o.ctrl_period_ascii_punct,
             capslock_to_english: o.capslock_to_english,
             symbol_pairing: o.symbol_pairing,
+            config_sync_enabled: o.config_sync_enabled,
         }
     }
 }
@@ -1411,6 +1413,7 @@ impl From<ImeOptionsDto> for ImeOptions {
             ctrl_period_ascii_punct: d.ctrl_period_ascii_punct,
             capslock_to_english: d.capslock_to_english,
             symbol_pairing: d.symbol_pairing,
+            config_sync_enabled: d.config_sync_enabled,
             ..ImeOptions::default()
         }
     }
@@ -1431,6 +1434,7 @@ fn save_ime_options(opts: ImeOptionsDto) -> Result<(), String> {
         ctrl_period_ascii_punct: opts.ctrl_period_ascii_punct,
         capslock_to_english: opts.capslock_to_english,
         symbol_pairing: opts.symbol_pairing,
+        config_sync_enabled: opts.config_sync_enabled,
         ..current.clone()
     })
     .map(|_| ())

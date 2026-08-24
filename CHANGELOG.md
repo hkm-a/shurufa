@@ -110,6 +110,9 @@
 - **P2 配置云同步（第九步）**：Android JNI 接收 ConfigFile 后
   写入 filesDir 对应配置路径（options.json / shurufa-skin.json /
   rime/custom_phrase.txt）。
+- **P2 配置云同步（第十步）**：新增 `config_sync_enabled` 选项（默认开），
+  关闭后 Windows 忽略远端 ConfigFile，避免自动覆盖本机配置；
+  设置中心「输入选项」页新增对应开关。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets

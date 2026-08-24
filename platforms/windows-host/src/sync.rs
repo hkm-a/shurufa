@@ -601,6 +601,12 @@ pub fn start_daemon() {
                                     None => crate::log_line("收到图片解码失败"),
                                 },
                                 Incoming::ConfigFile { from_name, kind, name, data } => {
+                                    if !shurufa_options::load().config_sync_enabled {
+                                        crate::log_line(&format!(
+                                            "收到 {from_name} 的配置 {kind}/{name}，但“接收配置同步”已关闭，忽略"
+                                        ));
+                                        return;
+                                    }
                                     let dir = crate::app_data_dir();
                                     let preview = format!("{kind}/{name}（{} 字符）", data.chars().count());
                                     let path = match kind.as_str() {

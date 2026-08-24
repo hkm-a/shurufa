@@ -1676,7 +1676,8 @@ function imeOptionsPanel() {
     ["shift_space_full_shape", "Shift+空格 切换全角/半角", "无组合时切换空格与字母的全/半角"],
     ["ctrl_period_ascii_punct", "Ctrl+. 切换中文/英文标点", "收尾当前组合后切换标点全/半角"],
     ["capslock_to_english", "CapsLock 直接输入英文", "按下 CapsLock 即切到英文直输（再按 Shift 回中文）"],
-    ["symbol_pairing", "符号配对（微信输入法同类）", "中文态输入 ( [ { 《 自动补配对符并光标居中；默认关，避免与 IDE 自动补全冲突"]
+    ["symbol_pairing", "符号配对（微信输入法同类）", "中文态输入 ( [ { 《 自动补配对符并光标居中；默认关，避免与 IDE 自动补全冲突"],
+    ["config_sync_enabled", "接收配置同步", "关闭后忽略远端配置/短语/皮肤，避免自动覆盖本机文件"]
   ];
   // 引擎开关（librime switch，非 shurufa 选项）：Emoji + 中英混输空格。
   const engineRows = [
