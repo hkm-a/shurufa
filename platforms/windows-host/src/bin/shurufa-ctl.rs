@@ -93,6 +93,14 @@ enum Command {
     Unpair { fp: String },
     /// 配置或关闭自托管同步中继
     Relay { value: String },
+    /// 把本机配置/短语/皮肤文件同步给所有已配对设备
+    #[command(name = "sync-config")]
+    SyncConfig {
+        /// 配置类型：custom_phrase / skin / options
+        kind: String,
+        /// 要同步的本地文件路径
+        path: String,
+    },
     /// 更新自托管云词库
     #[command(name = "dict-update")]
     DictUpdate { url: String },
@@ -273,6 +281,7 @@ fn main() {
         Command::Devices => shurufa_host::sync::cli_devices(),
         Command::Unpair { fp } => shurufa_host::sync::cli_unpair(&fp),
         Command::Relay { value } => shurufa_host::sync::cli_relay(&value),
+        Command::SyncConfig { kind, path } => shurufa_host::sync::cli_sync_config(&kind, &path),
         Command::DictUpdate { url } => shurufa_host::dict_update::cli_update(&url),
         Command::Deploy => shurufa_host::dict_update::cli_deploy(),
         Command::DictRollback { revision } => {

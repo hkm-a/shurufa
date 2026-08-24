@@ -1014,6 +1014,54 @@ pub fn cli_remote_search(query: &str) {
     });
 }
 
+/// `sync-config` 子命令：把本机配置/短语/皮肤文件同步给所有已配对设备。
+/// 与常驻守护进程可同时运行：临时实例绑定随机端口（port=0）、关闭 mDNS。
+pub fn cli_sync_config(kind: &str, path: &str) {
+    if !matches!(kind, "custom_phrase" | "skin" | "options") {
+        eprintln!("kind 必须是 custom_phrase / skin / options");
+        std::process::exit(1);
+    }
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("读取 {path} 失败：{e}");
+            std::process::exit(1);
+        }
+    };
+    let name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config.txt")
+        .to_owned();
+
+    let rt = tokio::runtime::Runtime::new().expect("创建运行时失败");
+    rt.block_on(async {
+        let (in_tx, _in_rx) = tokio::sync::mpsc::channel(8);
+        let mut config = SyncConfig::new(sync_config_dir(), device_name());
+        config.port = 0;
+        config.enable_mdns = false;
+        config.reconnect_secs = 1;
+        let service = match SyncService::start(config, in_tx, None, Box::new(|_| {})).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("同步服务启动失败：{e}");
+                std::process::exit(1);
+            }
+        };
+        let peers = service.peers();
+        if peers.is_empty() {
+            eprintln!("尚无已配对设备（先 pair）");
+            std::process::exit(1);
+        }
+        println!("同步 {kind}/{name} 到 {} 台已配对设备…", peers.len());
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        service.send_config(kind, &name, &data);
+        // 给广播一点写出时间（连接写循环异步发送）。
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        println!("已广播 {kind}（{} 字符）", data.chars().count());
+    });
+}
+
 /// `relay` 子命令：持久化自托管中继地址；下次启动守护进程时生效。
 pub fn cli_relay(value: &str) {
     let value = value.trim();
