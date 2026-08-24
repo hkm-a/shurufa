@@ -115,6 +115,9 @@
   设置中心「输入选项」页新增对应开关。
 - **P2 配置云同步真机联调**：Windows → 手机（23113RKC6C）
   custom_phrase 与 skin 已确认落盘；options 已广播（手机 adb
+- **P2 配置云同步双向完成**：Android 新增「同步配置到电脑」按钮，
+  模拟器联调验证 Windows 收到并写入 options.json；
+  custom_phrase/skin/options 三类型双向链路闭环。
   掉线未复核）。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
