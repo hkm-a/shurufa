@@ -213,6 +213,64 @@ fn spawn_sync_retry_watcher() {
         .ok();
 }
 
+/// P2 配置同步请求 watcher：`shurufa-ctl sync-config` 只写请求文件，
+/// 由常驻同步守护进程读取后用自己的活跃连接广播，避免临时实例
+/// 与守护进程同指纹去重导致连接被对端拒绝。
+fn spawn_sync_config_watcher() {
+    std::thread::Builder::new()
+        .name("sync-config".into())
+        .spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let request = shurufa_options::app_dir().join("sync-config-request.json");
+            let Ok(raw) = std::fs::read_to_string(&request) else {
+                continue;
+            };
+            let _ = std::fs::remove_file(&request);
+            let Ok(req) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                continue;
+            };
+            let Some(kind) = req.get("kind").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(path) = req.get("path").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Ok(data) = std::fs::read_to_string(path) else {
+                crate::log_line(&format!("配置同步：读取 {} 失败，已跳过", path));
+                continue;
+            };
+            let name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("config.txt")
+                .to_owned();
+            crate::log_line(&format!(
+                "配置同步：收到请求，广播 {kind}/{name}（{} 字符）",
+                data.chars().count()
+            ));
+            broadcast_config(kind, &name, &data);
+        })
+        .ok();
+}
+
+pub fn cli_sync_config(kind: &str, path: &str) {
+    if !matches!(kind, "custom_phrase" | "skin" | "options") {
+        eprintln!("kind 必须是 custom_phrase / skin / options");
+        std::process::exit(1);
+    }
+    if !std::path::Path::new(path).exists() {
+        eprintln!("文件不存在：{path}");
+        std::process::exit(1);
+    }
+    let request = shurufa_options::app_dir().join("sync-config-request.json");
+    let body = serde_json::json!({ "kind": kind, "path": path });
+    if std::fs::write(&request, serde_json::to_vec(&body).unwrap()).is_err() {
+        eprintln!("写入同步请求失败");
+        std::process::exit(1);
+    }
+    println!("已提交配置同步请求：{kind} <- {path}（由后台同步服务广播）");
+}
+
 fn execute_sync_retry(id: u64) {
     let act = shurufa_options::sync_activity::load();
     let Some(orig) = act.entries.iter().find(|e| e.id == id).cloned() else {
@@ -398,6 +456,7 @@ pub fn start_daemon() {
         return;
     }
     spawn_sync_retry_watcher();
+    spawn_sync_config_watcher();
     std::thread::Builder::new()
         .name("sync".into())
         .spawn(move || {
@@ -1040,54 +1099,6 @@ pub fn cli_remote_search(query: &str) {
         if hits_total == 0 {
             println!("（无命中或对端未在 8 秒内响应）");
         }
-    });
-}
-
-/// `sync-config` 子命令：把本机配置/短语/皮肤文件同步给所有已配对设备。
-/// 与常驻守护进程可同时运行：临时实例绑定随机端口（port=0）、关闭 mDNS。
-pub fn cli_sync_config(kind: &str, path: &str) {
-    if !matches!(kind, "custom_phrase" | "skin" | "options") {
-        eprintln!("kind 必须是 custom_phrase / skin / options");
-        std::process::exit(1);
-    }
-    let data = match std::fs::read_to_string(path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("读取 {path} 失败：{e}");
-            std::process::exit(1);
-        }
-    };
-    let name = std::path::Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("config.txt")
-        .to_owned();
-
-    let rt = tokio::runtime::Runtime::new().expect("创建运行时失败");
-    rt.block_on(async {
-        let (in_tx, _in_rx) = tokio::sync::mpsc::channel(8);
-        let mut config = SyncConfig::new(sync_config_dir(), device_name());
-        config.port = 0;
-        config.enable_mdns = false;
-        config.reconnect_secs = 1;
-        let service = match SyncService::start(config, in_tx, None, Box::new(|_| {})).await {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("同步服务启动失败：{e}");
-                std::process::exit(1);
-            }
-        };
-        let peers = service.peers();
-        if peers.is_empty() {
-            eprintln!("尚无已配对设备（先 pair）");
-            std::process::exit(1);
-        }
-        println!("同步 {kind}/{name} 到 {} 台已配对设备…", peers.len());
-        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-        service.send_config(kind, &name, &data);
-        // 给广播一点写出时间（连接写循环异步发送）。
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-        println!("已广播 {kind}（{} 字符）", data.chars().count());
     });
 }
 
