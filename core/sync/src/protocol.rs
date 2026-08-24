@@ -64,6 +64,19 @@ pub enum Message {
         #[serde(default)]
         origin_device_fp: Option<String>,
     },
+    /// 配置/短语/皮肤同步（特性 "config-sync-v1" 协商后启用）。
+    /// `kind` 取 "custom_phrase" / "skin" / "options" 等已知配置类别；
+    /// `name` 为文件名（不含路径分隔符）；`data` 为 UTF-8 文本内容。
+    ConfigFile {
+        kind: String,
+        name: String,
+        data: String,
+        sent_at_ms: i64,
+        #[serde(default)]
+        msg_id: Option<String>,
+        #[serde(default)]
+        origin_device_fp: Option<String>,
+    },
     /// 保活
     Ping,
     /// 跨设备剪贴板历史搜索请求（特性 "search-v1" 协商后启用）。
@@ -174,6 +187,8 @@ pub const FEATURE_LWW_V1: &str = "lww-v1";
 pub const FEATURE_SEARCH_V1: &str = "search-v1";
 /// "file-v1"：文件同步 v3（FileOffer/Accept/Chunk/Done/Ack/Progress）。
 pub const FEATURE_FILE_V1: &str = "file-v1";
+/// "config-sync-v1"：配置/短语/皮肤同步（ConfigFile 消息）。
+pub const FEATURE_CONFIG_SYNC_V1: &str = "config-sync-v1";
 
 /// 当前协议版本：v1 = Hello+Ping+Clip*；v2 = Hello 带 features 协商，
 /// ClipText 带 msg_id/origin_device_fp，可用于跨端回声抑制；
@@ -192,6 +207,7 @@ pub fn local_features() -> Vec<String> {
         FEATURE_LWW_V1.to_string(),
         FEATURE_SEARCH_V1.to_string(),
         FEATURE_FILE_V1.to_string(),
+        FEATURE_CONFIG_SYNC_V1.to_string(),
     ]
 }
 
@@ -434,5 +450,50 @@ mod tests {
         let features = local_features();
         assert!(features.iter().any(|f| f == FEATURE_FILE_V1));
         assert_eq!(PROTOCOL_VERSION, 3);
+    }
+
+    #[tokio::test]
+    async fn config_file_序列化往返且协商特性可见() {
+        let msg = Message::ConfigFile {
+            kind: "custom_phrase".into(),
+            name: "custom_phrase.txt".into(),
+            data: "测试	ce shi
+"
+            .into(),
+            sent_at_ms: 123,
+            msg_id: Some("cfg1".into()),
+            origin_device_fp: Some("dev-a".into()),
+        };
+        let bytes = serde_json::to_vec(&msg).unwrap();
+        let parsed: Message = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+
+        // 老端缺省字段仍可解析
+        let sparse: Message = serde_json::from_value(serde_json::json!({
+            "type": "config_file",
+            "kind": "skin",
+            "name": "shurufa-skin.json",
+            "data": "{}",
+            "sent_at_ms": 0,
+        }))
+        .unwrap();
+        match sparse {
+            Message::ConfigFile {
+                kind,
+                name,
+                msg_id,
+                origin_device_fp,
+                ..
+            } => {
+                assert_eq!(kind, "skin");
+                assert_eq!(name, "shurufa-skin.json");
+                assert_eq!(msg_id, None);
+                assert_eq!(origin_device_fp, None);
+            }
+            other => panic!("应解析为 ConfigFile，实际 {other:?}"),
+        }
+
+        let features = local_features();
+        assert!(features.iter().any(|f| f == FEATURE_CONFIG_SYNC_V1));
     }
 }
