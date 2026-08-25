@@ -43,6 +43,9 @@ jobs:
           7z x -y third_party\librime\rime.7z -othird_party\librime
       - name: 安装设置页前端依赖
         run: npm --prefix platforms/windows-settings ci
+      - name: 安装 NSIS 3.x（安装器打包依赖）
+        shell: pwsh
+        run: choco install nsis -y --no-progress
       - name: 构建 Canary 安装器
         shell: pwsh
         run: ./scripts/build-installer.ps1 -VersionOverride "${{ steps.version.outputs.canary_version }}" -Channel canary

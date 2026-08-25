@@ -85,6 +85,9 @@ jobs:
         run: cargo test --workspace --locked
       - name: Tauri 设置页前端安装
         run: npm --prefix platforms/windows-settings ci
+      - name: 安装 NSIS 3.x（安装器打包依赖）
+        shell: pwsh
+        run: choco install nsis -y --no-progress
       # 顺序必须与 scripts/build-installer.ps1 一致：安装器的 build.rs 会读取
       # target/release 下 host/algo/tsf/设置页 的产物作为 payload，先构建安装器
       # 会直接 panic。此处直接复用打包脚本，避免两套顺序漂移。
