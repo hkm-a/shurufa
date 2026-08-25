@@ -29,6 +29,14 @@ enum Broadcast {
         name: String,
         data: String,
     },
+    /// custom_phrase 按码增量（config-patch-v1）。
+    ConfigPatch {
+        kind: String,
+        name: String,
+        base_sha256: String,
+        ops: Vec<sync_core::PatchOp>,
+        data: String,
+    },
 }
 
 /// 守护进程内广播出口；`run` 模式启动后可用
@@ -132,6 +140,25 @@ pub fn broadcast_config(kind: &str, name: &str, data: &str) {
         let _ = tx.send(Broadcast::Config {
             kind: kind.to_string(),
             name: name.to_string(),
+            data: data.to_string(),
+        });
+    }
+}
+
+/// 广播一份 custom_phrase 按码增量（config-patch-v1；对端不支持时服务层降级全量）。
+pub fn broadcast_config_patch(
+    kind: &str,
+    name: &str,
+    base_sha256: &str,
+    ops: &[sync_core::PatchOp],
+    data: &str,
+) {
+    if let Some(tx) = CLIP_TX.get() {
+        let _ = tx.send(Broadcast::ConfigPatch {
+            kind: kind.to_string(),
+            name: name.to_string(),
+            base_sha256: base_sha256.to_string(),
+            ops: ops.to_vec(),
             data: data.to_string(),
         });
     }
@@ -261,11 +288,31 @@ fn spawn_sync_config_watcher() {
                 .and_then(|n| n.to_str())
                 .unwrap_or("config.txt")
                 .to_owned();
-            crate::log_line(&format!(
-                "配置同步：收到请求，广播 {kind}/{name}（{} 字符）",
-                data.chars().count()
-            ));
-            broadcast_config(kind, &name, &data);
+            // custom_phrase 优先走按码增量；无基准快照/无变化时 prepare_patch
+            // 返回 None，回退全量广播（options/skin 始终全量）。
+            let path_buf = std::path::PathBuf::from(path);
+            match sync_core::config_sync::prepare_patch(&dir, kind, &path_buf) {
+                Ok(Some(payload)) => {
+                    crate::log_line(&format!(
+                        "配置同步：收到请求，按码增量广播 {kind}/{name}（{} ops）",
+                        payload.ops.len()
+                    ));
+                    broadcast_config_patch(
+                        kind,
+                        &name,
+                        &payload.base_sha256,
+                        &payload.ops,
+                        &payload.data,
+                    );
+                }
+                _ => {
+                    crate::log_line(&format!(
+                        "配置同步：收到请求，广播 {kind}/{name}（{} 字符）",
+                        data.chars().count()
+                    ));
+                    broadcast_config(kind, &name, &data);
+                }
+            }
             let has_peer = SYNC_SERVICE
                 .get()
                 .map(|service| service.connected_count() > 0)
@@ -569,6 +616,15 @@ pub fn start_daemon() {
                             Broadcast::Config { kind, name, data } => {
                                 service.send_config(&kind, &name, &data);
                             }
+                            Broadcast::ConfigPatch {
+                                kind,
+                                name,
+                                base_sha256,
+                                ops,
+                                data,
+                            } => {
+                                service.send_config_patch(&kind, &name, &base_sha256, &ops, &data);
+                            }
                         },
                         Some(incoming) = in_rx.recv() => {
                             // 入库/落盘/图片转码/写系统剪贴板均为阻塞或 CPU 密集
@@ -750,6 +806,78 @@ pub fn start_daemon() {
                                             );
                                             crate::log_line(&format!(
                                                 "写入 {from_name} 的配置 {kind}/{name} 失败：{e}"
+                                            ));
+                                        }
+                                    }
+                                }
+                                Incoming::ConfigPatch {
+                                    from_name,
+                                    kind,
+                                    name,
+                                    base_sha256,
+                                    ops,
+                                } => {
+                                    if !shurufa_options::load().config_sync_enabled {
+                                        crate::log_line(&format!(
+                                            "收到 {from_name} 的配置增量 {kind}/{name}，但“接收配置同步”已关闭，忽略"
+                                        ));
+                                        return;
+                                    }
+                                    let dir = crate::app_data_dir();
+                                    let preview = format!("{kind}/{name}（{} ops）", ops.len());
+                                    match sync_core::config_sync::apply_patch_incoming(
+                                        &dir,
+                                        &kind,
+                                        &name,
+                                        &base_sha256,
+                                        &ops,
+                                    ) {
+                                        Ok(outcome) => {
+                                            let path = sync_core::config_sync::config_path(&dir, &kind)
+                                                .expect("已校验 kind");
+                                            let detail = match outcome.status {
+                                                sync_core::config_sync::ApplyStatus::Noop =>
+                                                    format!("内容未变化，跳过 {}", path.display()),
+                                                sync_core::config_sync::ApplyStatus::AppliedRemote =>
+                                                    format!("已应用增量写入 {}", path.display()),
+                                                sync_core::config_sync::ApplyStatus::Merged => {
+                                                    match &outcome.backup {
+                                                        Some(bp) => format!(
+                                                            "基准不匹配/两端修改，保守合并写入 {}（旧文件备份 {}）",
+                                                            path.display(),
+                                                            bp.display()
+                                                        ),
+                                                        None => format!("已合并写入 {}", path.display()),
+                                                    }
+                                                }
+                                                sync_core::config_sync::ApplyStatus::KeptLocal =>
+                                                    format!("本地已修改，保留本地 {}（远端未变化）", path.display()),
+                                            };
+                                            record_sync_activity(
+                                                SyncDirection::In,
+                                                SyncActivityKind::Config,
+                                                preview,
+                                                Some(from_name.clone()),
+                                                true,
+                                                Some(detail.clone()),
+                                                None,
+                                            );
+                                            crate::log_line(&format!(
+                                                "收到 {from_name} 的配置增量 {kind}/{name}，{detail}"
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            record_sync_activity(
+                                                SyncDirection::In,
+                                                SyncActivityKind::Config,
+                                                preview,
+                                                Some(from_name.clone()),
+                                                false,
+                                                Some(format!("应用增量失败：{e}")),
+                                                None,
+                                            );
+                                            crate::log_line(&format!(
+                                                "应用 {from_name} 的配置增量 {kind}/{name} 失败：{e}"
                                             ));
                                         }
                                     }

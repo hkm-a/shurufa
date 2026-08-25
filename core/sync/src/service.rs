@@ -186,6 +186,14 @@ pub enum Incoming {
         name: String,
         data: String,
     },
+    /// 对端同步来的 custom_phrase 按码增量（config-patch-v1 协商后）。
+    ConfigPatch {
+        from_name: String,
+        kind: String,
+        name: String,
+        base_sha256: String,
+        ops: Vec<crate::protocol::PatchOp>,
+    },
 }
 
 /// 出站广播内容：文本或图片，经 broadcast 通道推给所有活跃连接。
@@ -213,6 +221,17 @@ enum Outbound {
     ConfigFile {
         kind: String,
         name: String,
+        data: String,
+        msg_id: String,
+        sent_at_ms: i64,
+    },
+    /// custom_phrase 按码增量（config-patch-v1 协商后写出）。
+    /// 携带全量 `data`：对端不支持 patch 时降级为 `ConfigFile`。
+    ConfigPatch {
+        kind: String,
+        name: String,
+        base_sha256: String,
+        ops: Vec<crate::protocol::PatchOp>,
         data: String,
         msg_id: String,
         sent_at_ms: i64,
@@ -753,6 +772,37 @@ impl SyncService {
         let _ = self.shared.outgoing.send(Outbound::ConfigFile {
             kind: kind.to_string(),
             name: name.to_string(),
+            data: data.to_string(),
+            msg_id: new_msg_id(),
+            sent_at_ms: now_ms(),
+        });
+    }
+
+    /// 广播一份 custom_phrase 按码增量（config-patch-v1）。
+    /// 对端不支持该特性时由写循环降级为全量 `ConfigFile`（携带 data）。
+    pub fn send_config_patch(
+        &self,
+        kind: &str,
+        name: &str,
+        base_sha256: &str,
+        ops: &[crate::protocol::PatchOp],
+        data: &str,
+    ) {
+        if kind != "custom_phrase"
+            || name.is_empty()
+            || name.contains(['/', '\\'])
+            || base_sha256.len() != 64
+            || ops.is_empty()
+            || data.is_empty()
+            || data.len() > MAX_CONFIG_BYTES
+        {
+            return;
+        }
+        let _ = self.shared.outgoing.send(Outbound::ConfigPatch {
+            kind: kind.to_string(),
+            name: name.to_string(),
+            base_sha256: base_sha256.to_string(),
+            ops: ops.to_vec(),
             data: data.to_string(),
             msg_id: new_msg_id(),
             sent_at_ms: now_ms(),
@@ -1471,6 +1521,8 @@ where
         crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_FILE_V1);
     let peer_has_config =
         crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_CONFIG_SYNC_V1);
+    let peer_has_patch =
+        crate::protocol::peer_supports(&peer_features, crate::protocol::FEATURE_CONFIG_PATCH_V1);
     shared.log(&format!(
         "已连接 {peer_name}（协议 {}：{} msg_id）",
         if peer_has_msg_id { "v2" } else { "v1" },
@@ -1494,6 +1546,7 @@ where
         peer_name.clone(),
         peer_has_search,
         peer_has_config,
+        peer_has_patch,
     ));
 
     let mut write_half = write_half;
@@ -1593,6 +1646,44 @@ where
                         break Err(e);
                     }
                 }
+                Ok(Outbound::ConfigPatch {
+                    kind,
+                    name,
+                    base_sha256,
+                    ops,
+                    data,
+                    msg_id,
+                    sent_at_ms,
+                }) => {
+                    // 对端不支持 config-patch-v1 时降级为全量 ConfigFile，
+                    // 保证老端仍能收到配置（线格式向后兼容）。
+                    if !peer_has_config {
+                        continue;
+                    }
+                    let msg = if peer_has_patch {
+                        Message::ConfigPatch {
+                            kind,
+                            name,
+                            base_sha256,
+                            ops,
+                            sent_at_ms,
+                            msg_id: Some(msg_id),
+                            origin_device_fp: Some(shared.identity.fingerprint.clone()),
+                        }
+                    } else {
+                        Message::ConfigFile {
+                            kind,
+                            name,
+                            data,
+                            sent_at_ms,
+                            msg_id: Some(msg_id),
+                            origin_device_fp: Some(shared.identity.fingerprint.clone()),
+                        }
+                    };
+                    if let Err(e) = write_msg(&mut write_half, &msg).await {
+                        break Err(e);
+                    }
+                }
                 Ok(Outbound::FileWire(msg)) => {
                     // 文件 v3 控制/数据面消息：file-v1 协商后才允许上路，
                     // 保证 v2 对端不会因收到未知变体而断开。
@@ -1649,6 +1740,7 @@ where
 /// 需要回写的应答（FileAccept/Decline、FileProgress、FileAck、SearchResponse）
 /// 统一经 `reply_tx` 交给 duplex 主循环写，避免读任务与写侧共享同一 `&mut tls`
 /// 或让 select! 取消半截读帧。
+#[allow(clippy::too_many_arguments)]
 async fn duplex_read_loop<S>(
     shared: Arc<Shared>,
     mut read_half: tokio::io::ReadHalf<S>,
@@ -1657,6 +1749,7 @@ async fn duplex_read_loop<S>(
     peer_name: String,
     peer_has_search: bool,
     peer_has_config: bool,
+    peer_has_patch: bool,
 ) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -1764,6 +1857,37 @@ where
                         kind,
                         name,
                         data,
+                    })
+                    .await;
+            }
+            Ok(Ok(Message::ConfigPatch {
+                kind,
+                name,
+                base_sha256,
+                ops,
+                sent_at_ms: _,
+                msg_id: _,
+                origin_device_fp: _,
+            })) => {
+                if !peer_has_patch || !peer_has_config {
+                    continue;
+                }
+                if kind != "custom_phrase" || base_sha256.len() != 64 || ops.is_empty() {
+                    shared.log(&format!("{peer_name} 配置增量非法，忽略 {kind}/{name}"));
+                    continue;
+                }
+                if ops.len() > 4096 {
+                    shared.log(&format!("{peer_name} 配置增量超限，忽略 {kind}/{name}"));
+                    continue;
+                }
+                let _ = shared
+                    .incoming
+                    .send(Incoming::ConfigPatch {
+                        from_name: peer_name.clone(),
+                        kind,
+                        name,
+                        base_sha256,
+                        ops,
                     })
                     .await;
             }

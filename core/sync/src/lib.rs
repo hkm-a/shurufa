@@ -20,7 +20,7 @@ pub mod config_sync;
 
 pub use identity::DeviceIdentity;
 pub use peers::{Peer, PeerStore};
-pub use protocol::{Message, SearchHit};
+pub use protocol::{Message, PatchOp, SearchHit};
 pub use relay::{accept_via_relay, connect_via_relay, run_relay};
 pub use service::{
     load_relay_addr, save_relay_addr, ConfirmFn, FileConfirmFn, FileOfferPrompt, FileSendState,

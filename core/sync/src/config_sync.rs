@@ -1,6 +1,9 @@
 //! 配置/短语/皮肤的冲突合并与增量同步状态。
 //!
-//! 同步协议仍走 `ConfigFile` 全量文本（配置文件小，线格式不需要碎片化）；
+//! 同步协议默认走 `ConfigFile` 全量文本（options/skin 配置文件小，
+//! 线格式不需要碎片化）；custom_phrase 另有线协议级按码增量
+//! `ConfigPatch`（`config-patch-v1` 协商后启用），发送侧只广播
+//! 自上次同步后变化的行。
 //! 这里的“增量”指**发送侧只广播相对上次同步发生过变化的配置类型**，
 //! “冲突合并”指接收侧用本地状态做三方比较：
 //! - 本地未变、远端变了 → 直接采用远端；
@@ -18,9 +21,24 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// 按码增量操作与线协议共用一个类型（protocol::PatchOp）。
+pub use crate::protocol::PatchOp;
+
 pub const CONFIG_STATE_FILE: &str = ".sync-config-state.json";
 pub const CONFIG_BACKUP_DIR: &str = "sync-config-backups";
+/// 线协议级增量同步的基准快照目录：每种配置一份完整文本，
+/// 发送侧据此生成按码 diff，接收侧据此做三方合并的 base。
+pub const CONFIG_BASE_DIR: &str = ".sync-config-base";
 pub const CONFIG_KINDS: [&str; 3] = ["options", "skin", "custom_phrase"];
+
+/// `prepare_patch` 的结果：携带 base 哈希与全量文本，供服务层在
+/// 对端不支持 `config-patch-v1` 时降级为全量 `ConfigFile` 发送。
+#[derive(Debug, Clone)]
+pub struct PatchPayload {
+    pub base_sha256: String,
+    pub ops: Vec<PatchOp>,
+    pub data: String,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfigSyncState {
@@ -86,6 +104,31 @@ pub fn state_path(root: &Path) -> PathBuf {
 
 pub fn backup_dir(root: &Path) -> PathBuf {
     root.join(CONFIG_BACKUP_DIR)
+}
+
+pub fn base_dir(root: &Path) -> PathBuf {
+    root.join(CONFIG_BASE_DIR)
+}
+
+/// 读取某配置的增量同步基准快照（完整文本）。无快照返回 None。
+pub fn load_base(root: &Path, kind: &str) -> Option<String> {
+    std::fs::read_to_string(base_dir(root).join(kind)).ok()
+}
+
+/// 写入/更新增量同步基准快照。内容与现有快照相同时跳过写盘。
+pub fn save_base(root: &Path, kind: &str, content: &str) -> Result<(), String> {
+    let dir = base_dir(root);
+    if load_base(root, kind).as_deref() == Some(content) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建基准快照目录失败：{e}"))?;
+    let tmp = dir.join(format!("{kind}.tmp"));
+    std::fs::write(&tmp, content).map_err(|e| format!("写入基准快照失败：{e}"))?;
+    let path = dir.join(kind);
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("移除旧基准快照失败：{e}"))?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| format!("替换基准快照失败：{e}"))
 }
 
 pub fn config_path(root: &Path, kind: &str) -> Option<PathBuf> {
@@ -244,6 +287,7 @@ pub fn apply_incoming(
     let Some(local) = local_bytes else {
         write_file(&path, data)?;
         let hash = sha256_hex(remote_bytes);
+        let _ = save_base(root, kind, data);
         state.files.insert(
             kind.to_string(),
             FileSyncState {
@@ -265,6 +309,7 @@ pub fn apply_incoming(
 
     // 内容完全一致：无需写入，但补一条同步状态，避免后续被误判为冲突。
     if local == remote_bytes {
+        let _ = save_base(root, kind, data);
         if state
             .files
             .get(kind)
@@ -311,6 +356,7 @@ pub fn apply_incoming(
     // 本地未变、远端变化：快进到远端。
     if local_unchanged {
         write_file(&path, data)?;
+        let _ = save_base(root, kind, data);
         let hash = incoming_hash.clone();
         state.files.insert(
             kind.to_string(),
@@ -357,6 +403,7 @@ pub fn apply_incoming(
             );
         }
     }
+    let _ = save_base(root, kind, &merged);
     let mut next = file_state;
     next.local_sha256 = merged_hash;
     next.remote_sha256 = incoming_hash;
@@ -386,10 +433,12 @@ pub fn prepare_send(root: &Path, kind: &str, path: &Path) -> Result<Option<Strin
     Ok(Some(data))
 }
 
-/// 发送成功后记录：本机内容与远端已同步为同一版本。
+/// 发送成功后记录：本机内容与远端已同步为同一版本，并把发送内容
+/// 存为增量基准快照（后续按码 diff 的 base）。
 pub fn mark_sent(root: &Path, kind: &str, data: &str) -> Result<(), String> {
     let mut state = load_state(root);
     let hash = sha256_hex(data.as_bytes());
+    let _ = save_base(root, kind, data);
     state.files.insert(
         kind.to_string(),
         FileSyncState {
@@ -400,6 +449,208 @@ pub fn mark_sent(root: &Path, kind: &str, data: &str) -> Result<(), String> {
         },
     );
     save_state(root, &state)
+}
+
+/// 把 custom_phrase 文本解析为 (表头行, 码 → 整行)。空行与注释忽略。
+fn parse_custom_phrase(text: &str) -> (Vec<String>, HashMap<String, String>) {
+    fn key_of(line: &str) -> String {
+        let mut parts = line.splitn(3, '\t');
+        let _phrase = parts.next().unwrap_or("");
+        let code = parts.next().unwrap_or("");
+        if code.trim().is_empty() {
+            line.to_string()
+        } else {
+            code.trim().to_string()
+        }
+    }
+    let mut headers = Vec::new();
+    let mut map = HashMap::new();
+    for line in text.lines().map(str::trim_end) {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            headers.push(line.to_string());
+        } else if !trimmed.is_empty() {
+            map.insert(key_of(line), line.to_string());
+        }
+    }
+    (headers, map)
+}
+
+/// 由 base 快照与当前文本生成按码增量（只对 custom_phrase 有意义）。
+/// 返回的 ops 保证按码收敛：同一码只出现一次 Upsert 或 Remove。
+pub fn diff_custom_phrase(base: &str, current: &str) -> Vec<PatchOp> {
+    let (_, base_map) = parse_custom_phrase(base);
+    let (_, cur_map) = parse_custom_phrase(current);
+
+    let mut ops: Vec<PatchOp> = Vec::new();
+    for (code, line) in &cur_map {
+        match base_map.get(code) {
+            Some(old) if old == line => {}
+            _ => ops.push(PatchOp::Upsert {
+                code: code.clone(),
+                line: line.clone(),
+            }),
+        }
+    }
+    for code in base_map.keys() {
+        if !cur_map.contains_key(code) {
+            ops.push(PatchOp::Remove { code: code.clone() });
+        }
+    }
+    ops
+}
+
+/// 把 ops 精确重放到 base 文本上：Upsert 覆盖/追加，Remove 删除该码。
+/// 顺序保持 base 原有表头与条目顺序，新增码追加到末尾。
+pub fn apply_patch_to_base(base: &str, ops: &[PatchOp]) -> String {
+    let (headers, mut map) = parse_custom_phrase(base);
+    let mut order: Vec<String> = map.keys().cloned().collect();
+    for op in ops {
+        match op {
+            PatchOp::Upsert { code, line } => {
+                if !map.contains_key(code) {
+                    order.push(code.clone());
+                }
+                map.insert(code.clone(), line.clone());
+            }
+            PatchOp::Remove { code } => {
+                if map.remove(code).is_some() {
+                    order.retain(|c| c != code);
+                }
+            }
+        }
+    }
+    let mut out = headers;
+    out.extend(order.into_iter().map(|code| map[&code].clone()));
+    out.join("\n")
+}
+
+/// 基准不匹配时的保守合并：只把远端 Upsert 应用到本地（保留本地码，
+/// 远端同码优先），Remove 全部忽略，避免误删本地定制。
+pub fn apply_patch_conservative(local: &str, ops: &[PatchOp]) -> String {
+    let (headers, mut map) = parse_custom_phrase(local);
+    let mut order: Vec<String> = map.keys().cloned().collect();
+    for op in ops {
+        if let PatchOp::Upsert { code, line } = op {
+            if !map.contains_key(code) {
+                order.push(code.clone());
+            }
+            map.insert(code.clone(), line.clone());
+        }
+    }
+    let mut out = headers;
+    out.extend(order.into_iter().map(|code| map[&code].clone()));
+    out.join("\n")
+}
+
+/// 发送侧：尝试生成 custom_phrase 按码增量。
+/// - 非 custom_phrase / 无基准快照 → Ok(None)（调用方应回退全量 ConfigFile）；
+/// - 内容相对基准无变化 → Ok(None)；
+/// - 有变化 → Ok(Some(PatchPayload))。
+pub fn prepare_patch(root: &Path, kind: &str, path: &Path) -> Result<Option<PatchPayload>, String> {
+    if config_path(root, kind).is_none() {
+        return Err(format!("未知配置类型：{kind}"));
+    }
+    if kind != "custom_phrase" {
+        return Ok(None);
+    }
+    let data = std::fs::read_to_string(path).map_err(|e| format!("读取配置失败：{e}"))?;
+    let hash = sha256_hex(data.as_bytes());
+    let state = load_state(root);
+    if let Some(entry) = state.files.get(kind) {
+        if entry.local_sha256 == hash && entry.remote_sha256 == hash {
+            return Ok(None);
+        }
+    }
+    let Some(base) = load_base(root, kind) else {
+        return Ok(None);
+    };
+    let ops = diff_custom_phrase(&base, &data);
+    if ops.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PatchPayload {
+        base_sha256: sha256_hex(base.as_bytes()),
+        ops,
+        data,
+    }))
+}
+
+/// 接收侧：应用一份按码增量补丁。
+/// - 本地基准与发送方一致 → 精确重放到 base 后走既有三方合并（含备份/冲突记录）；
+/// - 基准不匹配（无快照/被清理/从未同步过）→ 保守合并：仅应用 Upsert、
+///   保留本地码并备份旧文件。
+pub fn apply_patch_incoming(
+    root: &Path,
+    kind: &str,
+    name: &str,
+    base_sha256: &str,
+    ops: &[PatchOp],
+) -> Result<ApplyOutcome, String> {
+    if kind != "custom_phrase" {
+        return Err(format!("未知配置类型：{kind}"));
+    }
+    let local_base = load_base(root, kind);
+    let base_matches = local_base
+        .as_deref()
+        .map(|b| sha256_hex(b.as_bytes()) == base_sha256)
+        .unwrap_or(false);
+
+    if base_matches {
+        let base = local_base.expect("base_matches 已保证 Some");
+        let remote_full = apply_patch_to_base(&base, ops);
+        return apply_incoming(root, kind, name, &remote_full);
+    }
+
+    // 基准不匹配：保守合并。
+    let path = config_path(root, kind).expect("已校验 kind");
+    let local_bytes = std::fs::read(&path).ok();
+    let local_text = local_bytes
+        .as_deref()
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_default();
+    let merged = apply_patch_conservative(&local_text, ops);
+    if merged == local_text {
+        return Ok(ApplyOutcome {
+            status: ApplyStatus::Noop,
+            backup: None,
+        });
+    }
+    let backup = if local_bytes.is_some() {
+        let dir = backup_dir(root);
+        let _ = std::fs::create_dir_all(&dir);
+        let ts = now_ms();
+        let safe = name.replace(['/', '\\'], "_");
+        let backup_path = dir.join(format!("{ts}_{kind}_{safe}"));
+        std::fs::write(&backup_path, &local_text).ok();
+        Some(backup_path)
+    } else {
+        None
+    };
+    write_file(&path, &merged)?;
+    let _ = save_base(root, kind, &merged);
+    let merged_hash = sha256_hex(merged.as_bytes());
+    let mut state = load_state(root);
+    let file_state = state
+        .files
+        .get(kind)
+        .cloned()
+        .unwrap_or_else(|| FileSyncState {
+            local_sha256: String::new(),
+            remote_sha256: String::new(),
+            base_sha256: String::new(),
+            updated_at_ms: now_ms(),
+        });
+    let mut next = file_state;
+    next.local_sha256 = merged_hash.clone();
+    next.remote_sha256 = merged_hash;
+    next.updated_at_ms = now_ms();
+    state.files.insert(kind.to_string(), next);
+    save_state(root, &state)?;
+    Ok(ApplyOutcome {
+        status: ApplyStatus::Merged,
+        backup,
+    })
 }
 
 /// 自动合并策略：
@@ -674,5 +925,165 @@ mod tests {
         assert_eq!(out.status, ApplyStatus::KeptLocal);
         let text = std::fs::read_to_string(root.join("options.json")).unwrap();
         assert!(text.contains("local"));
+    }
+
+    #[test]
+    fn 按码diff生成upsert与remove() {
+        let base = "# 表头\n公司\tgs\t100\n旧词\tjc\t90\n";
+        let cur = "# 表头\n公司\tgs\t200\n新词\txc\t80\n";
+        let ops = diff_custom_phrase(base, cur);
+        assert!(ops.contains(&PatchOp::Upsert {
+            code: "gs".into(),
+            line: "公司\tgs\t200".into()
+        }));
+        assert!(ops.contains(&PatchOp::Upsert {
+            code: "xc".into(),
+            line: "新词\txc\t80".into()
+        }));
+        assert!(ops.contains(&PatchOp::Remove { code: "jc".into() }));
+        // 无变化的码不出现在 ops 中
+        assert_eq!(
+            ops.iter()
+                .filter(|o| matches!(o, PatchOp::Upsert { code, .. } if code == "gs"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn 按码diff无变化返回空() {
+        let text = "公司\tgs\t100\n位置\twz\t90\n";
+        assert!(diff_custom_phrase(text, text).is_empty());
+    }
+
+    #[test]
+    fn 精确重放patch到base() {
+        let base = "# 表头\n公司\tgs\t100\n旧词\tjc\t90\n";
+        let ops = vec![
+            PatchOp::Upsert {
+                code: "gs".into(),
+                line: "公司\tgs\t200".into(),
+            },
+            PatchOp::Upsert {
+                code: "新词".into(),
+                line: "新词\txc\t80".into(),
+            },
+            PatchOp::Remove { code: "jc".into() },
+        ];
+        let out = apply_patch_to_base(base, &ops);
+        assert!(out.contains("公司\tgs\t200"));
+        assert!(out.contains("新词\txc\t80"));
+        assert!(!out.contains("旧词"));
+        assert!(out.starts_with("# 表头"));
+    }
+
+    #[test]
+    fn 保守合并只应用upsert保留本地() {
+        let local = "本地词\tbd\t90\n公司\tgs\t100\n";
+        let ops = vec![
+            PatchOp::Upsert {
+                code: "gs".into(),
+                line: "公司\tgs\t200".into(),
+            },
+            PatchOp::Remove { code: "bd".into() },
+        ];
+        let out = apply_patch_conservative(local, &ops);
+        assert!(out.contains("本地词\tbd\t90")); // Remove 被忽略
+        assert!(out.contains("公司\tgs\t200")); // Upsert 同码远端优先
+    }
+
+    #[test]
+    fn prepare_patch无基准快照回退全量() {
+        let root = tmp_root();
+        let path = root.join("rime/custom_phrase.txt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "公司\tgs\t100\n").unwrap();
+        // 无 base 快照 → None（调用方走全量 ConfigFile）
+        assert!(prepare_patch(&root, "custom_phrase", &path)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn prepare_patch基于base快照生成增量() {
+        let root = tmp_root();
+        let path = root.join("rime/custom_phrase.txt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let base = "公司\tgs\t100\n";
+        std::fs::write(&path, base).unwrap();
+        mark_sent(&root, "custom_phrase", base).unwrap();
+        // 无变化 → None
+        assert!(prepare_patch(&root, "custom_phrase", &path)
+            .unwrap()
+            .is_none());
+        // 本地新增一行 → 生成 Upsert
+        std::fs::write(&path, "公司\tgs\t100\n新词\txc\t80\n").unwrap();
+        let payload = prepare_patch(&root, "custom_phrase", &path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload.base_sha256, sha256_hex(base.as_bytes()));
+        assert_eq!(payload.ops.len(), 1);
+        assert!(matches!(&payload.ops[0], PatchOp::Upsert { code, .. } if code == "xc"));
+    }
+
+    #[test]
+    fn apply_patch_incoming基准匹配走三方合并() {
+        let root = tmp_root();
+        let base = "公司\tgs\t100\n";
+        // 接收侧先收到全量并建立 base
+        apply_incoming(&root, "custom_phrase", "custom_phrase.txt", base).unwrap();
+        // 发送侧基于同一 base 的增量：新增一行
+        let ops = vec![PatchOp::Upsert {
+            code: "xc".into(),
+            line: "新词\txc\t80".into(),
+        }];
+        let base_sha256 = sha256_hex(base.as_bytes());
+        let out = apply_patch_incoming(
+            &root,
+            "custom_phrase",
+            "custom_phrase.txt",
+            &base_sha256,
+            &ops,
+        )
+        .unwrap();
+        assert_eq!(out.status, ApplyStatus::AppliedRemote);
+        let text = std::fs::read_to_string(root.join("rime/custom_phrase.txt")).unwrap();
+        assert!(text.contains("新词\txc\t80"));
+    }
+
+    #[test]
+    fn apply_patch_incoming基准不匹配保守合并() {
+        let root = tmp_root();
+        let path = root.join("rime/custom_phrase.txt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "本地词\tbd\t90\n").unwrap();
+        let ops = vec![
+            PatchOp::Upsert {
+                code: "xc".into(),
+                line: "新词\txc\t80".into(),
+            },
+            PatchOp::Remove { code: "bd".into() },
+        ];
+        let out = apply_patch_incoming(
+            &root,
+            "custom_phrase",
+            "custom_phrase.txt",
+            "no-such-base",
+            &ops,
+        )
+        .unwrap();
+        assert_eq!(out.status, ApplyStatus::Merged);
+        assert!(out.backup.is_some());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("本地词\tbd\t90"));
+        assert!(text.contains("新词\txc\t80"));
+    }
+
+    #[test]
+    fn 发送后mark_sent写入base快照() {
+        let root = tmp_root();
+        let data = "公司\tgs\t100\n";
+        mark_sent(&root, "custom_phrase", data).unwrap();
+        assert_eq!(load_base(&root, "custom_phrase").as_deref(), Some(data));
     }
 }

@@ -138,6 +138,15 @@
 - **P2 配置冲突手动处理（Android）**：冲突合并时同时保存本地旧文件
   与远端原文件，并写入 `.sync-config-conflicts.json`；配对页新增
   「最近配置冲突」列表，可选择保留合并、恢复本地或采用远端。
+- **P2 配置同步线协议级增量（ConfigPatch）**：`custom_phrase` 新增
+  按码增量补丁 `ConfigPatch` 消息与 `config-patch-v1` 特性协商——发送侧
+  基于 `.sync-config-base/` 基准快照生成 Upsert/Remove 按码 diff，只广播
+  变化的行；接收侧基准一致时精确重放到 base 后走既有三方合并（含备份/
+  冲突记录），基准不匹配（快照被清理/从未同步过）时保守合并：仅应用
+  Upsert、保留本地码并备份旧文件。对端未协商 `config-patch-v1` 时服务层
+  自动降级为全量 `ConfigFile`，老端线格式向后兼容。Windows 宿主与
+  Android JNI 收发均已接入；新增单测（diff/重放/保守合并/基准快照）与
+  duplex 端到端断言。options/skin 文件小仍走全量，不碎片化。
 - **clippy/fmt 收尾**：删除候选窗迁出后遗留的 `RIME_KEEP` 与
   `WM_AI_CANDIDATES_READY` 死常量；AI 缓存类型加别名；`shurufa-ctl`
   下载进度改用 `checked_div`；全工作区 `cargo clippy --all-targets

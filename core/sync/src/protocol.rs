@@ -8,6 +8,18 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// 单条消息上限：文本仅数十 KB，图片同步的 base64 PNG 可达数 MB，留足余量
 const MAX_FRAME: u32 = 16 * 1024 * 1024;
 
+/// custom_phrase 按码增量操作（线协议 `ConfigPatch` 载荷）。
+/// serde 以 `op` 标签区分，老端反序列化未知消息时按整体失败处理，
+/// 但 `config-patch-v1` 协商门控保证老端不会收到该消息。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PatchOp {
+    /// 按码新增或覆盖一整行（`phrase\tcode\tweight` 原文）。
+    Upsert { code: String, line: String },
+    /// 按码删除（仅当该码在本地 base 中存在时生效）。
+    Remove { code: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
@@ -71,6 +83,22 @@ pub enum Message {
         kind: String,
         name: String,
         data: String,
+        sent_at_ms: i64,
+        #[serde(default)]
+        msg_id: Option<String>,
+        #[serde(default)]
+        origin_device_fp: Option<String>,
+    },
+    /// custom_phrase 按码增量同步（特性 "config-patch-v1" 协商后启用）。
+    /// `base_sha256` 是发送侧生成补丁所依据的基准快照哈希；接收侧
+    /// 基准一致时精确重放（走三方合并），不一致时保守合并（只应用
+    /// Upsert、保留本地码）。老端未协商该特性时发送侧降级为全量
+    /// `ConfigFile`，线格式向后兼容。
+    ConfigPatch {
+        kind: String,
+        name: String,
+        base_sha256: String,
+        ops: Vec<PatchOp>,
         sent_at_ms: i64,
         #[serde(default)]
         msg_id: Option<String>,
@@ -189,6 +217,9 @@ pub const FEATURE_SEARCH_V1: &str = "search-v1";
 pub const FEATURE_FILE_V1: &str = "file-v1";
 /// "config-sync-v1"：配置/短语/皮肤同步（ConfigFile 消息）。
 pub const FEATURE_CONFIG_SYNC_V1: &str = "config-sync-v1";
+/// "config-patch-v1"：custom_phrase 按码增量同步（ConfigPatch 消息）。
+/// 发送侧仅在协商后发出补丁，否则降级为全量 ConfigFile。
+pub const FEATURE_CONFIG_PATCH_V1: &str = "config-patch-v1";
 
 /// 当前协议版本：v1 = Hello+Ping+Clip*；v2 = Hello 带 features 协商，
 /// ClipText 带 msg_id/origin_device_fp，可用于跨端回声抑制；
@@ -208,6 +239,7 @@ pub fn local_features() -> Vec<String> {
         FEATURE_SEARCH_V1.to_string(),
         FEATURE_FILE_V1.to_string(),
         FEATURE_CONFIG_SYNC_V1.to_string(),
+        FEATURE_CONFIG_PATCH_V1.to_string(),
     ]
 }
 
@@ -495,5 +527,30 @@ mod tests {
 
         let features = local_features();
         assert!(features.iter().any(|f| f == FEATURE_CONFIG_SYNC_V1));
+    }
+
+    #[tokio::test]
+    async fn config_patch_序列化往返且协商特性可见() {
+        let msg = Message::ConfigPatch {
+            kind: "custom_phrase".into(),
+            name: "custom_phrase.txt".into(),
+            base_sha256: "a".repeat(64),
+            ops: vec![
+                PatchOp::Upsert {
+                    code: "gs".into(),
+                    line: "公司\tgs\t100".into(),
+                },
+                PatchOp::Remove { code: "jc".into() },
+            ],
+            sent_at_ms: 456,
+            msg_id: Some("cfgpatch1".into()),
+            origin_device_fp: Some("dev-a".into()),
+        };
+        let bytes = serde_json::to_vec(&msg).unwrap();
+        let parsed: Message = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+
+        let features = local_features();
+        assert!(features.iter().any(|f| f == FEATURE_CONFIG_PATCH_V1));
     }
 }

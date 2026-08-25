@@ -252,3 +252,80 @@ async fn 跨设备搜索请求得到响应() {
         other => panic!("期待 SearchResults，实际 {other:?}"),
     }
 }
+/// ConfigPatch 端到端：两端协商 config-patch-v1 后，甲发按码增量，
+/// 乙收到 Incoming::ConfigPatch（非全量 ConfigFile）。
+#[tokio::test(flavor = "multi_thread")]
+async fn 配置按码增量endtoend() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let (tx_a, mut _rx_a) = mpsc::channel(16);
+    let (tx_b, mut rx_b) = mpsc::channel(16);
+
+    let auto_confirm: sync_core::ConfirmFn = Arc::new(|_| true);
+    let a = SyncService::start(
+        test_config(dir_a.path(), "甲机"),
+        tx_a,
+        Some(auto_confirm.clone()),
+        Box::new(|m| println!("[甲] {m}")),
+    )
+    .await
+    .unwrap();
+    let b = SyncService::start(
+        test_config(dir_b.path(), "乙机"),
+        tx_b,
+        Some(auto_confirm.clone()),
+        Box::new(|m| println!("[乙] {m}")),
+    )
+    .await
+    .unwrap();
+
+    a.pair_with(
+        &format!("127.0.0.1:{}", b.local_port()),
+        auto_confirm.clone(),
+    )
+    .await
+    .expect("配对失败");
+    for _ in 0..50 {
+        if !a.connected_fingerprints().is_empty() && !b.connected_fingerprints().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(!a.connected_fingerprints().is_empty(), "数据连接未建立");
+
+    // 甲发一份按码增量（base + upsert）
+    let ops = vec![sync_core::PatchOp::Upsert {
+        code: "gs".into(),
+        line: "公司\tgs\t200".into(),
+    }];
+    a.send_config_patch(
+        "custom_phrase",
+        "custom_phrase.txt",
+        &"a".repeat(64),
+        &ops,
+        "公司\tgs\t200\n",
+    );
+    let got = recv_clip(&mut rx_b).await;
+    match got {
+        Incoming::ConfigPatch {
+            from_name,
+            kind,
+            name,
+            base_sha256,
+            ops,
+        } => {
+            assert_eq!(from_name, "甲机");
+            assert_eq!(kind, "custom_phrase");
+            assert_eq!(name, "custom_phrase.txt");
+            assert_eq!(base_sha256, "a".repeat(64));
+            assert_eq!(
+                ops,
+                vec![sync_core::PatchOp::Upsert {
+                    code: "gs".into(),
+                    line: "公司\tgs\t200".into(),
+                }]
+            );
+        }
+        other => panic!("期待 ConfigPatch，实际 {other:?}"),
+    }
+}

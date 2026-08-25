@@ -199,6 +199,26 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeStart(
                                     let _ = (from_name, name);
                                     return;
                                 }
+                                // custom_phrase 按码增量（config-patch-v1）：
+                                // 基准匹配走三方合并，不匹配保守合并。
+                                Incoming::ConfigPatch {
+                                    from_name,
+                                    kind,
+                                    name,
+                                    base_sha256,
+                                    ops,
+                                } => {
+                                    let root = received_dir.parent().unwrap_or(&received_dir);
+                                    let _ = config_sync::apply_patch_incoming(
+                                        root,
+                                        &kind,
+                                        &name,
+                                        &base_sha256,
+                                        &ops,
+                                    );
+                                    let _ = (from_name, name);
+                                    return;
+                                }
                                 // 文件 v3 事件：Android 侧仅做日志级提示，
                                 // 由宿主的 ClipboardSyncService 自行弹出
                                 // Notification / 历史入库。
@@ -386,11 +406,8 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendConfig(
             let Some(state) = STATE.get() else { return 0 };
             let kind = jstr(&mut env, &kind);
             let path = jstr(&mut env, &path);
-            let data = match config_sync::prepare_send(
-                &state.config_root,
-                &kind,
-                std::path::Path::new(&path),
-            ) {
+            let path_buf = std::path::PathBuf::from(&path);
+            let data = match config_sync::prepare_send(&state.config_root, &kind, &path_buf) {
                 Ok(Some(data)) => data,
                 _ => return 0,
             };
@@ -399,7 +416,21 @@ pub extern "system" fn Java_com_shurufa_ime_SyncBridge_nativeSendConfig(
                 .and_then(|n| n.to_str())
                 .unwrap_or("config.txt")
                 .to_owned();
-            state.service.send_config(&kind, &name, &data);
+            // custom_phrase 优先按码增量；无基准/无变化时回退全量。
+            match config_sync::prepare_patch(&state.config_root, &kind, &path_buf) {
+                Ok(Some(payload)) => {
+                    state.service.send_config_patch(
+                        &kind,
+                        &name,
+                        &payload.base_sha256,
+                        &payload.ops,
+                        &payload.data,
+                    );
+                }
+                _ => {
+                    state.service.send_config(&kind, &name, &data);
+                }
+            }
             // 只有确有在线对端时才标记“已同步”；离线发送会丢，不能消耗增量状态。
             if state.service.connected_count() > 0 {
                 let _ = config_sync::mark_sent(&state.config_root, &kind, &data);
