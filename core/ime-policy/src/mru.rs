@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -44,17 +44,31 @@ pub struct MruStore {
 
 impl MruStore {
     pub fn load() -> Self {
-        fs::read_to_string(mru_path())
+        Self::load_from(&mru_path())
+    }
+
+    fn load_from(path: &Path) -> Self {
+        fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
     }
 
     pub fn save(&mut self) -> io::Result<()> {
-        let tmp = mru_path().with_extension("tmp");
+        self.save_to(&mru_path())
+    }
+
+    /// 写到指定路径（测试注入用）：先建父目录，再写 .tmp 后 rename 原子替换。
+    /// 与 core/options 的 write_json_atomically 同模式——首次运行目录不存在时
+    /// 也能落盘（此前漏了 create_dir_all，Windows 干净环境直接 NotFound）。
+    fn save_to(&mut self, path: &Path) -> io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("tmp");
         let json = serde_json::to_string_pretty(self)?;
         fs::write(&tmp, json)?;
-        fs::rename(&tmp, mru_path())?;
+        fs::rename(&tmp, path)?;
         self.dirty = false;
         Ok(())
     }
@@ -166,10 +180,12 @@ mod tests {
         };
         s.record("shang'hai", "上海");
         s.record("ce'lue", "策略");
-        // 写读走真实路径，但大概率会写真的 user-mru.json；测试环境 temp 目录污染
-        // 可接受（不影响业务）。若 APPDATA 未设则走 tempdir。
-        s.save().expect("MRU 保存失败");
-        let loaded = MruStore::load();
+        // 进程独立的临时目录，避免写真实 %APPDATA%\shurufa\user-mru.json 污染用户数据
+        // 目录故意不预建：save_to 必须先 create_dir_all 再落盘（CI 干净环境回归点）
+        let dir = std::env::temp_dir().join(format!("shurufa-mru-test-{}", std::process::id()));
+        let path = dir.join("user-mru.json");
+        s.save_to(&path).expect("MRU 保存失败");
+        let loaded = MruStore::load_from(&path);
         assert_eq!(
             loaded.boost_list("shang'hai").first(),
             Some(&"上海".to_owned())
@@ -178,6 +194,7 @@ mod tests {
             loaded.boost_list("ce'lue").first(),
             Some(&"策略".to_owned())
         );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
