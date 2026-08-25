@@ -76,7 +76,7 @@ def main():
             items = sorted(idx[code], key=lambda x: -x[1])
             for word, weight in items[:20]:
                 f.write(f"{code}\t{word}\t{weight}\n")
-    print(f"共 {len(idx)} 个简拼编码，写入 {out}")
+    print(f"generated {len(idx)} jianpin codes -> {out}")
 
 if __name__ == "__main__":
     main()
