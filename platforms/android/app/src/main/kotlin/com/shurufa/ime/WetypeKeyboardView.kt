@@ -14,7 +14,6 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
-import android.view.SoundEffectConstants
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -162,7 +161,7 @@ internal class WetypeKeyboardView(
         }
         if (keySoundEnabled) {
             (context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
-                ?.playSoundEffect(SoundEffectConstants.CLICK)
+                ?.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD)
         }
     }
 
